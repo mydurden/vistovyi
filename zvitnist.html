@@ -1234,7 +1234,6 @@ button.count-toggle {
     driveLinked: false,
     driveFolder: "",
     driveEncryptKey: "",
-    driveFolderAdmin: false,
     settingsFolderAdmin: false,
     settingsFolderAdminHash: "",
     driveClient: "",
@@ -1378,7 +1377,6 @@ button.count-toggle {
     var active = folderAdmin && !!hash;
     state.settingsFolderAdmin = active;
     state.settingsFolderAdminHash = active ? hash : "";
-    if (active && localAdminKeyHash() === hash) state.driveFolderAdmin = true;
   }
 
   function canEditCatalogs() {
@@ -1391,8 +1389,8 @@ button.count-toggle {
     if (state.settingsFolderAdmin && state.settingsFolderAdminHash) {
       return localHash === state.settingsFolderAdminHash;
     }
-    // Файл ще без адміна — перший запис (з позначкою) стає адміном.
-    return !!state.driveFolderAdmin;
+    // Файл ще без адміна — перший запис settings ставить відбиток ключа.
+    return true;
   }
 
   function typeCatalog() {
@@ -3505,16 +3503,6 @@ button.count-toggle {
     form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
     form.append(el("label", { className: "label", text: "Ключ шифрування звіт", attrs: { for: "drive-encrypt-key" } }));
     form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "240", placeholder: "Ключ" }));
-    var adminLabel = el("label", { className: "check", attrs: { for: "drive-folder-admin" } });
-    var adminInput = el("input", {
-      attrs: { type: "checkbox", id: "drive-folder-admin", "data-drive-admin": "1" }
-    });
-    adminInput.checked = !!state.driveFolderAdmin;
-    if (state.settingsFolderAdmin && state.settingsFolderAdminHash && localAdminKeyHash() !== state.settingsFolderAdminHash) {
-      adminInput.disabled = true;
-    }
-    adminLabel.append(adminInput, el("span", { text: "Я адмініструю теку" }));
-    form.append(adminLabel);
     section.append(form);
     state.driveQueue.forEach(function (item) {
       var row = el("div", { className: "unit-code" });
@@ -4885,14 +4873,6 @@ button.count-toggle {
   function onChange(event) {
     if (applyDraftField(event.target)) return;
     if (rememberPending(event.target)) return;
-    var adminBox = event.target.closest("[data-drive-admin]");
-    if (adminBox) {
-      if (adminBox.disabled) return;
-      state.driveFolderAdmin = !!adminBox.checked;
-      save();
-      render();
-      return;
-    }
     var box = event.target.closest("[data-gear]");
     if (!box) return;
     var group = box.getAttribute("data-gear");
@@ -4929,9 +4909,6 @@ button.count-toggle {
     }
     if (node.id === "drive-encrypt-key") {
       state.driveEncryptKey = String(node.value || "").slice(0, 240);
-      if (state.settingsFolderAdmin && state.settingsFolderAdminHash && localAdminKeyHash() === state.settingsFolderAdminHash) {
-        state.driveFolderAdmin = true;
-      }
       save();
       render();
       return;
@@ -4994,7 +4971,6 @@ button.count-toggle {
     state.machineStatusListOpen = false;
     state.typeListOpen = false;
     state.settingsReserve = {};
-    state.driveFolderAdmin = false;
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
     bundles = {};
@@ -5191,25 +5167,18 @@ button.count-toggle {
     document.querySelector("[data-open-profile]").click();
     check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && !document.getElementById("main").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("section-access").textContent.indexOf("Доступ до розділу") !== -1 && document.getElementById("section-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі видає ключ, створює ланку і бачить архів");
     var driveBlock = document.getElementById("drive");
-    check(!!driveBlock && driveBlock.textContent.indexOf("Web-адреса спільної папки для обміну") !== -1 && driveBlock.textContent.indexOf("Ключ шифрування звіт") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") !== -1, "у профілі адреса папки, ключ і позначка адміна теки");
+    check(!!driveBlock && driveBlock.textContent.indexOf("Web-адреса спільної папки для обміну") !== -1 && driveBlock.textContent.indexOf("Ключ шифрування звіт") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі адреса папки і ключ без позначки адміна");
     check(driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Посилання на теку") === -1 && driveBlock.textContent.indexOf("Здати") === -1 && !document.querySelector("#drive-form button"), "немає заголовка Диск, старого підпису і кнопки Здати");
-    check(!!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !!document.getElementById("drive-folder-admin"), "поля адреси, ключа і позначки адміна");
+    check(!!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "поля адреси і ключа без чекбокса адміна");
     document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-encrypt-key").value = "секрет";
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
-    document.getElementById("drive-folder-admin").checked = true;
-    document.getElementById("drive-folder-admin").dispatchEvent(new Event("change", { bubbles: true }));
-    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveFolderAdmin === true, "адреса, ключ і позначка адміна зберігаються");
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і ключ зберігаються");
     document.getElementById("drive-encrypt-key").value = "";
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-folder").value = "";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
-    if (document.getElementById("drive-folder-admin")) {
-      document.getElementById("drive-folder-admin").checked = false;
-      document.getElementById("drive-folder-admin").dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    state.driveFolderAdmin = false;
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
     checkWorkWidth("профіль служби");
@@ -5299,7 +5268,6 @@ button.count-toggle {
     document.querySelector("[data-close-profile]").click();
     check(!document.getElementById("profile-overlay") && state.units.length === 0, "закриття не створює підрозділ");
     state.driveEncryptKey = "тест-адмін-ключ";
-    state.driveFolderAdmin = true;
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
     useCode("lead");
@@ -6078,7 +6046,6 @@ button.count-toggle {
     state.confirm = null;
     save();
     state.driveEncryptKey = "";
-    state.driveFolderAdmin = false;
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
     applyCode("1rota");
@@ -6090,10 +6057,9 @@ button.count-toggle {
     document.querySelector("[data-close-profile]").click();
     check(!canWriteDriveSettings() && !canEditCatalogs(), "без ключа немає прав на settings і довідники");
     state.driveEncryptKey = "секрет-адміна";
-    state.driveFolderAdmin = true;
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
-    check(!!canWriteDriveSettings() && !!canEditCatalogs(), "позначка адміна з ключем дає права до першого settings");
+    check(!!canWriteDriveSettings() && !!canEditCatalogs(), "ключ без settings дає права першому запису");
     var settingsPayload = buildSettingsPayload();
     check(settingsPayload && settingsPayload.version === 1 && Array.isArray(settingsPayload.types) && Array.isArray(settingsPayload.duties) && Array.isArray(settingsPayload.machineDuties) && settingsPayload.reserve && typeof settingsPayload.reserve === "object", "settings має типи, стани і запас");
     check(settingsPayload.folderAdmin === true && typeof settingsPayload.folderAdminKeyHash === "string" && settingsPayload.folderAdminKeyHash.length === 64, "settings має позначку адміна і відбиток");
@@ -6105,13 +6071,11 @@ button.count-toggle {
     check(state.settingsFolderAdmin && state.settingsFolderAdminHash === settingsPayload.folderAdminKeyHash, "після запису settings пам’ятає адміна");
     applyCode("1rota");
     state.driveEncryptKey = "чужий-ключ";
-    state.driveFolderAdmin = true;
     check(!canWriteDriveSettings() && !canEditCatalogs(), "чужий ключ не пише settings і не править довідники");
     state.driveEncryptKey = "секрет-адміна";
     check(!!canWriteDriveSettings() && !!canEditCatalogs(), "той самий відбиток дає права незалежно від openCode");
     applyCode("lead");
     state.driveEncryptKey = "";
-    state.driveFolderAdmin = false;
     state.settingsFolderAdmin = true;
     state.settingsFolderAdminHash = keyFingerprint("інший-адмін");
     check(!!isLead() && !canWriteDriveSettings() && !canEditCatalogs(), "openCode lead сам по собі не дає прав довідників");
