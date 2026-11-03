@@ -953,6 +953,7 @@ button.count-toggle {
 
   var KEY = "zvitnist.lead.v1";
   var LEGACY_KEY = "zvitnist.sluzhba.v1";
+  var DRIVE_KEY = "zvitnist.drive.v1";
 
   var CODES = {
     lead: "all",
@@ -2117,6 +2118,28 @@ button.count-toggle {
     try { return decodeURIComponent(raw); } catch (err) { return raw; }
   }
 
+  function loadDrivePrefs() {
+    try {
+      if (typeof localStorage === "undefined") return;
+      var raw = localStorage.getItem(DRIVE_KEY);
+      if (!raw) return;
+      var data = JSON.parse(raw);
+      if (!data || typeof data !== "object") return;
+      if (typeof data.driveFolder === "string") state.driveFolder = data.driveFolder.slice(0, 240);
+      if (typeof data.driveEncryptKey === "string") state.driveEncryptKey = data.driveEncryptKey.slice(0, 240);
+    } catch (err) {}
+  }
+
+  function saveDrivePrefs() {
+    try {
+      if (typeof localStorage === "undefined") return;
+      localStorage.setItem(DRIVE_KEY, JSON.stringify({
+        driveFolder: String(state.driveFolder || "").slice(0, 240),
+        driveEncryptKey: String(state.driveEncryptKey || "").slice(0, 240)
+      }));
+    } catch (err) {}
+  }
+
   function load() {
     try {
       if (typeof localStorage !== "undefined") {
@@ -2124,6 +2147,7 @@ button.count-toggle {
         localStorage.removeItem(LEGACY_KEY);
       }
     } catch (err) {}
+    loadDrivePrefs();
   }
 
   function loadEdits(edits) {
@@ -2222,6 +2246,7 @@ button.count-toggle {
         localStorage.removeItem(LEGACY_KEY);
       }
     } catch (err) {}
+    saveDrivePrefs();
   }
 
   function loadDutyOverrides(raw) {
@@ -4875,7 +4900,6 @@ button.count-toggle {
     if (node.id === "drive-encrypt-key") {
       state.driveEncryptKey = String(node.value || "").slice(0, 240);
       save();
-      render();
       return;
     }
     if (node.id === "status-name") {
@@ -5135,9 +5159,13 @@ button.count-toggle {
     check(!!saveDrive && saveDrive.textContent === "Зберегти" && !!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "кнопка Зберегти і поля адреси/ключа без чекбокса адміна");
     document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
-    document.getElementById("drive-encrypt-key").value = "секрет";
-    document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
+    var keyField = document.getElementById("drive-encrypt-key");
+    keyField.focus();
+    keyField.value = "секрет";
+    keyField.dispatchEvent(new Event("input", { bubbles: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і ключ зберігаються");
+    check(document.activeElement === document.getElementById("drive-encrypt-key") && document.getElementById("drive-encrypt-key").value === "секрет", "ключ не губить фокус при введенні");
+    check(!!localStorage.getItem("zvitnist.drive.v1") && localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") !== -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") !== -1, "адреса і ключ у пам’яті браузера");
     state.driveNote = "";
     window.google = {
       accounts: {
@@ -5150,13 +5178,19 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
+    state.driveFolder = "";
+    state.driveEncryptKey = "";
+    load();
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "після reload адреса і ключ відновлюються");
     state.driveNote = "";
     document.getElementById("drive-encrypt-key").value = "";
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-folder").value = "";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
+    check(!localStorage.getItem("zvitnist.drive.v1") || (localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") === -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") === -1), "очищені поля не лишають старий ключ");
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
+    render();
     checkWorkWidth("профіль служби");
     document.querySelector("[data-close-profile]").click();
     check(!!document.querySelector("header .title-row [data-open-profile]"), "профіль у рядку назви");

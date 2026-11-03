@@ -1,5 +1,5 @@
 /* Вістовий — мінімальний service worker: cache-first для локальних ресурсів сторінки. */
-var CACHE = "vistovyi-v8";
+var CACHE = "vistovyi-v9";
 var PRECACHE = [
   "./zvitnist.html",
   "./manifest.webmanifest",
