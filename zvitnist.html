@@ -267,7 +267,24 @@ h1 {
   line-height: 1;
 }
 
-.duty-combo { margin-top: 4px; }
+.duty-combo {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.duty-combo .pick-current-edit {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.duty-combo.is-open .pick-current-edit {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
 
 .changes-empty { margin: 4px 0 8px; font-weight: 700; }
 
@@ -1009,6 +1026,10 @@ button.count-toggle {
     { id: "dozer", name: "Бульдозери", one: "Бульдозер" }
   ];
 
+  // «Інше» — лише кошик для порожнього/невідомого типу, не в налаштуваннях.
+  var OTHER_TYPE = { id: "other", name: "Інше", one: "Інше" };
+  var SETTINGS_FILE = "vistovyi-settings.json";
+
   var MONTHS = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
@@ -1179,18 +1200,25 @@ button.count-toggle {
     changes: [],
     customDuties: [],
     customMachineDuties: [],
+    customTypes: [],
     dutyOverrides: {},
     dutyRemoved: {},
     machineDutyOverrides: {},
     machineDutyRemoved: {},
+    typeOverrides: {},
+    typeRemoved: {},
     statusEdit: "",
     machineStatusEdit: "",
+    typeEdit: "",
     statusNameDraft: "",
     machineStatusNameDraft: "",
+    typeNameDraft: "",
     statusPlus: true,
     machineStatusPlus: true,
     statusListOpen: false,
     machineStatusListOpen: false,
+    typeListOpen: false,
+    settingsReserve: {},
     profile: false,
     profilePane: "",
     report: null,
@@ -1279,12 +1307,67 @@ button.count-toggle {
     return { plus: plus, total: list.length };
   }
 
+  function canEditCatalogs() {
+    return isService();
+  }
+
+  function canWriteDriveSettings() {
+    return isService();
+  }
+
+  function typeCatalog() {
+    var list = [];
+    var seen = {};
+    TYPES.forEach(function (item) {
+      if (state.typeRemoved[item.id] || seen[item.id]) return;
+      var over = state.typeOverrides[item.id];
+      seen[item.id] = true;
+      list.push({
+        id: item.id,
+        name: over && over.name ? over.name : item.name,
+        one: over && over.one ? over.one : item.one
+      });
+    });
+    state.customTypes.forEach(function (item) {
+      if (!item || !item.id || state.typeRemoved[item.id] || seen[item.id]) return;
+      if (item.id === OTHER_TYPE.id) return;
+      var over = state.typeOverrides[item.id];
+      seen[item.id] = true;
+      list.push({
+        id: item.id,
+        name: over && over.name ? over.name : item.name,
+        one: over && over.one ? over.one : (item.one || item.name)
+      });
+    });
+    return list;
+  }
+
+  function typeById(typeId) {
+    var id = String(typeId || "");
+    if (!id || id === OTHER_TYPE.id) return null;
+    var list = typeCatalog();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  function machineTypeId(machine) {
+    var edit = machineEdit(machine.id);
+    var raw = "";
+    if (edit.type != null && String(edit.type).trim() !== "") {
+      raw = typeFromLabel(edit.type) || String(edit.type).trim();
+    } else {
+      raw = String(machine.type || "").trim();
+    }
+    if (!raw || raw === OTHER_TYPE.id) return OTHER_TYPE.id;
+    return typeById(raw) ? raw : OTHER_TYPE.id;
+  }
+
   function machinesOf(typeId) {
-    return viewMachines().filter(function (item) {
-      return item.type === typeId && !state.removed.machines[item.id];
-    }).concat(state.added.machines.filter(function (item) {
-      return item.type === typeId && !state.removed.machines[item.id];
-    }));
+    return visibleMachines().filter(function (item) {
+      return machineTypeId(item) === typeId;
+    });
   }
 
   function visibleMachines() {
@@ -1295,8 +1378,10 @@ button.count-toggle {
     }));
   }
 
-  function typeById(typeId) {
-    return TYPES.filter(function (item) { return item.id === typeId; })[0];
+  function displayTypes() {
+    var list = typeCatalog().slice();
+    if (machinesOf(OTHER_TYPE.id).length) list.push(OTHER_TYPE);
+    return list;
   }
 
   function findPath(node, personId, trail) {
@@ -1406,8 +1491,20 @@ button.count-toggle {
 
   function machineTypeLabel(machine) {
     var edit = machineEdit(machine.id);
-    if (edit.type != null) return edit.type;
-    var type = typeById(machine.type);
+    if (edit.type != null) {
+      var edited = String(edit.type || "").trim();
+      if (!edited) return "";
+      var fromEdit = typeFromLabel(edited);
+      if (fromEdit === OTHER_TYPE.id) return "";
+      if (fromEdit) {
+        var knownEdit = typeById(fromEdit);
+        return knownEdit ? knownEdit.one : edited;
+      }
+      return edited;
+    }
+    var id = String(machine.type || "").trim();
+    if (!id || id === OTHER_TYPE.id) return "";
+    var type = typeById(id);
     return type ? type.one : "";
   }
 
@@ -1731,11 +1828,15 @@ button.count-toggle {
     var machines = machineStats(DATA.machines);
     if (machines.plus !== 7 || machines.total !== 8) throw new Error("дріб техніки");
     var typeExpected = { dump: [3, 3], excavator: [1, 2], lat: [2, 2], dozer: [1, 1] };
-    TYPES.forEach(function (type) {
+    typeCatalog().forEach(function (type) {
       var stats = machineStats(machinesOf(type.id));
       var wantType = typeExpected[type.id];
+      if (!wantType) return;
       if (stats.plus !== wantType[0] || stats.total !== wantType[1]) throw new Error("тип " + type.id);
     });
+    if (typeCatalog().some(function (type) { return type.id === OTHER_TYPE.id || type.name === "Інше" || type.one === "Інше"; })) {
+      throw new Error("Інше не має бути в налаштуваннях типів");
+    }
     var seen = {};
     var personCount = 0;
     var callsigns = {};
@@ -2040,10 +2141,10 @@ button.count-toggle {
       added.machines.forEach(function (item) {
         if (!item || typeof item.id !== "string" || !item.id) return;
         if (typeof item.name !== "string" || !item.name.trim()) return;
-        if (!typeById(item.type) || !MACHINE_DUTY[item.duty] || !ACCOUNTING[item.accounting]) return;
+        if (!MACHINE_DUTY[item.duty] || !ACCOUNTING[item.accounting]) return;
         machines.push({
           id: item.id.slice(0, 40),
-          type: item.type,
+          type: resolveMachineTypeId(item.type),
           name: item.name.trim().slice(0, 80),
           board: String(item.board || "").slice(0, 80),
           accounting: item.accounting,
@@ -2391,7 +2492,8 @@ button.count-toggle {
     var current = box.getAttribute("data-value") || "";
     var list = el("div", { className: "pick-list" });
     if (box.classList.contains("duty-catalog")) {
-      var chooseAttr = box.id === "machine-status-list" ? "data-choose-machine-duty" : "data-choose-duty";
+      var kind = box.getAttribute("data-catalog-kind") || (box.id === "machine-status-list" ? "machineDuty" : box.id === "type-list" ? "type" : "duty");
+      var chooseAttr = kind === "machineDuty" ? "data-choose-machine-duty" : kind === "type" ? "data-choose-type" : "data-choose-duty";
       (box._options || []).forEach(function (pair) {
         var opt = el("button", { className: "pick-option", attrs: { type: "button" } });
         opt.setAttribute(chooseAttr, pair[0]);
@@ -2693,10 +2795,22 @@ button.count-toggle {
     var machineTitle = draftMode ? (machine.name || "") : pendingValue("machine", machine.id, "name", machineName(machine));
     card.append(fieldEditor("Назва", lockControl(textInput("mname-" + machine.id, machineTitle, draftMode ? { "data-draft-field": "name" } : editAttrs("machine", machine.id, "name")), editable)));
     var fields = el("div", { className: "card-fields" });
-    var typeLabel = draftMode ? (machine.type || "") : pendingValue("machine", machine.id, "type", machineTypeLabel(machine));
+    var typeOptions = [["", ""]];
+    typeCatalog().forEach(function (type) { typeOptions.push([type.id, type.one]); });
+    var typeKey = "";
+    if (draftMode) {
+      typeKey = resolveMachineTypeId(machine.type);
+      if (typeKey === OTHER_TYPE.id) typeKey = "";
+    } else {
+      var pendingType = pendingValue("machine", machine.id, "type", machineTypeLabel(machine));
+      typeKey = resolveMachineTypeId(pendingType);
+      if (typeKey === OTHER_TYPE.id) typeKey = "";
+      else if (!typeById(typeKey)) typeKey = "";
+    }
+    var typePick = inPlacePick("mtype-" + machine.id, typeKey, typeOptions, draftMode ? { "data-draft-field": "type" } : editAttrs("machine", machine.id, "type"));
     var board = draftMode ? (machine.board || "") : pendingValue("machine", machine.id, "board", machineBoard(machine));
     var unit = draftMode ? (machine.unit || "") : pendingValue("machine", machine.id, "unit", machineUnit(machine));
-    fields.append(fieldEditor("Тип", lockControl(textInput("mtype-" + machine.id, typeLabel, draftMode ? { "data-draft-field": "type" } : editAttrs("machine", machine.id, "type")), editable), typeLabel));
+    fields.append(fieldEditor("Тип", lockControl(typePick, editable), typeKey ? (typeById(typeKey) ? typeById(typeKey).one : "") : ""));
     fields.append(fieldEditor("Борт", lockControl(textInput("mboard-" + machine.id, board, draftMode ? { "data-draft-field": "board" } : editAttrs("machine", machine.id, "board")), editable), board));
     fields.append(fieldEditor("Підрозділ", lockControl(textInput("munit-" + machine.id, unit, draftMode ? { "data-draft-field": "unit" } : editAttrs("machine", machine.id, "unit")), editable), unit));
     var dutyOptions = Object.keys(machineDutyMap()).map(function (key) { return [key, machineDutyMap()[key].label]; });
@@ -2793,7 +2907,7 @@ button.count-toggle {
     section.append(top);
     section.append(frac(stats, "hero", "ОВТ: " + stats.plus + " у строю з " + stats.total));
     if (state.open.has("gear:equipment")) section.append(renderEquipmentGear());
-    TYPES.forEach(function (type) { section.append(renderType(type)); });
+    displayTypes().forEach(function (type) { section.append(renderType(type)); });
     return section;
   }
 
@@ -3003,6 +3117,167 @@ button.count-toggle {
     document.head.appendChild(script);
   }
 
+  function serializeDutyList(machine) {
+    return dutyEntries(machine).map(function (item) {
+      return { id: item.id, label: item.label, plus: !!item.plus };
+    });
+  }
+
+  function buildSettingsPayload() {
+    return {
+      version: 1,
+      types: typeCatalog().map(function (item) {
+        return { id: item.id, name: item.name, one: item.one };
+      }),
+      duties: serializeDutyList(false),
+      machineDuties: serializeDutyList(true),
+      reserve: state.settingsReserve && typeof state.settingsReserve === "object" ? state.settingsReserve : {}
+    };
+  }
+
+  function settingsPayloadSafe(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.reports || raw.keys || raw.people || raw.machines || raw.units) return null;
+    return {
+      version: Number(raw.version) || 1,
+      types: Array.isArray(raw.types) ? raw.types : [],
+      duties: Array.isArray(raw.duties) ? raw.duties : [],
+      machineDuties: Array.isArray(raw.machineDuties) ? raw.machineDuties : [],
+      reserve: raw.reserve && typeof raw.reserve === "object" ? raw.reserve : {}
+    };
+  }
+
+  function applySettingsPayload(raw) {
+    var data = settingsPayloadSafe(raw);
+    if (!data) return false;
+    var nextTypes = [];
+    var seenTypes = {};
+    var nextTypeOverrides = {};
+    var nextTypeRemoved = {};
+    data.types.forEach(function (item) {
+      if (!item || typeof item !== "object") return;
+      var id = String(item.id || "").slice(0, 40);
+      var name = String(item.name || item.one || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      var one = String(item.one || item.name || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (!id || !name || id === OTHER_TYPE.id || name.toLowerCase() === "інше") return;
+      if (seenTypes[id]) return;
+      seenTypes[id] = true;
+      var base = null;
+      for (var i = 0; i < TYPES.length; i++) {
+        if (TYPES[i].id === id) base = TYPES[i];
+      }
+      if (base) {
+        if (name !== base.name || one !== base.one) nextTypeOverrides[id] = { name: name, one: one || name };
+      } else {
+        nextTypes.push({ id: id, name: name, one: one || name });
+      }
+    });
+    TYPES.forEach(function (item) {
+      if (!seenTypes[item.id]) nextTypeRemoved[item.id] = true;
+    });
+    state.customTypes = nextTypes;
+    state.typeOverrides = nextTypeOverrides;
+    state.typeRemoved = nextTypeRemoved;
+
+    function applyDutySide(list, machine) {
+      var custom = [];
+      var overrides = {};
+      var removed = {};
+      var base = machine ? MACHINE_DUTY : DUTY;
+      var seen = {};
+      (list || []).forEach(function (item) {
+        if (!item || typeof item !== "object") return;
+        var id = String(item.id || "").slice(0, 40);
+        var label = String(item.label || "").replace(/\s+/g, " ").trim().slice(0, 80);
+        if (!id || !label) return;
+        seen[id] = true;
+        if (base[id]) overrides[id] = { label: label, plus: !!item.plus };
+        else custom.push({ id: id, label: label, plus: !!item.plus });
+      });
+      Object.keys(base).forEach(function (key) {
+        if (!seen[key]) removed[key] = true;
+      });
+      if (machine) {
+        state.customMachineDuties = custom;
+        state.machineDutyOverrides = overrides;
+        state.machineDutyRemoved = removed;
+      } else {
+        state.customDuties = custom;
+        state.dutyOverrides = overrides;
+        state.dutyRemoved = removed;
+      }
+    }
+
+    applyDutySide(data.duties, false);
+    applyDutySide(data.machineDuties, true);
+    state.settingsReserve = data.reserve || {};
+    return true;
+  }
+
+  function driveAuthHeaders(token) {
+    return { Authorization: "Bearer " + token };
+  }
+
+  function findSettingsFile(token, folderId) {
+    var q = encodeURIComponent("'" + folderId + "' in parents and name='" + SETTINGS_FILE + "' and trashed=false");
+    return fetch("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,name)&pageSize=1", {
+      headers: driveAuthHeaders(token)
+    }).then(function (response) {
+      return response.json().then(function (data) {
+        if (!response.ok) throw new Error("list");
+        var files = data && data.files ? data.files : [];
+        return files[0] || null;
+      });
+    });
+  }
+
+  function downloadSettingsFile(token, fileId) {
+    return fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?alt=media", {
+      headers: driveAuthHeaders(token)
+    }).then(function (response) {
+      if (!response.ok) throw new Error("download");
+      return response.json();
+    });
+  }
+
+  function uploadSettingsFile(token, folderId, existingId) {
+    var payload = JSON.stringify(buildSettingsPayload());
+    var boundary = "vistovyi" + Date.now().toString(36);
+    if (existingId) {
+      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media", {
+        method: "PATCH",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json; charset=UTF-8"
+        },
+        body: payload
+      }).then(function (response) {
+        if (!response.ok) throw new Error("update");
+        return existingId;
+      });
+    }
+    var body = new Blob([
+      "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n",
+      JSON.stringify({ name: SETTINGS_FILE, parents: [folderId], mimeType: "application/json" }),
+      "\r\n--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n",
+      payload,
+      "\r\n--" + boundary + "--"
+    ]);
+    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "multipart/related; boundary=" + boundary
+      },
+      body: body
+    }).then(function (response) {
+      return response.json().then(function (data) {
+        if (!response.ok) throw new Error("create");
+        return data.id;
+      });
+    });
+  }
+
   function putReport(token, folderId) {
     var name = Date.now().toString(36) + ".bin";
     var key = String(state.driveEncryptKey || "").trim();
@@ -3022,7 +3297,7 @@ button.count-toggle {
       bytes,
       "\r\n--" + boundary + "--"
     ]);
-    fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
+    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + token,
@@ -3031,16 +3306,42 @@ button.count-toggle {
       body: body
     }).then(function (response) {
       return response.json().then(function (data) {
-        return { ok: response.ok, data: data };
+        return { ok: response.ok, data: data, name: name };
       });
-    }).then(function (result) {
-      if (!result.ok) {
+    });
+  }
+
+  function runDriveSync(token, folderId) {
+    state.driveNote = "Синхронізую налаштування.";
+    render();
+    findSettingsFile(token, folderId).then(function (file) {
+      if (canWriteDriveSettings()) {
+        // Найвища ланка (адмін теки) викладає локальні довідники. Нижчі ніколи не пишуть settings.
+        return uploadSettingsFile(token, folderId, file && file.id).then(function () {
+          return { wroteSettings: true, readSettings: false };
+        });
+      }
+      if (!file) return { wroteSettings: false, readSettings: false };
+      return downloadSettingsFile(token, file.id).then(function (json) {
+        applySettingsPayload(json);
+        return { wroteSettings: false, readSettings: true };
+      });
+    }).then(function (settingsResult) {
+      return putReport(token, folderId).then(function (result) {
+        return { settings: settingsResult || {}, report: result };
+      });
+    }).then(function (bundle) {
+      var result = bundle.report;
+      if (!result || !result.ok) {
         state.driveNote = "Google не прийняв файл.";
       } else {
-        state.driveQueue.push({ name: name, folder: folderId, at: new Date().toISOString() });
+        state.driveQueue.push({ name: result.name, folder: folderId, at: new Date().toISOString() });
         state.driveLinked = true;
-        state.driveNote = "Файл у теці.";
+        if (bundle.settings && bundle.settings.wroteSettings) state.driveNote = "Налаштування і файл у теці.";
+        else if (bundle.settings && bundle.settings.readSettings) state.driveNote = "Налаштування прочитано. Файл у теці.";
+        else state.driveNote = "Файл у теці.";
       }
+      save();
       render();
     }).catch(function () {
       state.driveNote = "Мережа не відповіла.";
@@ -3055,7 +3356,7 @@ button.count-toggle {
       return;
     }
     function upload(token) {
-      putReport(token, folderId);
+      runDriveSync(token, folderId);
     }
     if (driveToken) {
       upload(driveToken);
@@ -3147,7 +3448,7 @@ button.count-toggle {
   }
 
   function addMachineStatus(name, plus) {
-    if (!isService()) return;
+    if (!canEditCatalogs()) return;
     var label = String(name || "").replace(/\s+/g, " ").trim().slice(0, 80);
     if (!label) return;
     var map = machineDutyMap();
@@ -3161,6 +3462,77 @@ button.count-toggle {
     state.machineStatusPlus = true;
     save();
     render();
+  }
+
+  function addMachineType(name) {
+    if (!canEditCatalogs()) return;
+    var label = String(name || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!label) return;
+    if (label.toLowerCase() === "інше") return;
+    var taken = typeCatalog().some(function (item) {
+      return item.name.toLowerCase() === label.toLowerCase() || item.one.toLowerCase() === label.toLowerCase();
+    });
+    if (taken) return;
+    state.customTypes.push({ id: "tp" + Date.now().toString(36), name: label, one: label });
+    state.typeEdit = "";
+    state.typeNameDraft = "";
+    save();
+    render();
+  }
+
+  function saveTypeEdit(id, rawName) {
+    if (!canEditCatalogs() || !id || id === OTHER_TYPE.id) return;
+    var label = String(rawName || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!label || label.toLowerCase() === "інше") return;
+    var taken = typeCatalog().some(function (item) {
+      return item.id !== id && (item.name.toLowerCase() === label.toLowerCase() || item.one.toLowerCase() === label.toLowerCase());
+    });
+    if (taken) return;
+    var base = null;
+    for (var i = 0; i < TYPES.length; i++) {
+      if (TYPES[i].id === id) base = TYPES[i];
+    }
+    if (base) {
+      state.typeOverrides[id] = { name: label, one: label };
+    } else {
+      state.customTypes.forEach(function (item) {
+        if (item.id === id) {
+          item.name = label;
+          item.one = label;
+        }
+      });
+    }
+    state.typeEdit = "";
+    state.typeNameDraft = "";
+    save();
+    render();
+  }
+
+  function deleteType(id) {
+    if (!canEditCatalogs() || !id || id === OTHER_TYPE.id) return;
+    var next = state.customTypes.filter(function (item) { return item.id !== id; });
+    if (next.length !== state.customTypes.length) state.customTypes = next;
+    else state.typeRemoved[id] = true;
+    delete state.typeOverrides[id];
+    state.typeEdit = "";
+    state.typeNameDraft = "";
+    state.confirm = null;
+    save();
+    render();
+  }
+
+  function renderTypeCreate() {
+    var section = el("section", { className: "block unit-create", attrs: { id: "type-create" } });
+    var form = el("form", { attrs: { id: "type-form" } });
+    form.append(el("label", { className: "label", text: "Тип", attrs: { for: "type-name" } }));
+    form.append(renderTypeCombo());
+    form.append(el("button", { text: state.typeEdit ? "Зберегти" : "Додати", attrs: { type: "submit" } }));
+    if (state.typeEdit) {
+      form.append(el("button", { text: "Видалити", attrs: { type: "button", "data-delete-type": state.typeEdit } }));
+    }
+    section.append(form);
+    if (state.confirm && state.confirm.kind === "type" && state.confirm.id === state.typeEdit) section.append(renderConfirmBox());
+    return wrapReveal(section, "profile:types");
   }
 
   function renderMachineStatusCreate() {
@@ -3179,33 +3551,57 @@ button.count-toggle {
     return wrapReveal(section, "profile:gear");
   }
 
-  function renderDutyCombo(machine) {
-    var options = [["new", machine ? "Новий стан" : "Новий статус"]];
-    dutyEntries(machine).forEach(function (item) { options.push([item.id, item.label]); });
-    var listId = machine ? "machine-status-list" : "status-list";
-    var nameId = machine ? "machine-status-name" : "status-name";
-    var editId = machine ? state.machineStatusEdit : state.statusEdit;
-    var draft = machine ? state.machineStatusNameDraft : state.statusNameDraft;
-    var value = editId || "new";
+  function renderCatalogCombo(opts) {
     var box = el("div", {
       className: "pick duty-catalog duty-combo",
-      attrs: { id: listId, "data-value": value }
+      attrs: { id: opts.listId, "data-value": opts.value || "new" }
     });
-    box._options = options;
+    if (opts.kind) box.setAttribute("data-catalog-kind", opts.kind);
+    box._options = opts.options || [];
     var current = el("div", { className: "pick-current pick-current-edit" });
-    current.append(textInput(nameId, draft, { placeholder: machine ? "Назва стану" : "Назва статусу" }));
+    current.append(textInput(opts.nameId, opts.draft || "", { placeholder: opts.placeholder || "" }));
     current.append(el("button", {
       className: "pick-toggle",
       text: "▾",
       attrs: {
         type: "button",
-        "data-pick-toggle": listId,
+        "data-pick-toggle": opts.listId,
         "aria-expanded": "false",
-        "aria-label": machine ? "Наявні стани" : "Наявні статуси"
+        "aria-label": opts.ariaLabel || "Наявні"
       }
     }));
     box.append(current);
     return box;
+  }
+
+  function renderDutyCombo(machine) {
+    var options = [["new", machine ? "Новий стан" : "Новий статус"]];
+    dutyEntries(machine).forEach(function (item) { options.push([item.id, item.label]); });
+    return renderCatalogCombo({
+      kind: machine ? "machineDuty" : "duty",
+      listId: machine ? "machine-status-list" : "status-list",
+      nameId: machine ? "machine-status-name" : "status-name",
+      value: (machine ? state.machineStatusEdit : state.statusEdit) || "new",
+      draft: machine ? state.machineStatusNameDraft : state.statusNameDraft,
+      placeholder: machine ? "Назва стану" : "Назва статусу",
+      ariaLabel: machine ? "Наявні стани" : "Наявні статуси",
+      options: options
+    });
+  }
+
+  function renderTypeCombo() {
+    var options = [["new", "Новий тип"]];
+    typeCatalog().forEach(function (item) { options.push([item.id, item.name]); });
+    return renderCatalogCombo({
+      kind: "type",
+      listId: "type-list",
+      nameId: "type-name",
+      value: state.typeEdit || "new",
+      draft: state.typeNameDraft,
+      placeholder: "Назва типу",
+      ariaLabel: "Наявні типи",
+      options: options
+    });
   }
 
   function profilePaneButton(pane, title) {
@@ -3229,13 +3625,16 @@ button.count-toggle {
     state.unitError = "";
     state.statusEdit = "";
     state.machineStatusEdit = "";
+    state.typeEdit = "";
     state.statusNameDraft = "";
     state.machineStatusNameDraft = "";
+    state.typeNameDraft = "";
     state.statusPlus = true;
     state.machineStatusPlus = true;
     state.statusListOpen = false;
     state.machineStatusListOpen = false;
-    if (state.confirm && (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty")) state.confirm = null;
+    state.typeListOpen = false;
+    if (state.confirm && (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty" || state.confirm.kind === "type")) state.confirm = null;
     render();
   }
 
@@ -3289,9 +3688,11 @@ button.count-toggle {
     head.append(iconButton("x", "Закрити", { "data-close-profile": "1" }));
     sheet.append(head);
     sheet.append(profilePaneButton("people", "Редагування статусів військовослужбовців"));
-    if (state.profilePane === "people" && isService()) sheet.append(renderStatusCreate());
+    if (state.profilePane === "people" && canEditCatalogs()) sheet.append(renderStatusCreate());
     sheet.append(profilePaneButton("gear", "Редагування станів ОВТ"));
-    if (state.profilePane === "gear" && isService()) sheet.append(renderMachineStatusCreate());
+    if (state.profilePane === "gear" && canEditCatalogs()) sheet.append(renderMachineStatusCreate());
+    sheet.append(profilePaneButton("types", "Редагування типів ОВТ"));
+    if (state.profilePane === "types" && canEditCatalogs()) sheet.append(renderTypeCreate());
     if (canBranch()) {
       sheet.append(renderDrive());
       sheet.append(renderArchive());
@@ -3303,7 +3704,7 @@ button.count-toggle {
   }
 
   function addPersonStatus(name, plus) {
-    if (!isService()) return;
+    if (!canEditCatalogs()) return;
     var label = String(name || "").replace(/\s+/g, " ").trim().slice(0, 80);
     if (!label) return;
     var map = dutyMap();
@@ -3509,6 +3910,10 @@ button.count-toggle {
       var gearDuty = machineDutyMap()[id];
       return "Видалити стан «" + (gearDuty ? gearDuty.label : "") + "»?";
     }
+    if (kind === "type") {
+      var typeItem = typeById(id);
+      return "Видалити тип «" + (typeItem ? typeItem.name : "") + "»?";
+    }
     if (kind === "person") {
       var personItem = findPerson(id);
       var who = personItem ? (personCallsign(personItem) || personName(personItem)) : "";
@@ -3592,12 +3997,21 @@ button.count-toggle {
 
   function typeFromLabel(value) {
     var raw = String(value || "").trim();
-    if (!raw) return "";
+    if (!raw) return OTHER_TYPE.id;
     var lower = raw.toLowerCase();
-    for (var i = 0; i < TYPES.length; i++) {
-      if (TYPES[i].one === raw || TYPES[i].name === raw || TYPES[i].one.toLowerCase() === lower || TYPES[i].name.toLowerCase() === lower) return TYPES[i].id;
+    if (raw === OTHER_TYPE.name || raw === OTHER_TYPE.one || lower === "інше") return OTHER_TYPE.id;
+    var list = typeCatalog();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === raw) return list[i].id;
+      if (list[i].one === raw || list[i].name === raw || list[i].one.toLowerCase() === lower || list[i].name.toLowerCase() === lower) return list[i].id;
     }
-    return "";
+    return OTHER_TYPE.id;
+  }
+
+  function resolveMachineTypeId(raw) {
+    var value = String(raw == null ? "" : raw).trim();
+    if (!value) return OTHER_TYPE.id;
+    return typeFromLabel(value);
   }
 
   function addedPerson(id) {
@@ -3665,7 +4079,7 @@ button.count-toggle {
       state.positions[personId] = draft.position || "";
       openUnitPath(place);
     } else {
-      var typeId = typeFromLabel(draft.type) || "dump";
+      var typeId = resolveMachineTypeId(draft.type);
       var machineId = newId("nm");
       state.added.machines.push({
         id: machineId,
@@ -3856,7 +4270,7 @@ button.count-toggle {
   }
 
   function saveDutyEdit(machine, id, rawName, plus) {
-    if (!isService() || !id) return;
+    if (!canEditCatalogs() || !id) return;
     var label = String(rawName || "").replace(/\s+/g, " ").trim().slice(0, 80);
     if (!label) return;
     var map = machine ? machineDutyMap() : dutyMap();
@@ -3891,7 +4305,7 @@ button.count-toggle {
   }
 
   function deleteDuty(kind, id) {
-    if (!isService()) return;
+    if (!canEditCatalogs()) return;
     var machine = kind === "machineDuty";
     var custom = machine ? state.customMachineDuties : state.customDuties;
     var next = custom.filter(function (item) { return item.id !== id; });
@@ -3920,6 +4334,10 @@ button.count-toggle {
     if (!state.confirm) return;
     if (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty") {
       deleteDuty(state.confirm.kind, state.confirm.id);
+      return;
+    }
+    if (state.confirm.kind === "type") {
+      deleteType(state.confirm.id);
       return;
     }
     if (!canDelete()) return;
@@ -4006,10 +4424,11 @@ button.count-toggle {
       }
     }
     if (kind === "machine" && fieldName === "type") {
-      var machineItem = addedMachine(id);
-      var typeId = machineItem ? typeFromLabel(bucket[id].type) : "";
-      if (machineItem && typeId) {
+      var machineItem = addedMachine(id) || findMachine(id);
+      var typeId = resolveMachineTypeId(bucket[id].type);
+      if (machineItem) {
         machineItem.type = typeId;
+        bucket[id].type = typeId === OTHER_TYPE.id ? "" : (typeById(typeId) ? typeById(typeId).one : "");
         state.open.add("type:" + typeId);
       }
     }
@@ -4093,13 +4512,15 @@ button.count-toggle {
       state.profilePane = openingPane ? pane : "";
       state.statusEdit = "";
       state.machineStatusEdit = "";
+      state.typeEdit = "";
       state.statusNameDraft = "";
       state.machineStatusNameDraft = "";
+      state.typeNameDraft = "";
       state.statusPlus = true;
       state.machineStatusPlus = true;
-      if (state.confirm && (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty")) state.confirm = null;
+      if (state.confirm && (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty" || state.confirm.kind === "type")) state.confirm = null;
       if (!openingPane) {
-        var closingId = closingPane === "people" ? "status-create" : closingPane === "gear" ? "machine-status-create" : "";
+        var closingId = closingPane === "people" ? "status-create" : closingPane === "gear" ? "machine-status-create" : closingPane === "types" ? "type-create" : "";
         collapseThen(closingId ? document.getElementById(closingId) : null, render);
         return;
       }
@@ -4109,7 +4530,7 @@ button.count-toggle {
     }
     var chooseDuty = event.target.closest("[data-choose-duty]");
     if (chooseDuty) {
-      if (!isService()) return;
+      if (!canEditCatalogs()) return;
       var chosen = chooseDuty.getAttribute("data-choose-duty");
       if (chosen === "new") {
         state.statusEdit = "";
@@ -4128,7 +4549,7 @@ button.count-toggle {
     }
     var chooseMachineDuty = event.target.closest("[data-choose-machine-duty]");
     if (chooseMachineDuty) {
-      if (!isService()) return;
+      if (!canEditCatalogs()) return;
       var chosenMachine = chooseMachineDuty.getAttribute("data-choose-machine-duty");
       if (chosenMachine === "new") {
         state.machineStatusEdit = "";
@@ -4145,9 +4566,26 @@ button.count-toggle {
       render();
       return;
     }
+    var chooseType = event.target.closest("[data-choose-type]");
+    if (chooseType) {
+      if (!canEditCatalogs()) return;
+      var chosenType = chooseType.getAttribute("data-choose-type");
+      if (chosenType === "new") {
+        state.typeEdit = "";
+        state.typeNameDraft = "";
+      } else {
+        var typeItem = typeById(chosenType);
+        state.typeEdit = chosenType;
+        state.typeNameDraft = typeItem ? typeItem.name : "";
+      }
+      state.typeListOpen = false;
+      if (state.confirm && state.confirm.kind === "type") state.confirm = null;
+      render();
+      return;
+    }
     var dropDuty = event.target.closest("[data-delete-duty]");
     if (dropDuty) {
-      if (!isService()) return;
+      if (!canEditCatalogs()) return;
       var dutyId = dropDuty.getAttribute("data-delete-duty");
       if (state.confirm && state.confirm.kind === "duty" && state.confirm.id === dutyId) {
         state.confirm = null;
@@ -4160,7 +4598,7 @@ button.count-toggle {
     }
     var dropMachineDuty = event.target.closest("[data-delete-machine-duty]");
     if (dropMachineDuty) {
-      if (!isService()) return;
+      if (!canEditCatalogs()) return;
       var machineDutyId = dropMachineDuty.getAttribute("data-delete-machine-duty");
       if (state.confirm && state.confirm.kind === "machineDuty" && state.confirm.id === machineDutyId) {
         state.confirm = null;
@@ -4168,6 +4606,19 @@ button.count-toggle {
         return;
       }
       state.confirm = { kind: "machineDuty", id: machineDutyId };
+      render();
+      return;
+    }
+    var dropType = event.target.closest("[data-delete-type]");
+    if (dropType) {
+      if (!canEditCatalogs()) return;
+      var typeIdDrop = dropType.getAttribute("data-delete-type");
+      if (state.confirm && state.confirm.kind === "type" && state.confirm.id === typeIdDrop) {
+        state.confirm = null;
+        render();
+        return;
+      }
+      state.confirm = { kind: "type", id: typeIdDrop };
       render();
       return;
     }
@@ -4270,6 +4721,14 @@ button.count-toggle {
       else addMachineStatus(machineLabel, machinePlus);
       return;
     }
+    var typeForm = event.target.closest("#type-form");
+    if (typeForm) {
+      event.preventDefault();
+      var typeLabel = typeForm.querySelector("#type-name").value;
+      if (state.typeEdit) saveTypeEdit(state.typeEdit, typeLabel);
+      else addMachineType(typeLabel);
+      return;
+    }
     var dutyEditForm = event.target.closest("#duty-edit-form");
     if (dutyEditForm) {
       event.preventDefault();
@@ -4355,6 +4814,10 @@ button.count-toggle {
       state.machineStatusNameDraft = node.value.slice(0, 80);
       return;
     }
+    if (node.id === "type-name") {
+      state.typeNameDraft = node.value.slice(0, 80);
+      return;
+    }
     if (rememberPending(node)) return;
   }
 
@@ -4382,18 +4845,25 @@ button.count-toggle {
     state.changes = [];
     state.customDuties = [];
     state.customMachineDuties = [];
+    state.customTypes = [];
     state.dutyOverrides = {};
     state.dutyRemoved = {};
     state.machineDutyOverrides = {};
     state.machineDutyRemoved = {};
+    state.typeOverrides = {};
+    state.typeRemoved = {};
     state.statusEdit = "";
     state.machineStatusEdit = "";
+    state.typeEdit = "";
     state.statusNameDraft = "";
     state.machineStatusNameDraft = "";
+    state.typeNameDraft = "";
     state.statusPlus = true;
     state.machineStatusPlus = true;
     state.statusListOpen = false;
     state.machineStatusListOpen = false;
+    state.typeListOpen = false;
+    state.settingsReserve = {};
     bundles = {};
     state.report = state.sampleReport;
     state.reportKey = "1rota";
@@ -4629,7 +5099,7 @@ button.count-toggle {
     document.querySelector("[data-open-profile]").click();
     check(document.getElementById("profile-overlay") && document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "вужчий код бачить назви розділів");
     checkWorkWidth("профіль розділу");
-    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вужчий код не створює і не відкриває архів");
+    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вужчий код не створює і не відкриває архів");
     document.querySelector("[data-profile-pane='people']").click();
     check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.getElementById("status-list"), "вужчий код без списку статусів");
     document.querySelector("[data-close-profile]").click();
@@ -4677,20 +5147,39 @@ button.count-toggle {
     check(profileCss.borderTopWidth === "0px" && (profileCss.backgroundColor === "rgba(0, 0, 0, 0)" || profileCss.backgroundColor === "transparent") && profileBtn.textContent.indexOf("Профіль") === -1, "профіль без рамки і підпису");
     profileBtn.click();
     check(document.getElementById("profile-overlay") && !document.getElementById("main").contains(document.getElementById("profile-overlay")), "профіль окремо від звіту");
-    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "два розділи профілю");
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !!document.getElementById("unit-name") && !!document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "рота у профілі видає ключ, створює ланку і бачить архів");
+    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
+    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "рота у профілі видає ключ, створює ланку і бачить архів");
     document.querySelector("[data-profile-pane='people']").click();
     check(!document.getElementById("status-name"), "рота не відкриває форму статусу");
-    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-edit-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.getElementById("status-list"), "рота без правки статусів");
+    document.querySelector("[data-profile-pane='types']").click();
+    check(!document.getElementById("type-name") && !document.getElementById("type-list"), "рота не відкриває форму типів");
+    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-edit-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.getElementById("status-list") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]"), "рота без правки довідників");
     document.querySelector("[data-close-profile]").click();
     check(!document.getElementById("profile-overlay") && state.units.length === 0, "закриття не створює підрозділ");
     useCode("sluzhba");
     document.querySelector("[data-open-profile]").click();
     document.querySelector("[data-profile-pane='people']").click();
     check(!!document.getElementById("status-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1, "статус починається в розділі людей");
+    var statusCombo = document.getElementById("status-list");
+    check(statusCombo && statusCombo.classList.contains("duty-combo") && statusCombo.querySelector(".pick-current-edit") && statusCombo.querySelector(".pick-current-edit").getBoundingClientRect().height >= 40, "на службі combo статусів видно");
     document.querySelector("[data-profile-pane='gear']").click();
     check(!!document.getElementById("machine-status-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "стан техніки в своєму розділі");
     check(document.getElementById("machine-status-count") && document.getElementById("machine-status-count").tagName !== "SELECT", "рахунок стану не системне вікно");
+    var machineCombo = document.getElementById("machine-status-list");
+    check(machineCombo && machineCombo.classList.contains("duty-combo") && machineCombo.querySelector(".pick-current-edit") && machineCombo.querySelector(".pick-current-edit").getBoundingClientRect().height >= 40, "на службі combo станів ОВТ видно");
+    document.querySelector("[data-profile-pane='types']").click();
+    check(!!document.getElementById("type-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "типи ОВТ у своєму розділі");
+    var typeCombo = document.getElementById("type-list");
+    check(typeCombo && typeCombo.classList.contains("duty-combo") && typeCombo.querySelector(".pick-current-edit"), "типи — той самий combo");
+    typeCombo.querySelector("[data-pick-toggle]").click();
+    check(typeCombo.textContent.indexOf("Новий тип") !== -1 && typeCombo.textContent.indexOf("Самоскиди") !== -1 && typeCombo.textContent.indexOf("Інше") === -1, "Інше не в налаштуваннях типів");
+    document.querySelector("[data-choose-type='new']").click();
+    document.getElementById("type-name").value = "Крани";
+    document.getElementById("type-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.customTypes.some(function (item) { return item.name === "Крани" && item.id !== "other"; }), "служба додає тип ОВТ");
+    document.getElementById("type-name").value = "Інше";
+    document.getElementById("type-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(!state.customTypes.some(function (item) { return item.name === "Інше" || item.id === "other"; }), "Інше не додається як тип");
     var unitName = document.getElementById("unit-name");
     check(unitName && document.getElementById("profile-overlay").contains(unitName) && !document.getElementById("main").contains(unitName), "підрозділ у профілі");
     unitName.value = "Туз";
@@ -5040,7 +5529,7 @@ button.count-toggle {
     check(document.getElementById("app").textContent.indexOf("Профільні розділи") === -1, "профільних розділів немає і в новому звіті");
     check(!document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "на звіті нової ланки немає доступу й архіву");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name"), "новий підрозділ у профілі видає ключ, створює нижче і бачить архів");
+    check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name"), "новий підрозділ у профілі видає ключ, створює нижче і бачить архів");
     var accessNext = document.querySelector("#section-key-form button[type='submit']");
     var accessTop = accessNext.offsetTop;
     var accessPage = document.documentElement.scrollHeight;
@@ -5071,7 +5560,7 @@ button.count-toggle {
     check(document.getElementById("equipment").textContent.indexOf("Степ") === -1 && document.getElementById("equipment").textContent.indexOf("Січ") === -1, "вузький ключ без машин зразка");
     check(state.reportKey === state.units[0].code && state.report && state.report.file === reportFileName(state.units[0].code) && state.report.file !== SAMPLE_FILE && state.report.machines.length === 0, "вузький ключ читає файл підрозділу");
     document.querySelector("[data-open-profile]").click();
-    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вузький ключ без службових речей і без архіву");
+    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вузький ключ без службових речей і без архіву");
     document.querySelector("[data-close-profile]").click();
     applyCode(keyB);
     check(state.openCode === keyB && state.scope === "equipment" && state.reportKey === state.units[0].code && document.querySelector("#equipment .frac").getAttribute("data-total") === "0", "другий ключ той самий порожній файл");
@@ -5092,7 +5581,7 @@ button.count-toggle {
     applyCode(childUnit.code);
     check(state.scope === "all" && document.querySelector("#people .frac").getAttribute("data-total") === "0" && document.querySelector("#equipment .frac").getAttribute("data-total") === "0" && document.getElementById("people").textContent.indexOf("Бондар") === -1, "код нижчої ланки відкриває порожній звіт");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name"), "нижча ланка теж створює ще нижче");
+    check(!!document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("type-name"), "нижча ланка теж створює ще нижче");
     document.getElementById("unit-name").value = "Група";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var grandUnit = state.units[2];
@@ -5337,10 +5826,14 @@ button.count-toggle {
     document.querySelector("#card-overlay [data-save-card='draft']").click();
     var afterMachine = document.querySelector("#equipment .frac");
     check(afterMachine && afterMachine.getAttribute("data-plus") === "8" && afterMachine.getAttribute("data-total") === "9", "нова машина у дробі");
-    var dumpFrac = document.querySelector("[data-toggle='type:dump'] .frac");
-    check(dumpFrac && dumpFrac.getAttribute("data-plus") === "4" && dumpFrac.getAttribute("data-total") === "4", "машина на типі самоскидів");
-    check(JSON.stringify(DATA).indexOf("Вихор") === -1, "зразок без нової машини");
     var createdMachine = state.added.machines[0];
+    var otherFrac = document.querySelector("[data-toggle='type:other'] .frac");
+    var dumpFrac = document.querySelector("[data-toggle='type:dump'] .frac");
+    check(createdMachine && createdMachine.type === "other", "порожній тип зберігається як other");
+    check(otherFrac && otherFrac.getAttribute("data-plus") === "1" && otherFrac.getAttribute("data-total") === "1", "порожній тип → Інше, не Самоскиди");
+    check(dumpFrac && dumpFrac.getAttribute("data-plus") === "3" && dumpFrac.getAttribute("data-total") === "3", "самоскиди без порожнього типу");
+    check(document.getElementById("equipment").textContent.indexOf("Інше") !== -1, "Інше видно в списку ОВТ");
+    check(JSON.stringify(DATA).indexOf("Вихор") === -1, "зразок без нової машини");
     if (!state.open.has("machine:" + createdMachine.id)) toggle("machine:" + createdMachine.id);
     var removeMachine = document.querySelector("[data-remove='machine:" + createdMachine.id + "']");
     if (removeMachine) removeMachine.click();
@@ -5442,9 +5935,18 @@ button.count-toggle {
     document.querySelector("[data-open-profile]").click();
     document.querySelector("[data-profile-pane='people']").click();
     document.querySelector("[data-profile-pane='gear']").click();
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.querySelector("[data-choose-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-choose-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.querySelector("[data-edit-duty]") && !document.querySelector("[data-edit-machine-duty]"), "рота не править і не видаляє статуси");
-    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "рота бачить назви розділів");
+    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.querySelector("[data-choose-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-choose-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]") && !document.querySelector("[data-edit-duty]") && !document.querySelector("[data-edit-machine-duty]"), "рота не править і не видаляє довідники");
+    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "рота бачить назви розділів");
     document.querySelector("[data-close-profile]").click();
+    var settingsPayload = buildSettingsPayload();
+    check(settingsPayload && settingsPayload.version === 1 && Array.isArray(settingsPayload.types) && Array.isArray(settingsPayload.duties) && Array.isArray(settingsPayload.machineDuties) && settingsPayload.reserve && typeof settingsPayload.reserve === "object", "settings має типи, стани і запас");
+    check(!settingsPayload.types.some(function (item) { return item.id === "other" || item.name === "Інше"; }), "settings без Інше");
+    check(!settingsPayload.reports && !settingsPayload.keys && !settingsPayload.people && !JSON.stringify(settingsPayload).includes("Бондар"), "settings без звітів і персональних даних");
+    check(canWriteDriveSettings() === isService(), "settings пише лише найвища ланка");
+    applyCode("1rota");
+    check(!canWriteDriveSettings() && !canEditCatalogs(), "рота не викладає settings і не править довідники");
+    applyCode("sluzhba");
+    check(!!canWriteDriveSettings() && !!canEditCatalogs(), "служба пише settings");
     try {
       assertSeed();
     } catch (err) {
@@ -5583,7 +6085,14 @@ button.count-toggle {
     sampleReportDocument: sampleReportDocument,
     reportFileName: reportFileName,
     writeReportProof: writeReportProof,
-    SAMPLE_FILE: SAMPLE_FILE
+    SAMPLE_FILE: SAMPLE_FILE,
+    buildSettingsPayload: buildSettingsPayload,
+    applySettingsPayload: applySettingsPayload,
+    typeCatalog: typeCatalog,
+    OTHER_TYPE: OTHER_TYPE,
+    resolveMachineTypeId: resolveMachineTypeId,
+    canWriteDriveSettings: canWriteDriveSettings,
+    canEditCatalogs: canEditCatalogs
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
