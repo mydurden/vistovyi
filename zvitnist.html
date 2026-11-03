@@ -1645,14 +1645,6 @@ button.count-toggle {
     });
   }
 
-  var UNIT_STATUS_DEMO = ["received", "missing", "merged"];
-
-  var DEMO_SUBORDINATES = [
-    { code: "1rota", name: "1 рота · демо", status: "received" },
-    { code: "demo2rota", name: "2 рота · демо", status: "missing" },
-    { code: "demovzvod", name: "Взвод · демо", status: "merged" }
-  ];
-
   function unitReportStatus(code) {
     var key = String(code || "");
     var value = state.unitReportStatus[key];
@@ -1672,45 +1664,11 @@ button.count-toggle {
     state.unitReportStatus[code] = status;
   }
 
-  function ensureUnitReportDemoStatuses() {
-    DEMO_SUBORDINATES.forEach(function (demo) {
-      if (!demo || !demo.code) return;
-      if (state.unitReportStatus[demo.code]) return;
-      setUnitReportStatus(demo.code, demo.status);
-    });
-  }
-
-  function findDemoSubordinate(raw) {
-    var code = String(raw || "").trim().toLowerCase();
-    for (var i = 0; i < DEMO_SUBORDINATES.length; i++) {
-      if (String(DEMO_SUBORDINATES[i].code).toLowerCase() === code) {
-        return {
-          id: "demo:" + DEMO_SUBORDINATES[i].code,
-          name: DEMO_SUBORDINATES[i].name,
-          code: DEMO_SUBORDINATES[i].code,
-          parent: "lead",
-          demo: true
-        };
-      }
-    }
-    return null;
-  }
-
   function subordinatesFor(rootCode) {
     var key = String(rootCode || "").toLowerCase();
-    var rows = state.units.filter(function (unit) {
+    return state.units.filter(function (unit) {
       return String(unit.parent || "").toLowerCase() === key;
     });
-    if (key === "lead") {
-      DEMO_SUBORDINATES.forEach(function (demo) {
-        var exists = rows.some(function (unit) {
-          return String(unit.code || "").toLowerCase() === String(demo.code).toLowerCase();
-        });
-        if (exists) return;
-        rows.push(findDemoSubordinate(demo.code));
-      });
-    }
-    return rows;
   }
 
   function subordinateRows() {
@@ -1836,7 +1794,7 @@ button.count-toggle {
     for (var i = 0; i < state.units.length; i++) {
       if (state.units[i].code.toLowerCase() === code) return state.units[i];
     }
-    return findDemoSubordinate(code);
+    return null;
   }
 
   function findSectionKey(raw) {
@@ -3105,7 +3063,6 @@ button.count-toggle {
   }
 
   function renderReportSwitch() {
-    ensureUnitReportDemoStatuses();
     if (!reportSwitchVisible()) return null;
     var root = reportRootCode();
     var options = [["__general__", "Загальний звіт"]];
@@ -5158,17 +5115,14 @@ button.count-toggle {
     check(!!startReport && startReport.querySelector("#open-report") && startReport.querySelector("#open-report").textContent === "Загальний звіт", "у шапці вибір звіту з загальним");
     checkReportSwitchLayout(window.innerWidth >= 840 ? "широкий старт" : "старт");
     check(!document.getElementById("main").textContent.includes("Підлеглі"), "немає секції Підлеглі в main");
+    check(subordinatesFor("lead").length === 0 && state.units.length === 0, "на старті немає підлеглих");
     startReport.querySelector("[data-pick-toggle]").click();
-    check(startReport.textContent.indexOf("1 рота · демо") !== -1 && startReport.textContent.indexOf("2 рота · демо") !== -1 && startReport.textContent.indexOf("Взвод · демо") !== -1, "демо-підрозділи з демо у назві");
-    var demoMarks = {};
-    startReport.querySelectorAll("[data-unit-status]").forEach(function (node) {
-      if (node.classList.contains("is-received")) demoMarks.received = true;
-      if (node.classList.contains("is-missing")) demoMarks.missing = true;
-      if (node.classList.contains("is-merged")) demoMarks.merged = true;
-    });
-    check(!!demoMarks.received && !!demoMarks.missing && !!demoMarks.merged, "три статуси на демо-рядках");
-    check(!!document.querySelector("#report-switch [data-open-unit='1rota']") && document.querySelector("#report-switch [data-unit-status='1rota']").textContent === "Звіт отримано", "1rota як демо-рядок");
-    check(!!document.querySelector("#report-switch [data-report-blocked='demo2rota']") && !document.querySelector("#report-switch [data-open-unit='demo2rota']"), "відсутній звіт видно, але не відкривається");
+    check(startReport.textContent.indexOf("демо") === -1 && startReport.textContent.indexOf("Демо") === -1, "у виборі звіту немає демо");
+    check(!document.querySelector("#report-switch [data-open-unit]") && !document.querySelector("#report-switch [data-report-blocked]") && !document.querySelector("#report-switch [data-unit-status]"), "порожній список підлеглих у виборі звіту");
+    check(startReport.textContent.indexOf("Загальний звіт") !== -1 && startReport.querySelectorAll(".pick-option").length === 1, "лише загальний звіт без заглушок");
+    var pageSource = "";
+    document.querySelectorAll("script").forEach(function (node) { pageSource += node.textContent || ""; });
+    check(pageSource.indexOf("DEMO_" + "SUBORDINATES") === -1 && pageSource.indexOf("findDemo" + "Subordinate") === -1 && pageSource.indexOf("1 рота · " + "демо") === -1 && pageSource.indexOf("ensureUnitReport" + "DemoStatuses") === -1, "у коді немає демо-підрозділів");
     startReport.querySelector("[data-pick-toggle]").click();
     checkWorkWidth("служба");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("unit-create") && !document.getElementById("status-create") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "служба бачить звіт без форм");
