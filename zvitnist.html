@@ -3503,6 +3503,7 @@ button.count-toggle {
     form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
     form.append(el("label", { className: "label", text: "Ключ шифрування звіт", attrs: { for: "drive-encrypt-key" } }));
     form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "240", placeholder: "Ключ" }));
+    form.append(el("button", { text: "Зберегти", attrs: { type: "submit" } }));
     section.append(form);
     state.driveQueue.forEach(function (item) {
       var row = el("div", { className: "unit-code" });
@@ -4860,6 +4861,13 @@ button.count-toggle {
     var driveForm = event.target.closest("#drive-form");
     if (driveForm) {
       event.preventDefault();
+      var folderField = driveForm.querySelector("#drive-folder");
+      var keyField = driveForm.querySelector("#drive-encrypt-key");
+      state.driveFolder = String(folderField && folderField.value || "").slice(0, 240);
+      state.driveEncryptKey = String(keyField && keyField.value || "").slice(0, 240);
+      state.driveClient = DRIVE_CLIENT;
+      save();
+      startDriveSync();
       return;
     }
     var unitForm = event.target.closest("#unit-form");
@@ -5168,13 +5176,27 @@ button.count-toggle {
     check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && !document.getElementById("main").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("section-access").textContent.indexOf("Доступ до розділу") !== -1 && document.getElementById("section-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі видає ключ, створює ланку і бачить архів");
     var driveBlock = document.getElementById("drive");
     check(!!driveBlock && driveBlock.textContent.indexOf("Web-адреса спільної папки для обміну") !== -1 && driveBlock.textContent.indexOf("Ключ шифрування звіт") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі адреса папки і ключ без позначки адміна");
-    check(driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Посилання на теку") === -1 && driveBlock.textContent.indexOf("Здати") === -1 && !document.querySelector("#drive-form button"), "немає заголовка Диск, старого підпису і кнопки Здати");
-    check(!!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "поля адреси і ключа без чекбокса адміна");
+    check(driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Посилання на теку") === -1 && driveBlock.textContent.indexOf("Здати") === -1, "немає заголовка Диск, старого підпису і кнопки Здати");
+    var saveDrive = document.querySelector("#drive-form button[type='submit']");
+    check(!!saveDrive && saveDrive.textContent === "Зберегти" && !!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "кнопка Зберегти і поля адреси/ключа без чекбокса адміна");
     document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-encrypt-key").value = "секрет";
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і ключ зберігаються");
+    state.driveNote = "";
+    window.google = {
+      accounts: {
+        oauth2: {
+          initTokenClient: function () {
+            return { requestAccessToken: function () {} };
+          }
+        }
+      }
+    };
+    document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
+    state.driveNote = "";
     document.getElementById("drive-encrypt-key").value = "";
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-folder").value = "";
