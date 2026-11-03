@@ -89,6 +89,7 @@ button { cursor: pointer; }
 .top {
   background: var(--header);
   color: var(--header-ink);
+  overflow: visible;
 }
 
 .wrap {
@@ -164,7 +165,15 @@ h1 {
 
 .top .error { color: #ffd2c8; font-size: 0.92rem; margin: 8px 0 0; }
 
-.report-switch { margin: 12px 0 0; }
+.top .report-switch {
+  display: block;
+  visibility: visible;
+  opacity: 1;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  margin: 12px 0 0;
+}
 
 .top .report-switch .pick-current,
 .top .report-switch .pick-list,
@@ -173,7 +182,15 @@ h1 {
   color: var(--ink);
 }
 
-.top .report-switch .pick-current { overflow-wrap: anywhere; font-weight: 700; }
+.top .report-switch .pick-current {
+  display: block;
+  visibility: visible;
+  opacity: 1;
+  width: 100%;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
 
 .top .report-switch .pick-option.is-current { background: #fff; }
 
@@ -875,6 +892,16 @@ button.count-toggle {
     max-width: 100%;
   }
   .top .wrap { padding-top: 8px; padding-bottom: 12px; }
+  .top .report-switch {
+    display: block;
+    visibility: visible;
+    margin: 12px 0 0;
+  }
+  .top .report-switch .pick-current {
+    display: block;
+    visibility: visible;
+    min-height: 44px;
+  }
   h1 { font-size: 1.6rem; }
   .frac .num, .frac .den { font-size: 2.35rem; }
   main.wrap { padding-top: 20px; }
@@ -4438,6 +4465,30 @@ button.count-toggle {
       check(dim !== "rgba(0, 0, 0, 0)" && dim !== "transparent", "сторінка за вікном затемнена");
     }
     var workWidths = [];
+    function checkReportSwitchLayout(label) {
+      var report = document.getElementById("report-switch");
+      if (!report) return;
+      var titleRow = document.querySelector("header.top .title-row");
+      var wrap = document.querySelector("header.top .wrap");
+      var current = report.querySelector(".pick-current");
+      var open = report.querySelector("#open-report");
+      var rb = report.getBoundingClientRect();
+      var cb = current ? current.getBoundingClientRect() : null;
+      var cs = getComputedStyle(report);
+      check(cs.display !== "none" && cs.visibility !== "hidden" && Number(cs.opacity) > 0.9, label + ": вибір звіту не сховано");
+      check(rb.width >= 200 && rb.height >= 40, label + ": вибір звіту має розмір");
+      check(!!cb && cb.width >= 200 && cb.height >= 40, label + ": смуга звіту має розмір");
+      check(!!open && open.getBoundingClientRect().height >= 12, label + ": підпис звіту видно");
+      if (titleRow && wrap) {
+        var tb = titleRow.getBoundingClientRect();
+        var wb = wrap.getBoundingClientRect();
+        var gapTop = rb.top - tb.bottom;
+        var gapBottom = wb.bottom - rb.bottom;
+        check(Math.abs(gapTop - 12) <= 2, label + ": 12px над вибором звіту");
+        check(Math.abs(gapBottom - 12) <= 2, label + ": 12px під вибором звіту");
+        check(Math.abs(gapTop - gapBottom) <= 2, label + ": рівні відступи вибору звіту");
+      }
+    }
     function checkWorkWidth(label) {
       var app = document.getElementById("app");
       var header = document.querySelector("header.top");
@@ -4463,10 +4514,12 @@ button.count-toggle {
           check(Math.abs(sb.width - 768) <= 1, label + ": вікно поверх 768");
           workWidths.push(Math.round(sb.width));
         }
+        checkReportSwitchLayout(label);
       } else {
         if (hb) check(hb.width >= full - 1, label + ": шапка на всю ширину");
         if (mb) check(mb.width >= full - 1, label + ": звіт на всю ширину");
         if (hb && mb) check(Math.abs(hb.width - mb.width) <= 1, label + ": шапка і звіт однієї ширини");
+        checkReportSwitchLayout(label);
       }
     }
     function useCode(code) {
@@ -4516,6 +4569,7 @@ button.count-toggle {
     check(state.openCode === "sluzhba" && state.holder === "Служба" && !!document.getElementById("report-switch") && !document.getElementById("subordinates") && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1, "на старті відкрита служба без підпису ролі");
     var startReport = document.getElementById("report-switch");
     check(!!startReport && startReport.querySelector("#open-report") && startReport.querySelector("#open-report").textContent === "Загальний звіт", "у шапці вибір звіту з загальним");
+    checkReportSwitchLayout(window.innerWidth >= 840 ? "широкий старт" : "старт");
     check(!document.getElementById("main").textContent.includes("Підлеглі"), "немає секції Підлеглі в main");
     startReport.querySelector("[data-pick-toggle]").click();
     check(startReport.textContent.indexOf("1 рота · демо") !== -1 && startReport.textContent.indexOf("2 рота · демо") !== -1 && startReport.textContent.indexOf("Взвод · демо") !== -1, "демо-підрозділи з демо у назві");
