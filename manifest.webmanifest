@@ -1,0 +1,26 @@
+{
+  "name": "Вістовий",
+  "short_name": "Вістовий",
+  "description": "Офлайн-звіт підрозділу в службу",
+  "start_url": "./zvitnist.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "lang": "uk",
+  "theme_color": "#1a2820",
+  "background_color": "#e7e1d6",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

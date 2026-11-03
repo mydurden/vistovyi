@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1a2820">
   <meta name="color-scheme" content="light">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
   <title>Вістовий</title>
   <style>
 :root {
@@ -24,6 +26,9 @@
   --header-muted: #d5cec3;
   --amber-soft: #f4efe4;
   --amber-ink: #5c4a2e;
+  --red: #9b3228;
+  --red-ink: #7a271f;
+  --red-soft: #f7e8e5;
   --done-soft: #eceae6;
   --done-ink: #3e3a34;
   --shadow: 0 1px 2px rgba(27, 25, 21, 0.05), 0 12px 28px rgba(27, 25, 21, 0.05);
@@ -117,6 +122,10 @@ h1 {
   align-items: center;
 }
 
+.title-row h1[data-sync-drive] {
+  cursor: pointer;
+}
+
 .title-mark {
   display: block;
   height: 42px;
@@ -136,25 +145,6 @@ h1 {
 
 .top .field-label { color: var(--header-muted); }
 
-.code-row {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-}
-
-.code-row input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 12px;
-  background: #fff;
-  color: var(--ink);
-  font-size: 16px;
-}
-
-.code-row button,
 .primary {
   flex: 0 0 auto;
   min-height: 44px;
@@ -174,24 +164,71 @@ h1 {
 
 .top .error { color: #ffd2c8; font-size: 0.92rem; margin: 8px 0 0; }
 
-.code-switch { margin: 8px 0 2px; }
-
-.top .code-switch .pick-current,
-.top .code-switch .pick-list,
-.top .code-switch .pick-option {
-  background: var(--paper);
-  color: var(--ink);
+.subordinates {
+  margin: 0 0 8px;
 }
 
-.top .code-switch .pick-current { overflow-wrap: anywhere; }
+.subordinates .block-top {
+  margin-bottom: 2px;
+}
 
-.top .code-switch .pick-option.is-current { background: #fff; }
+.sub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 2px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  touch-action: manipulation;
+}
 
-.top .code-switch .pick-option code {
-  margin-left: 8px;
-  font: inherit;
-  font-size: 16px;
-  color: var(--muted);
+.sub-row:first-of-type { border-top: 0; }
+
+.sub-row:active { background: rgba(26, 40, 32, 0.04); }
+
+.sub-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.sub-meta {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 55%;
+}
+
+.sub-status {
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.sub-status.is-received { color: var(--clay); }
+.sub-status.is-missing { color: var(--red); }
+.sub-status.is-merged { color: var(--green); }
+
+.sub-merge {
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font-weight: 700;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .changes-empty { margin: 4px 0 8px; font-weight: 700; }
@@ -1078,6 +1115,7 @@ button.count-toggle {
     codeDraft: "",
     codeError: "",
     units: [],
+    unitReportStatus: {},
     unitNameDraft: "",
     unitError: "",
     edits: { people: {}, machines: {} },
@@ -1117,6 +1155,7 @@ button.count-toggle {
     sectionForDraft: "",
     driveLinked: false,
     driveFolder: "",
+    driveEncryptKey: "",
     driveClient: "",
     driveQueue: [],
     driveFrom: "",
@@ -1379,6 +1418,35 @@ button.count-toggle {
     var key = actorKey().toLowerCase();
     return state.units.filter(function (unit) {
       return String(unit.parent || "").toLowerCase() === key;
+    });
+  }
+
+  var UNIT_STATUS_DEMO = ["received", "missing", "merged"];
+
+  function unitReportStatus(code) {
+    var key = String(code || "");
+    var value = state.unitReportStatus[key];
+    if (value === "received" || value === "missing" || value === "merged") return value;
+    return "missing";
+  }
+
+  function unitReportStatusLabel(status) {
+    if (status === "received") return "Звіт отримано";
+    if (status === "merged") return "Додано у загальний звіт";
+    return "Відсутній звіт";
+  }
+
+  function setUnitReportStatus(code, status) {
+    if (!code) return;
+    if (status !== "received" && status !== "missing" && status !== "merged") return;
+    state.unitReportStatus[code] = status;
+  }
+
+  function ensureUnitReportDemoStatuses() {
+    state.units.forEach(function (unit, index) {
+      if (!unit || !unit.code) return;
+      if (state.unitReportStatus[unit.code]) return;
+      setUnitReportStatus(unit.code, UNIT_STATUS_DEMO[index % UNIT_STATUS_DEMO.length]);
     });
   }
 
@@ -2206,14 +2274,6 @@ button.count-toggle {
       (box._options || []).forEach(function (pair) {
         list.append(pickOption(pair[0], pair[1], current));
       });
-      if (box.id === "code-switch") {
-        (box._options || []).forEach(function (pair, index) {
-          var opt = list.children[index];
-          if (!opt) return;
-          opt.textContent = "";
-          opt.append(el("span", { text: pair[1] }), el("code", { text: pair[0] }));
-        });
-      }
     }
     box.append(list);
     box.classList.add("is-open");
@@ -2233,10 +2293,6 @@ button.count-toggle {
   }
 
   function choosePick(box, value) {
-    if (box.id === "code-switch") {
-      applyCode(value);
-      return;
-    }
     if (box.classList.contains("is-locked")) {
       closePick(box);
       return;
@@ -2680,39 +2736,35 @@ button.count-toggle {
     return section;
   }
 
-  var SAMPLE_CODES = [
-    ["1rota", "Усі три розділи"],
-    ["lyudy", "Лише військовослужбовці"],
-    ["tekhnika", "Лише техніка"],
-    ["zavdannya", "Лише завдання"]
-  ];
-
-  function codeOptions() {
-    var options = [["sluzhba", "Служба"]];
-    SAMPLE_CODES.forEach(function (pair) { options.push(pair); });
-    state.units.forEach(function (unit) {
-      options.push([unit.code, unit.name + " " + unit.code]);
+  function renderSubordinates() {
+    ensureUnitReportDemoStatuses();
+    var units = unitsCreatedHere();
+    if (!units.length) return null;
+    var section = el("section", { className: "block subordinates", attrs: { id: "subordinates", "aria-labelledby": "subordinates-title" } });
+    var top = el("div", { className: "block-top" });
+    top.append(el("h2", { text: "Підлеглі", attrs: { id: "subordinates-title" } }));
+    section.append(top);
+    units.forEach(function (unit) {
+      var status = unitReportStatus(unit.code);
+      var row = el("div", { className: "sub-row", attrs: { role: "button", tabindex: "0", "data-open-unit": unit.code } });
+      row.append(el("div", { className: "sub-name", text: unit.name }));
+      var meta = el("div", { className: "sub-meta" });
+      meta.append(el("div", {
+        className: "sub-status is-" + status,
+        text: unitReportStatusLabel(status),
+        attrs: { "data-unit-status": unit.code }
+      }));
+      if (status === "received") {
+        meta.append(el("button", {
+          className: "sub-merge",
+          text: "Додано у загальний звіт",
+          attrs: { type: "button", "data-merge-unit": unit.code }
+        }));
+      }
+      row.append(meta);
+      section.append(row);
     });
-    state.sectionKeys.forEach(function (item) {
-      options.push([item.code, sectionKeyLabel(item)]);
-    });
-    return options;
-  }
-
-  function renderCodeSwitch() {
-    var options = codeOptions();
-    var current = state.openCode;
-    var known = options.some(function (pair) { return pair[0] === current; });
-    if (!known) {
-      state.units.forEach(function (unit) {
-        if (unit.code.toLowerCase() === String(current).toLowerCase()) current = unit.code;
-      });
-    }
-    var pick = inPlacePick("code-switch", current, options);
-    pick.classList.add("code-switch");
-    var shown = pick.querySelector(".pick-current span");
-    if (shown) shown.id = "open-code";
-    return pick;
+    return section;
   }
 
   function renderHeader() {
@@ -2721,7 +2773,7 @@ button.count-toggle {
     var skip = el("a", { className: "skip", text: "До звіту", attrs: { href: "#main" } });
     wrap.append(skip);
     var titleRow = el("div", { className: "title-row" });
-    var title = el("h1");
+    var title = el("h1", { attrs: { "data-sync-drive": "1", role: "button", tabindex: "0", "aria-label": "Синхронізація" } });
     title.append(el("img", { className: "title-mark", attrs: { alt: "", src: "data:image/png;base64,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" } }));
     title.append(el("span", { className: "visually-hidden", text: "Вістовий" }));
     titleRow.append(title);
@@ -2729,31 +2781,9 @@ button.count-toggle {
     profileBtn.append(el("img", { attrs: { alt: "", src: "data:image/png;base64,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" } }));
     titleRow.append(profileBtn);
     wrap.append(titleRow);
-    wrap.append(renderCodeSwitch());
-    var form = el("form", { attrs: { id: "code-form" } });
-    var label = el("label", { className: "field-label", text: "Код розділу", attrs: { for: "code" } });
-    var row = el("div", { className: "code-row" });
-    var input = el("input", {
-      attrs: {
-        id: "code",
-        name: "section-code",
-        type: "text",
-        maxlength: "40",
-        autocomplete: "off",
-        autocapitalize: "off",
-        spellcheck: "false",
-        placeholder: "Код",
-        enterkeyhint: "go"
-      }
-    });
-    input.value = state.codeDraft;
-    var submit = el("button", { text: "Відкрити", attrs: { type: "submit" } });
-    row.append(input, submit);
-    form.append(label, row);
     if (state.codeError) {
-      form.append(el("p", { className: "error", text: state.codeError, attrs: { role: "alert" } }));
+      wrap.append(el("p", { className: "error", text: state.codeError, attrs: { role: "alert" } }));
     }
-    wrap.append(form);
     header.append(wrap);
     return header;
   }
@@ -2777,7 +2807,7 @@ button.count-toggle {
       var title = sectionScopeLabel(item.scope);
       if (item.forWhom) title += " · " + item.forWhom;
       row.append(el("div", { className: "label", text: title }));
-      row.append(el("p", { className: "code-line", text: item.code, attrs: { "data-key-code": item.code } }));
+      row.append(el("p", { className: "code-line", text: item.code, attrs: { "data-key-code": item.code, "data-use-code": item.code, role: "button", tabindex: "0" } }));
       row.append(el("button", { className: "issue", text: "Копіювати", attrs: { type: "button", "data-copy": item.code } }));
       section.append(row);
     });
@@ -2810,8 +2840,15 @@ button.count-toggle {
 
   function putReport(token, folderId) {
     var name = Date.now().toString(36) + ".bin";
-    var bytes = new Uint8Array(32);
-    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+    var key = String(state.driveEncryptKey || "").trim();
+    // Нема ключа = без шифру. З ключем — заглушка (реальне шифрування пізніше).
+    var bytes;
+    if (!key) {
+      bytes = new TextEncoder().encode("report");
+    } else {
+      bytes = new Uint8Array(32);
+      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+    }
     var boundary = "vistovyi" + Date.now().toString(36);
     var body = new Blob([
       "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n",
@@ -2876,13 +2913,28 @@ button.count-toggle {
     });
   }
 
+  function startDriveSync() {
+    state.driveClient = DRIVE_CLIENT;
+    var folderId = driveFolderId(state.driveFolder);
+    if (!folderId) {
+      state.driveNote = "";
+      state.profile = true;
+      render();
+      return;
+    }
+    state.driveNote = "Відкриваю вікно Google.";
+    state.profile = true;
+    render();
+    sendReport(DRIVE_CLIENT, folderId);
+  }
+
   function renderDrive() {
-    var section = el("section", { className: "block unit-create", attrs: { id: "drive", "aria-labelledby": "drive-title" } });
-    section.append(el("h2", { text: "Диск", attrs: { id: "drive-title" } }));
+    var section = el("section", { className: "block unit-create", attrs: { id: "drive", "aria-label": "Обмін" } });
     var form = el("form", { attrs: { id: "drive-form" } });
-    form.append(el("label", { className: "label", text: "Посилання на теку", attrs: { for: "drive-folder" } }));
-    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Посилання" }));
-    form.append(el("button", { text: "Здати", attrs: { type: "submit" } }));
+    form.append(el("label", { className: "label", text: "Web-адреса спільної папки для обміну", attrs: { for: "drive-folder" } }));
+    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
+    form.append(el("label", { className: "label", text: "Ключ шифрування звіт", attrs: { for: "drive-encrypt-key" } }));
+    form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "240", placeholder: "Ключ" }));
     section.append(form);
     state.driveQueue.forEach(function (item) {
       var row = el("div", { className: "unit-code" });
@@ -2907,7 +2959,7 @@ button.count-toggle {
       var row = el("div", { className: "unit-code" });
       row.append(el("div", { className: "label", text: unit.name }));
       row.append(el("div", { className: "label", text: "Код" }));
-      row.append(el("p", { className: "code-line", text: unit.code, attrs: { "data-unit-code": unit.code } }));
+      row.append(el("p", { className: "code-line", text: unit.code, attrs: { "data-unit-code": unit.code, "data-use-code": unit.code, role: "button", tabindex: "0" } }));
       row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": unit.code } }));
       section.append(row);
     });
@@ -3093,6 +3145,8 @@ button.count-toggle {
     var root = document.getElementById("app");
     var main = el("main", { className: "wrap", attrs: { id: "main" } });
     if (state.scope === "all") {
+      var subordinates = renderSubordinates();
+      if (subordinates) main.append(subordinates);
       var changes = renderChanges();
       if (changes) main.append(changes);
     }
@@ -3729,6 +3783,7 @@ button.count-toggle {
       parent: actorKey()
     };
     state.units.push(created);
+    setUnitReportStatus(created.code, UNIT_STATUS_DEMO[(state.units.length - 1) % UNIT_STATUS_DEMO.length]);
     var doc = emptyUnitReport(created);
     bundles[created.code] = {
       edits: { people: {}, machines: {} },
@@ -3832,6 +3887,11 @@ button.count-toggle {
     }
     if (event.target.id === "profile-overlay") {
       closeProfile();
+      return;
+    }
+    var syncDrive = event.target.closest("[data-sync-drive]");
+    if (syncDrive) {
+      startDriveSync();
       return;
     }
     var openProfile = event.target.closest("[data-open-profile]");
@@ -3988,6 +4048,18 @@ button.count-toggle {
       }
       return;
     }
+    var mergeUnit = event.target.closest("[data-merge-unit]");
+    if (mergeUnit) {
+      setUnitReportStatus(mergeUnit.getAttribute("data-merge-unit"), "merged");
+      save();
+      render();
+      return;
+    }
+    var openUnit = event.target.closest("[data-open-unit]");
+    if (openUnit) {
+      applyCode(openUnit.getAttribute("data-open-unit"));
+      return;
+    }
     var use = event.target.closest("[data-use-code]");
     if (use) {
       applyCode(use.getAttribute("data-use-code"));
@@ -4044,18 +4116,6 @@ button.count-toggle {
     var driveForm = event.target.closest("#drive-form");
     if (driveForm) {
       event.preventDefault();
-      var folder = document.getElementById("drive-folder");
-      state.driveFolder = folder ? String(folder.value || "").trim().slice(0, 240) : "";
-      state.driveClient = DRIVE_CLIENT;
-      var folderId = driveFolderId(state.driveFolder);
-      if (!folderId) {
-        state.driveNote = "Встав посилання на теку.";
-        render();
-        return;
-      }
-      state.driveNote = "Відкриваю вікно Google.";
-      render();
-      sendReport(DRIVE_CLIENT, folderId);
       return;
     }
     var unitForm = event.target.closest("#unit-form");
@@ -4064,10 +4124,6 @@ button.count-toggle {
       createUnit(unitForm.querySelector("#unit-name").value);
       return;
     }
-    var form = event.target.closest("#code-form");
-    if (!form) return;
-    event.preventDefault();
-    applyCode(form.querySelector("#code").value);
   }
 
   function onChange(event) {
@@ -4101,6 +4157,17 @@ button.count-toggle {
       state.sectionForDraft = node.value.slice(0, 40);
       return;
     }
+    if (node.id === "drive-folder") {
+      state.driveFolder = String(node.value || "").slice(0, 240);
+      state.driveClient = DRIVE_CLIENT;
+      save();
+      return;
+    }
+    if (node.id === "drive-encrypt-key") {
+      state.driveEncryptKey = String(node.value || "").slice(0, 240);
+      save();
+      return;
+    }
     if (node.id === "status-name") {
       state.statusNameDraft = node.value.slice(0, 80);
       return;
@@ -4122,6 +4189,7 @@ button.count-toggle {
     state.codeDraft = "";
     state.codeError = "";
     state.units = [];
+    state.unitReportStatus = {};
     state.unitNameDraft = "";
     state.unitError = "";
     state.edits = { people: {}, machines: {} };
@@ -4249,12 +4317,7 @@ button.count-toggle {
       }
     }
     function useCode(code) {
-      var box = document.getElementById("code-switch");
-      if (!box) return;
-      var toggle = box.querySelector("[data-pick-toggle]");
-      if (toggle && !box.classList.contains("is-open")) toggle.click();
-      var opt = box.querySelector("[data-pick-value='" + code + "']");
-      if (opt) opt.click();
+      applyCode(code);
     }
     function chooseStatus(id) {
       var list = document.getElementById("status-list");
@@ -4290,45 +4353,50 @@ button.count-toggle {
     check(state.reportSource === "zvit-1rota.json" && state.sampleReport && state.sampleReport.code === "1rota" && state.sampleReport.machines.length === 8, "звіт роти з файлу zvit-1rota.json");
     var pageScript = "";
     document.querySelectorAll("script").forEach(function (node) { pageScript += node.textContent || ""; });
-    check(!document.querySelector('link[rel="manifest"]') && !document.querySelector('link[rel="apple-touch-icon"]') && !document.querySelector('meta[name="apple-mobile-web-app-capable"]') && !document.querySelector('meta[name="mobile-web-app-capable"]'), "немає встановлення на екран");
-    check(pageScript.indexOf("service" + "Worker") === -1, "немає реєстрації робітника");
+    var manifestLink = document.querySelector('link[rel="manifest"]');
+    check(!!manifestLink && /manifest\.webmanifest/i.test(manifestLink.getAttribute("href") || ""), "є посилання на manifest");
+    check(!!document.querySelector('meta[name="theme-color"]'), "є theme-color");
+    check(pageScript.indexOf("service" + "Worker") !== -1 && pageScript.indexOf("sw.js") !== -1, "є реєстрація робітника");
     var sampleFile = readSiblingJson("zvit-1rota.json");
     check(sampleFile && sampleFile.machines && sampleFile.machines.length === 8 && JSON.stringify(sampleFile).indexOf("Бондар") !== -1, "файл роти читається поруч зі сторінкою");
-    var openCode = document.getElementById("open-code");
-    var codeSwitch = document.getElementById("code-switch");
-    check(openCode && codeSwitch && codeSwitch.tagName !== "SELECT" && !codeSwitch.closest("details") && !document.querySelector(".samples") && !document.querySelector(".code-picks") && !document.querySelector(".code-pick") && document.getElementById("app").textContent.indexOf("Профільні розділи") === -1, "відкритий код одним списком без профільних розділів");
-    check(codeSwitch && codeSwitch.getAttribute("data-value") === "sluzhba" && openCode.textContent.indexOf("Служба") !== -1 && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1, "на старті відкрита служба без підпису ролі");
-    check(codeSwitch.querySelectorAll(".code-pick, [data-use-code]").length === 0 && codeSwitch.querySelectorAll("[data-pick-value]").length === 0, "закритий список без ряду кнопок");
+    check(!document.getElementById("code-switch") && !document.getElementById("code-form") && !document.getElementById("code") && !document.getElementById("open-code") && document.getElementById("app").textContent.indexOf("Код розділу") === -1 && document.getElementById("app").textContent.indexOf("Профільні розділи") === -1 && !document.querySelector(".samples") && !document.querySelector(".code-picks") && !document.querySelector(".code-pick"), "немає коду розділу і перемикача служби");
+    check(state.openCode === "sluzhba" && state.holder === "Служба" && !document.getElementById("subordinates") && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1, "на старті відкрита служба без підпису ролі");
     checkWorkWidth("служба");
-    var codeNext = document.getElementById("code");
-    var codeTop = codeNext.offsetTop;
-    var headerEl = document.querySelector("header");
-    var headerH = headerEl.scrollHeight;
-    var pageH = document.documentElement.scrollHeight;
-    codeSwitch.querySelector("[data-pick-toggle]").click();
-    var codeList = codeSwitch.querySelector(".pick-list");
-    check(codeSwitch.tagName !== "SELECT" && codeNext.offsetTop === codeTop && headerEl.scrollHeight === headerH && document.documentElement.scrollHeight === pageH && codeList && (layerPos(codeList) === "fixed" || layerPos(codeList) === "absolute"), "список коду поверх, без зсуву поля");
-    checkWorkWidth("список кодів");
-    check(motionOn(codeList), "список розкривається плавно");
-    document.getElementById("main").click();
-    check(!codeSwitch.classList.contains("is-open"), "дотик поза списком закриває код");
-    codeSwitch.querySelector("[data-pick-toggle]").click();
-    check(codeSwitch.classList.contains("is-open") && document.getElementById("app").contains(codeSwitch.querySelector(".pick-list")) && document.getElementById("app").textContent.indexOf("Служба") !== -1 && document.getElementById("app").textContent.indexOf("1rota") !== -1, "відкритий список містить службу і 1rota");
-    check(codeSwitch.textContent.indexOf("Усі три розділи") !== -1 && codeSwitch.textContent.indexOf("Лише військовослужбовці") !== -1 && codeSwitch.textContent.indexOf("Лише техніка") !== -1 && codeSwitch.textContent.indexOf("Лише завдання") !== -1, "у списку короткі назви кодів");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("unit-create") && !document.getElementById("status-create") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "служба бачить звіт без форм");
     document.querySelector("[data-open-profile]").click();
     check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && !document.getElementById("main").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("section-access").textContent.indexOf("Доступ до розділу") !== -1 && document.getElementById("section-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі видає ключ, створює ланку і бачить архів");
+    var driveBlock = document.getElementById("drive");
+    check(!!driveBlock && driveBlock.textContent.indexOf("Web-адреса спільної папки для обміну") !== -1 && driveBlock.textContent.indexOf("Ключ шифрування звіт") !== -1, "у профілі адреса папки і ключ шифрування");
+    check(driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Посилання на теку") === -1 && driveBlock.textContent.indexOf("Здати") === -1 && !document.querySelector("#drive-form button"), "немає заголовка Диск, старого підпису і кнопки Здати");
+    check(!!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key"), "поля адреси і ключа");
+    document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
+    document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("drive-encrypt-key").value = "секрет";
+    document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і ключ зберігаються при введенні");
+    document.getElementById("drive-encrypt-key").value = "";
+    document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("drive-folder").value = "";
+    document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
     checkWorkWidth("профіль служби");
     document.querySelector("[data-close-profile]").click();
     check(!!document.querySelector("header .title-row [data-open-profile]"), "профіль у рядку назви");
+    var syncTitle = document.querySelector("header .title-row h1[data-sync-drive]");
+    check(!!syncTitle && syncTitle.getAttribute("aria-label") === "Синхронізація", "назва клікабельна для синхронізації");
+    state.driveFolder = "";
+    state.driveNote = "";
+    syncTitle.click();
+    check(state.profile && state.driveNote.indexOf("web-адресу") === -1 && state.driveNote.indexOf("Встав") === -1, "клік по назві без адреси без техпідпису");
+    document.querySelector("[data-close-profile]").click();
+    state.driveNote = "";
     var emptyChanges = document.getElementById("changes");
     check(emptyChanges && emptyChanges.textContent.indexOf("Змін ще немає") !== -1 && emptyChanges.textContent.indexOf("Що змінено") === -1, "порожній рядок змін");
     check(emptyChanges.offsetTop < document.getElementById("tasks").offsetTop, "порожній рядок над завданнями");
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
     check(!document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
-    check(document.getElementById("code-switch").getAttribute("data-value") === "1rota" && document.getElementById("open-code").textContent.indexOf("Усі три розділи") !== -1, "після дотику 1rota вибрано");
-    check(document.getElementById("code-switch").getAttribute("data-value") !== "sluzhba", "служба не лишається вибраною");
+    check(state.openCode === "1rota" && state.scope === "all", "після дотику 1rota вибрано");
+    check(state.openCode !== "sluzhba", "служба не лишається вибраною");
     check(!document.getElementById("status-create"), "рота не додає статус");
     check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1, "після 1rota знову порожній рядок");
     checkWorkWidth("підрозділ");
@@ -4346,7 +4414,7 @@ button.count-toggle {
     document.querySelector("[data-close-profile]").click();
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
-    check(document.getElementById("code-switch").getAttribute("data-value") === "1rota", "після дотику 1rota вибрано");
+    check(state.openCode === "1rota", "після дотику 1rota вибрано");
     check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1, "після 1rota знову порожній рядок");
     check(peopleFrac.getAttribute("aria-label").indexOf("1 рота") !== -1, "дріб роти");
     check(text("people-title") === "Особовий склад", "назва блоку людей");
@@ -4374,18 +4442,17 @@ button.count-toggle {
     check(document.getElementById("app").textContent.indexOf("ОВТ — озброєння та військова техніка") === -1, "немає розшифровки ОВТ");
     check(document.getElementById("app").textContent.indexOf("окремі рядки") === -1, "немає пояснення завдань");
     check(!text("people").includes("Шевченко"), "імена сховані до розкриття");
-    var form = document.getElementById("code-form");
-    check(form.querySelectorAll("input").length === 1, "на вході лише код");
-    check(!form.textContent.includes("Посада"), "посаду на вході не питають");
+    check(!document.getElementById("code-form") && document.getElementById("app").textContent.indexOf("Код розділу") === -1 && document.getElementById("app").textContent.indexOf("Посада") === -1, "немає поля коду розділу");
     check(!document.getElementById("main").textContent.includes("Новий підрозділ") && !document.getElementById("unit-name"), "на звіті немає нового підрозділу");
     var profileBtn = document.querySelector("header .title-row [data-open-profile]");
     var titleRow = document.querySelector("header .title-row");
     var titleBox = titleRow.querySelector("h1").getBoundingClientRect();
     var profileBox = profileBtn.getBoundingClientRect();
-    var profileMark = profileBtn.querySelector("svg").getBoundingClientRect();
+    var profileMarkNode = profileBtn.querySelector("img") || profileBtn.querySelector("svg");
+    var profileMark = profileMarkNode.getBoundingClientRect();
     var profileCss = getComputedStyle(profileBtn);
     check(titleRow.querySelector("h1").textContent.trim() === "Вістовий" && profileBtn.getAttribute("aria-label") === "Профіль" && profileBox.left >= titleBox.right - 8, "профіль справа від назви");
-    check(profileBox.width >= 44 && profileBox.height >= 44 && profileMark.width >= 34 && profileMark.width <= 40, "розмір профілю");
+    check(profileBox.height >= 40 && profileMark.height >= 40 && profileMark.height <= 44, "розмір профілю");
     check(profileCss.borderTopWidth === "0px" && (profileCss.backgroundColor === "rgba(0, 0, 0, 0)" || profileCss.backgroundColor === "transparent") && profileBtn.textContent.indexOf("Профіль") === -1, "профіль без рамки і підпису");
     profileBtn.click();
     check(document.getElementById("profile-overlay") && !document.getElementById("main").contains(document.getElementById("profile-overlay")), "профіль окремо від звіту");
@@ -4728,14 +4795,13 @@ button.count-toggle {
     check(fracBack && fracBack.getAttribute("data-plus") === "14" && fracBack.getAttribute("data-total") === "18", "плюс у чисельнику");
     check(gearStill && gearStill.getAttribute("data-plus") === "7" && gearStill.getAttribute("data-total") === "8", "7/8 лишається");
     check(DUTY.in.plus && !DUTY.leave.plus && !DUTY.sick.plus && !DUTY.wounded.plus && !DUTY.off.plus && MACHINE_DUTY.in.plus && !MACHINE_DUTY.repair.plus, "у строю плюс, решта мінус");
-    applyCode(state.units[0].code);
-    check(state.scope === "all" && document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "код нового підрозділу відкриває звіт");
-    check(document.getElementById("open-code").textContent.indexOf(state.units[0].name) !== -1 && document.getElementById("open-code").textContent.indexOf(state.units[0].code) !== -1, "довгий код видно зверху");
-    check(document.getElementById("code-switch").getAttribute("data-value") === state.units[0].code, "довгий код вибрано");
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
-    check(document.getElementById("app").textContent.indexOf("1rota") !== -1 && document.getElementById("code-switch").querySelector("[data-pick-value='1rota']") && document.getElementById("code-switch").querySelector("[data-pick-value='" + state.units[0].code + "']"), "довгий код у тому самому списку");
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
-    check(document.getElementById("code-switch").getAttribute("data-value") !== "1rota", "1rota не вибрано разом із довгим кодом");
+    applyCode("sluzhba");
+    check(!!document.getElementById("subordinates") && document.getElementById("subordinates").textContent.indexOf(state.units[0].name) !== -1, "підлеглий у списку служби");
+    var openFromList = document.querySelector("#subordinates [data-open-unit='" + state.units[0].code + "']");
+    check(!!openFromList, "рядок підлеглого клікабельний");
+    openFromList.click();
+    check(state.scope === "all" && state.openCode === state.units[0].code && document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "код нового підрозділу відкриває звіт");
+    check(state.holder === state.units[0].name, "відкрито звіт підлеглого");
     check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1 && document.getElementById("changes").offsetTop < document.getElementById("tasks").offsetTop, "у нового підрозділу свій порожній журнал");
     var emptyPeople = document.querySelector("#people .frac");
     var emptyGear = document.querySelector("#equipment .frac");
@@ -4772,9 +4838,9 @@ button.count-toggle {
     var keyA = state.sectionKeys[0].code;
     var keyB = state.sectionKeys[1].code;
     var keyC = state.sectionKeys[2].code;
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
-    check(!!document.querySelector("#code-switch [data-pick-value='" + keyA + "']") && !!document.querySelector("#code-switch [data-pick-value='" + keyB + "']") && !!document.querySelector("#code-switch [data-pick-value='" + keyC + "']"), "ключі розділу в списку кодів");
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
+    document.querySelector("[data-open-profile]").click();
+    check(!!document.querySelector("#profile-overlay [data-use-code='" + keyA + "']") && !!document.querySelector("#profile-overlay [data-use-code='" + keyB + "']") && !!document.querySelector("#profile-overlay [data-use-code='" + keyC + "']"), "ключі розділу в профілі");
+    document.querySelector("[data-close-profile]").click();
     applyCode(keyA);
     check(!document.getElementById("people") && document.getElementById("equipment") && !document.getElementById("tasks") && !document.getElementById("section-access"), "вузький ключ лише техніка і без видачі");
     check(document.querySelector("#equipment .frac").getAttribute("data-total") === "0", "вузький ключ не читає 7/8");
@@ -4807,15 +4873,42 @@ button.count-toggle {
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var grandUnit = state.units[2];
     check(grandUnit && grandUnit.parent === childUnit.code && grandUnit.name === "Група" && emptyUnitReport(grandUnit).file !== SAMPLE_FILE && emptyUnitReport(grandUnit).machines.length === 0, "ще нижча ланка теж порожня");
+    check(!!document.querySelector("#profile-overlay [data-use-code='" + grandUnit.code + "']"), "код нижчої ланки в профілі");
     document.querySelector("[data-close-profile]").click();
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
-    check(!!document.querySelector("#code-switch [data-pick-value='" + childUnit.code + "']") && !!document.querySelector("#code-switch [data-pick-value='" + grandUnit.code + "']"), "коди нижчих ланок у шапці");
-    document.getElementById("code-switch").querySelector("[data-pick-toggle]").click();
+    applyCode(state.units[0].code);
+    check(!!document.getElementById("subordinates") && !!document.querySelector("#subordinates [data-open-unit='" + childUnit.code + "']"), "підлегла ланка в списку");
     applyCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && document.querySelector("#people .frac").getAttribute("data-total") === "18", "вищий код як і раніше бачить розділ");
     applyCode(state.units[0].code);
     applyCode("sluzhba");
-    check(document.getElementById("code-switch").getAttribute("data-value") === "sluzhba" && document.getElementById("open-code").textContent.indexOf("Служба") !== -1 && !document.getElementById("main").textContent.includes("Новий підрозділ"), "служба знову відкрита без форми на звіті");
+    check(state.openCode === "sluzhba" && state.holder === "Служба" && !document.getElementById("main").textContent.includes("Новий підрозділ") && !!document.getElementById("subordinates"), "служба знову відкрита без форми на звіті");
+    document.querySelector("[data-open-profile]").click();
+    document.getElementById("unit-name").value = "Друга";
+    document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.getElementById("unit-name").value = "Третя";
+    document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    var second = state.units.filter(function (unit) { return unit.name === "Друга" && unit.parent === "sluzhba"; })[0];
+    var third = state.units.filter(function (unit) { return unit.name === "Третя" && unit.parent === "sluzhba"; })[0];
+    setUnitReportStatus(state.units[0].code, "received");
+    setUnitReportStatus(second.code, "missing");
+    setUnitReportStatus(third.code, "merged");
+    document.querySelector("[data-close-profile]").click();
+    var subBlock = document.getElementById("subordinates");
+    var receivedMark = document.querySelector("#subordinates [data-unit-status='" + state.units[0].code + "']");
+    var missingMark = document.querySelector("#subordinates [data-unit-status='" + second.code + "']");
+    var mergedMark = document.querySelector("#subordinates [data-unit-status='" + third.code + "']");
+    check(subBlock && subBlock.textContent.indexOf("Підлеглі") !== -1 && subBlock.textContent.indexOf("Служба") === -1, "список підлеглих без служби");
+    check(receivedMark && receivedMark.textContent === "Звіт отримано" && receivedMark.classList.contains("is-received"), "статус отримано");
+    check(missingMark && missingMark.textContent === "Відсутній звіт" && missingMark.classList.contains("is-missing"), "статус відсутній");
+    check(mergedMark && mergedMark.textContent === "Додано у загальний звіт" && mergedMark.classList.contains("is-merged"), "статус додано");
+    var clayColor = getComputedStyle(receivedMark).color;
+    var redColor = getComputedStyle(missingMark).color;
+    var greenColor = getComputedStyle(mergedMark).color;
+    check(clayColor !== redColor && clayColor !== greenColor && redColor !== greenColor, "три різні кольори статусів");
+    var mergeBtn = document.querySelector("#subordinates [data-merge-unit='" + state.units[0].code + "']");
+    check(!!mergeBtn && mergeBtn.textContent === "Додано у загальний звіт", "дія додати у загальний звіт");
+    mergeBtn.click();
+    check(unitReportStatus(state.units[0].code) === "merged" && document.querySelector("#subordinates [data-unit-status='" + state.units[0].code + "']").classList.contains("is-merged") && !document.querySelector("#subordinates [data-merge-unit='" + state.units[0].code + "']"), "після дії статус додано");
     document.querySelector("[data-open-profile]").click();
     document.querySelector("[data-profile-pane='people']").click();
     var statusName = document.getElementById("status-name");
@@ -5215,6 +5308,13 @@ button.count-toggle {
     indexPeople(viewUnit());
     load();
     root.addEventListener("click", onClick);
+    root.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      var syncDrive = event.target.closest("[data-sync-drive]");
+      if (!syncDrive) return;
+      event.preventDefault();
+      startDriveSync();
+    });
     root.addEventListener("submit", onSubmit);
     root.addEventListener("change", onChange);
     root.addEventListener("input", onInput);
@@ -5234,6 +5334,9 @@ button.count-toggle {
     else if (codeFromHash()) applyCode(codeFromHash());
     else render();
     if (params.get("test") === "1") runSelfTest();
+    if ((location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1") && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(function () {});
+    }
   }
 
   var api = {
