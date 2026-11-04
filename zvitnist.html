@@ -635,6 +635,25 @@ button.count-toggle {
 .unit-create .label,
 .archive .label { display: block; margin-top: 8px; font-weight: 700; }
 
+.drive-folder-open {
+  display: block;
+  width: auto;
+  min-height: 0;
+  margin: 6px 0 0;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.drive-folder-open:active { background: transparent; opacity: 0.75; }
+
 .section-access .label { display: block; margin-top: 8px; }
 
 .section-access input.for-whom {
@@ -1129,6 +1148,7 @@ button.count-toggle {
     driveLinked: false,
     driveFolder: "",
     driveEncryptKey: "",
+    driveFolderOpen: false,
     settingsFolderAdmin: false,
     settingsFolderAdminHash: "",
     driveClient: "",
@@ -1264,6 +1284,220 @@ button.count-toggle {
 
   function localAdminKeyHash() {
     return keyFingerprint(state.driveEncryptKey);
+  }
+
+  function toBase64Url(bytes) {
+    var bin = "";
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  function fromBase64Url(text) {
+    var raw = String(text || "").replace(/-/g, "+").replace(/_/g, "/");
+    while (raw.length % 4) raw += "=";
+    var bin = atob(raw);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function folderIdFromLink(link) {
+    return driveFolderId(link);
+  }
+
+  function folderLinkFromId(folderId) {
+    var id = String(folderId || "").trim();
+    if (!id) return "";
+    return "https://drive.google.com/drive/folders/" + id;
+  }
+
+  // Упаковка Вістового: vs1. + base64url(тека\\nкод)
+  function packInvite(folderId, code) {
+    var id = String(folderId || "").trim();
+    var pass = String(code || "").trim();
+    if (!id || !pass) return pass;
+    var bytes = new TextEncoder().encode(id + "\n" + pass);
+    return "vs1." + toBase64Url(bytes);
+  }
+
+  function parseAccessCode(raw) {
+    var typed = String(raw || "").trim();
+    if (!typed) return { invite: false, folderId: "", code: "" };
+    if (typed.indexOf("vs1.") === 0) {
+      try {
+        var decoded = new TextDecoder().decode(fromBase64Url(typed.slice(4)));
+        var cut = decoded.indexOf("\n");
+        if (cut > 0) {
+          return {
+            invite: true,
+            folderId: decoded.slice(0, cut).trim(),
+            code: decoded.slice(cut + 1).trim()
+          };
+        }
+      } catch (err) {}
+    }
+    return { invite: false, folderId: "", code: typed };
+  }
+
+  function inviteForCode(code) {
+    var folderId = folderIdFromLink(state.driveFolder);
+    return packInvite(folderId, code);
+  }
+
+  function unitDriveFileName(code) {
+    var hash = keyFingerprint(code);
+    if (!hash) return "";
+    return "vu-" + hash.slice(0, 32) + ".bin";
+  }
+
+  function bytesToArrayBuffer(bytes) {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+
+  function deriveAesKey(password, salt) {
+    return crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(String(password || "")),
+      "PBKDF2",
+      false,
+      ["deriveKey"]
+    ).then(function (baseKey) {
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: salt, iterations: 120000, hash: "SHA-256" },
+        baseKey,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    });
+  }
+
+  function encryptWithCode(password, plainText) {
+    var salt = new Uint8Array(16);
+    var iv = new Uint8Array(12);
+    crypto.getRandomValues(salt);
+    crypto.getRandomValues(iv);
+    return deriveAesKey(password, salt).then(function (key) {
+      return crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv },
+        key,
+        new TextEncoder().encode(String(plainText || ""))
+      ).then(function (cipher) {
+        var sealed = new Uint8Array(4 + salt.length + iv.length + cipher.byteLength);
+        sealed[0] = 118; // v
+        sealed[1] = 117; // u
+        sealed[2] = 1;   // version
+        sealed[3] = 1;
+        sealed.set(salt, 4);
+        sealed.set(iv, 20);
+        sealed.set(new Uint8Array(cipher), 32);
+        return sealed;
+      });
+    });
+  }
+
+  function decryptWithCode(password, bytes) {
+    var data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (data.length < 33 || data[0] !== 118 || data[1] !== 117 || data[2] !== 1) {
+      return Promise.reject(new Error("format"));
+    }
+    var salt = data.slice(4, 20);
+    var iv = data.slice(20, 32);
+    var cipher = data.slice(32);
+    return deriveAesKey(password, salt).then(function (key) {
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, cipher).then(function (plain) {
+        return new TextDecoder().decode(plain);
+      });
+    });
+  }
+
+  function currentUnitSnapshot() {
+    var report = state.report || sampleReportDocument();
+    var children = unitsCreatedHere().map(function (unit) {
+      return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+    }).filter(function (item) { return !!item.code; });
+    return {
+      version: 1,
+      name: String(report.name || state.holder || "").slice(0, 80),
+      code: String(state.driveEncryptKey || "").trim(),
+      unit: report.unit || { id: "root", name: "", people: [] },
+      machines: Array.isArray(report.machines) ? report.machines : [],
+      tasks: Array.isArray(report.tasks) ? report.tasks : [],
+      people: Array.isArray(report.people) ? report.people : [],
+      children: children
+    };
+  }
+
+  function applyUnitSnapshot(raw, code) {
+    if (!raw || typeof raw !== "object") return null;
+    var doc = {
+      name: String(raw.name || "").slice(0, 80),
+      code: String(code || raw.code || "").trim(),
+      file: reportFileName(code || raw.code || ""),
+      unit: raw.unit && typeof raw.unit === "object" ? raw.unit : { id: "root", name: String(raw.name || "").slice(0, 80), people: [] },
+      machines: Array.isArray(raw.machines) ? raw.machines : [],
+      tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
+      people: Array.isArray(raw.people) ? raw.people : []
+    };
+    return doc;
+  }
+
+  function mergeChildrenFromSnapshot(raw) {
+    if (!raw || !Array.isArray(raw.children)) return;
+    raw.children.forEach(function (item) {
+      if (!item || !item.code) return;
+      var code = String(item.code).trim();
+      if (!code || findUnitByCode(code)) return;
+      state.units.push({
+        id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36) + Math.floor(Math.random() * 36).toString(36),
+        name: String(item.name || "Підрозділ").slice(0, 80),
+        code: code,
+        parent: actorKey()
+      });
+      if (!state.unitReportStatus[code]) setUnitReportStatus(code, "missing");
+    });
+  }
+
+  function looksLikeUnitCode(code) {
+    return /^[A-HJ-NP-Z0-9]{4}(?:-[A-HJ-NP-Z0-9]{4}){4}$/i.test(String(code || "").trim());
+  }
+
+  function ensureInviteUnit(code, name) {
+    var pass = String(code || "").trim();
+    if (!pass || !looksLikeUnitCode(pass)) return null;
+    var lower = pass.toLowerCase();
+    if (CODES[lower] || lower === "sluzhba") return null;
+    var existing = findUnitByCode(pass);
+    if (existing) {
+      if (name && name !== existing.name) existing.name = String(name).slice(0, 80);
+      return existing;
+    }
+    var created = {
+      id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
+      name: String(name || "Підрозділ").slice(0, 80),
+      code: pass,
+      parent: ""
+    };
+    state.units.push(created);
+    setUnitReportStatus(pass, "received");
+    return created;
+  }
+
+  function applyParsedAccess(parsed) {
+    var code = String(parsed && parsed.code || "").trim();
+    state.driveEncryptKey = code.slice(0, 500);
+    if (parsed && parsed.invite && parsed.folderId) {
+      state.driveFolder = folderLinkFromId(parsed.folderId).slice(0, 240);
+      // Підлеглий з довгим кодом ланки — відкрити цю ланку. Звичайний пароль адміна роль не чіпає.
+      var unit = ensureInviteUnit(code, "");
+      if (unit) {
+        state.scope = "all";
+        state.openCode = unit.code;
+        state.holder = unit.name;
+        state.reportRoot = unit.code;
+        activateReport(unit.code);
+      }
+    }
   }
 
   function rememberSettingsAdmin(raw) {
@@ -1957,7 +2191,28 @@ button.count-toggle {
       var data = JSON.parse(raw);
       if (!data || typeof data !== "object") return;
       if (typeof data.driveFolder === "string") state.driveFolder = data.driveFolder.slice(0, 240);
-      if (typeof data.driveEncryptKey === "string") state.driveEncryptKey = data.driveEncryptKey.slice(0, 240);
+      if (typeof data.driveEncryptKey === "string") state.driveEncryptKey = data.driveEncryptKey.slice(0, 500);
+      if (Array.isArray(data.units)) {
+        var nextUnits = [];
+        data.units.forEach(function (item) {
+          if (!item || typeof item.code !== "string" || !item.code.trim()) return;
+          nextUnits.push({
+            id: String(item.id || ("u" + nextUnits.length)).slice(0, 40),
+            name: String(item.name || "Підрозділ").slice(0, 80),
+            code: String(item.code).trim().slice(0, 80),
+            parent: String(item.parent || "").slice(0, 80)
+          });
+        });
+        state.units = nextUnits;
+      }
+      if (data.unitReportStatus && typeof data.unitReportStatus === "object") {
+        var nextStatus = {};
+        Object.keys(data.unitReportStatus).forEach(function (key) {
+          var value = data.unitReportStatus[key];
+          if (value === "received" || value === "missing" || value === "merged") nextStatus[key] = value;
+        });
+        state.unitReportStatus = nextStatus;
+      }
     } catch (err) {}
   }
 
@@ -1966,7 +2221,16 @@ button.count-toggle {
       if (typeof localStorage === "undefined") return;
       localStorage.setItem(DRIVE_KEY, JSON.stringify({
         driveFolder: String(state.driveFolder || "").slice(0, 240),
-        driveEncryptKey: String(state.driveEncryptKey || "").slice(0, 240)
+        driveEncryptKey: String(state.driveEncryptKey || "").slice(0, 500),
+        units: state.units.map(function (unit) {
+          return {
+            id: String(unit.id || "").slice(0, 40),
+            name: String(unit.name || "").slice(0, 80),
+            code: String(unit.code || "").slice(0, 80),
+            parent: String(unit.parent || "").slice(0, 80)
+          };
+        }),
+        unitReportStatus: state.unitReportStatus || {}
       }));
     } catch (err) {}
   }
@@ -3194,16 +3458,43 @@ button.count-toggle {
     });
   }
 
-  function putReport(token, folderId) {
-    var name = Date.now().toString(36) + ".bin";
-    var key = String(state.driveEncryptKey || "").trim();
-    // Нема ключа = без шифру. З ключем — заглушка (реальне шифрування пізніше).
-    var bytes;
-    if (!key) {
-      bytes = new TextEncoder().encode("report");
-    } else {
-      bytes = new Uint8Array(32);
-      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+  function findNamedFile(token, folderId, name) {
+    var q = encodeURIComponent("'" + folderId + "' in parents and name='" + name.replace(/'/g, "\\'") + "' and trashed=false");
+    return fetch("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,name)&pageSize=1", {
+      headers: driveAuthHeaders(token)
+    }).then(function (response) {
+      return response.json().then(function (data) {
+        if (!response.ok) throw new Error("list");
+        var files = data && data.files ? data.files : [];
+        return files[0] || null;
+      });
+    });
+  }
+
+  function downloadBinaryFile(token, fileId) {
+    return fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?alt=media", {
+      headers: driveAuthHeaders(token)
+    }).then(function (response) {
+      if (!response.ok) throw new Error("download");
+      return response.arrayBuffer().then(function (buf) {
+        return new Uint8Array(buf);
+      });
+    });
+  }
+
+  function uploadBinaryFile(token, folderId, name, bytes, existingId) {
+    if (existingId) {
+      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media", {
+        method: "PATCH",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/octet-stream"
+        },
+        body: bytes
+      }).then(function (response) {
+        if (!response.ok) throw new Error("update");
+        return { ok: true, id: existingId, name: name, updated: true };
+      });
     }
     var boundary = "vistovyi" + Date.now().toString(36);
     var body = new Blob([
@@ -3222,13 +3513,110 @@ button.count-toggle {
       body: body
     }).then(function (response) {
       return response.json().then(function (data) {
-        return { ok: response.ok, data: data, name: name };
+        if (!response.ok) throw new Error("create");
+        return { ok: true, id: data.id, name: name, updated: false };
       });
     });
   }
 
+  function upsertOwnUnitFile(token, folderId) {
+    var key = String(state.driveEncryptKey || "").trim();
+    if (!key) return Promise.reject(new Error("nocode"));
+    var name = unitDriveFileName(key);
+    if (!name) return Promise.reject(new Error("nocode"));
+    var payload = JSON.stringify(currentUnitSnapshot());
+    return encryptWithCode(key, payload).then(function (bytes) {
+      return findNamedFile(token, folderId, name).then(function (file) {
+        return uploadBinaryFile(token, folderId, name, bytes, file && file.id).then(function (result) {
+          return { ok: true, name: name, updated: !!(result && result.updated) };
+        });
+      });
+    });
+  }
+
+  function ingestChildUnit(code, rawJson) {
+    var doc = applyUnitSnapshot(rawJson, code);
+    if (!doc) return false;
+    var unit = findUnitByCode(code);
+    if (unit && doc.name) unit.name = doc.name;
+    bundles[code] = {
+      edits: { people: {}, machines: {} },
+      removed: { people: {}, machines: {} },
+      added: { people: [], machines: [] },
+      positions: {},
+      changes: [],
+      report: doc
+    };
+    if (String(state.reportKey || "") === String(code)) state.report = doc;
+    setUnitReportStatus(code, "received");
+    return true;
+  }
+
+  function syncChildUnits(token, folderId) {
+    var list = unitsCreatedHere();
+    if (!list.length) return Promise.resolve({ received: 0, missing: 0 });
+    var received = 0;
+    var missing = 0;
+    var chain = Promise.resolve();
+    list.forEach(function (unit) {
+      chain = chain.then(function () {
+        var name = unitDriveFileName(unit.code);
+        if (!name) {
+          missing += 1;
+          setUnitReportStatus(unit.code, "missing");
+          return;
+        }
+        return findNamedFile(token, folderId, name).then(function (file) {
+          if (!file) {
+            missing += 1;
+            setUnitReportStatus(unit.code, "missing");
+            return;
+          }
+          return downloadBinaryFile(token, file.id).then(function (bytes) {
+            return decryptWithCode(unit.code, bytes).then(function (text) {
+              var raw = JSON.parse(text);
+              if (ingestChildUnit(unit.code, raw)) received += 1;
+              else {
+                missing += 1;
+                setUnitReportStatus(unit.code, "missing");
+              }
+            });
+          });
+        }).catch(function () {
+          missing += 1;
+          setUnitReportStatus(unit.code, "missing");
+        });
+      });
+    });
+    return chain.then(function () {
+      return { received: received, missing: missing };
+    });
+  }
+
+  function driveSyncSummary(settings, own, children) {
+    var parts = [];
+    if (settings && settings.wroteSettings) parts.push("довідники записано");
+    else if (settings && settings.readSettings) parts.push("довідники прочитано");
+    if (own && own.updated) parts.push("свій файл оновлено");
+    else if (own && own.ok) parts.push("свій файл записано");
+    var received = children && children.received ? children.received : 0;
+    var missing = children && children.missing ? children.missing : 0;
+    if (received || missing) {
+      parts.push("нижчих: " + received + " отримано" + (missing ? ", " + missing + " відсутні" : ""));
+    } else if (unitsCreatedHere().length === 0) {
+      parts.push("нижчих ланок ще немає");
+    }
+    return parts.length ? parts.join(". ") + "." : "Синхронізацію завершено.";
+  }
+
   function runDriveSync(token, folderId) {
-    state.driveNote = "Синхронізую налаштування.";
+    var key = String(state.driveEncryptKey || "").trim();
+    if (!key) {
+      state.driveNote = "Впишіть код доступу.";
+      render();
+      return;
+    }
+    state.driveNote = "Синхронізую довідники.";
     render();
     findSettingsFile(token, folderId).then(function (file) {
       var prepare = file
@@ -3239,7 +3627,6 @@ button.count-toggle {
         : Promise.resolve({ file: null, json: null });
       return prepare.then(function (info) {
         if (canWriteDriveSettings()) {
-          // Адмін теки (відбиток ключа) викладає локальні довідники. Нижчі лише читають.
           return uploadSettingsFile(token, folderId, info.file && info.file.id).then(function () {
             rememberSettingsAdmin(buildSettingsPayload());
             return { wroteSettings: true, readSettings: false };
@@ -3252,24 +3639,28 @@ button.count-toggle {
         return { wroteSettings: false, readSettings: false };
       });
     }).then(function (settingsResult) {
-      return putReport(token, folderId).then(function (result) {
-        return { settings: settingsResult || {}, report: result };
+      state.driveNote = "Пишу файл підрозділу.";
+      render();
+      return upsertOwnUnitFile(token, folderId).then(function (own) {
+        return { settings: settingsResult || {}, own: own };
       });
     }).then(function (bundle) {
-      var result = bundle.report;
-      if (!result || !result.ok) {
-        state.driveNote = "Google не прийняв файл.";
-      } else {
-        state.driveQueue.push({ name: result.name, folder: folderId, at: new Date().toISOString() });
-        state.driveLinked = true;
-        if (bundle.settings && bundle.settings.wroteSettings) state.driveNote = "Налаштування і файл у теці.";
-        else if (bundle.settings && bundle.settings.readSettings) state.driveNote = "Налаштування прочитано. Файл у теці.";
-        else state.driveNote = "Файл у теці.";
+      state.driveNote = "Читаю звіти нижчих ланок.";
+      render();
+      return syncChildUnits(token, folderId).then(function (children) {
+        return { settings: bundle.settings, own: bundle.own, children: children };
+      });
+    }).then(function (bundle) {
+      if (bundle.own && bundle.own.name) {
+        state.driveQueue.push({ name: bundle.own.name, folder: folderId, at: new Date().toISOString() });
       }
+      state.driveLinked = true;
+      state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children);
       save();
       render();
-    }).catch(function () {
-      state.driveNote = "Мережа не відповіла.";
+    }).catch(function (err) {
+      if (err && err.message === "nocode") state.driveNote = "Впишіть код доступу.";
+      else state.driveNote = "Мережа не відповіла або файл не розшифрувався.";
       render();
     });
   }
@@ -3317,13 +3708,31 @@ button.count-toggle {
     sendReport(DRIVE_CLIENT, folderId);
   }
 
+  function renderDriveFolderOverlay() {
+    var overlay = el("div", { className: "overlay", attrs: { id: "drive-folder-overlay", role: "dialog", "aria-label": "Адреса спільної папки" } });
+    var sheet = el("div", { className: "overlay-sheet" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "data-close-drive-folder": "1" } }));
+    sheet.append(el("h2", { text: "Web-адреса спільної папки" }));
+    var form = el("form", { attrs: { id: "drive-folder-form" } });
+    form.append(el("label", { className: "label", text: "Web-адреса спільної папки", attrs: { for: "drive-folder" } }));
+    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
+    form.append(el("button", { text: "Готово", attrs: { type: "submit" } }));
+    form.append(el("button", { className: "drive-folder-open", text: "Закрити", attrs: { type: "button", "data-close-drive-folder": "1" } }));
+    sheet.append(form);
+    overlay.append(sheet);
+    return overlay;
+  }
+
   function renderDrive() {
     var section = el("section", { className: "block unit-create", attrs: { id: "drive", "aria-label": "Обмін" } });
     var form = el("form", { attrs: { id: "drive-form" } });
-    form.append(el("label", { className: "label", text: "Web-адреса спільної папки для обміну", attrs: { for: "drive-folder" } }));
-    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
-    form.append(el("label", { className: "label", text: "Ключ шифрування звіт", attrs: { for: "drive-encrypt-key" } }));
-    form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "240", placeholder: "Ключ" }));
+    form.append(el("label", { className: "label", text: "Код доступу", attrs: { for: "drive-encrypt-key" } }));
+    form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "500", placeholder: "Код доступу" }));
+    form.append(el("button", {
+      className: "drive-folder-open",
+      text: "Адреса спільної папки",
+      attrs: { type: "button", "data-open-drive-folder": "1" }
+    }));
     form.append(el("button", { text: "Зберегти", attrs: { type: "submit" } }));
     section.append(form);
     state.driveQueue.forEach(function (item) {
@@ -3350,7 +3759,7 @@ button.count-toggle {
       row.append(el("div", { className: "label", text: unit.name }));
       row.append(el("div", { className: "label", text: "Код" }));
       row.append(el("p", { className: "code-line", text: unit.code, attrs: { "data-unit-code": unit.code, "data-use-code": unit.code, role: "button", tabindex: "0" } }));
-      row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": unit.code } }));
+      row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": inviteForCode(unit.code) } }));
       section.append(row);
     });
     if (state.fileNote) section.append(el("p", { className: "hint", text: "Збережіть файл звіту поряд із цією сторінкою." }));
@@ -3661,6 +4070,7 @@ button.count-toggle {
     main.append(renderGlossary());
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
+    if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
     if (pendingScroll) {
@@ -4430,6 +4840,23 @@ button.count-toggle {
       closeProfile();
       return;
     }
+    if (event.target.id === "drive-folder-overlay") {
+      state.driveFolderOpen = false;
+      render();
+      return;
+    }
+    var openDriveFolder = event.target.closest("[data-open-drive-folder]");
+    if (openDriveFolder) {
+      state.driveFolderOpen = true;
+      render();
+      return;
+    }
+    var closeDriveFolder = event.target.closest("[data-close-drive-folder]");
+    if (closeDriveFolder) {
+      state.driveFolderOpen = false;
+      render();
+      return;
+    }
     var syncDrive = event.target.closest("[data-sync-drive]");
     if (syncDrive) {
       startDriveSync();
@@ -4694,14 +5121,29 @@ button.count-toggle {
       issueSectionKey(sectionPick ? sectionPick.getAttribute("data-value") : "", sectionWho ? sectionWho.value : "");
       return;
     }
+    var driveFolderForm = event.target.closest("#drive-folder-form");
+    if (driveFolderForm) {
+      event.preventDefault();
+      var folderOnly = driveFolderForm.querySelector("#drive-folder");
+      state.driveFolder = String(folderOnly && folderOnly.value || "").slice(0, 240);
+      state.driveFolderOpen = false;
+      state.driveClient = DRIVE_CLIENT;
+      save();
+      render();
+      return;
+    }
     var driveForm = event.target.closest("#drive-form");
     if (driveForm) {
       event.preventDefault();
-      var folderField = driveForm.querySelector("#drive-folder");
       var keyField = driveForm.querySelector("#drive-encrypt-key");
-      state.driveFolder = String(folderField && folderField.value || "").slice(0, 240);
-      state.driveEncryptKey = String(keyField && keyField.value || "").slice(0, 240);
+      var parsed = parseAccessCode(keyField && keyField.value || "");
+      applyParsedAccess(parsed);
+      // Якщо звичайний пароль — теку беремо з уже збереженої адреси (вікно папки).
+      if (!parsed.invite) {
+        state.driveEncryptKey = String(parsed.code || "").slice(0, 500);
+      }
       state.driveClient = DRIVE_CLIENT;
+      state.driveFolderOpen = false;
       save();
       startDriveSync();
       return;
@@ -4752,7 +5194,7 @@ button.count-toggle {
       return;
     }
     if (node.id === "drive-encrypt-key") {
-      state.driveEncryptKey = String(node.value || "").slice(0, 240);
+      state.driveEncryptKey = String(node.value || "").slice(0, 500);
       save();
       return;
     }
@@ -5010,19 +5452,29 @@ button.count-toggle {
     document.querySelector("[data-open-profile]").click();
     check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && !document.getElementById("main").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("section-access").textContent.indexOf("Доступ до розділу") !== -1 && document.getElementById("section-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі видає ключ, створює ланку і бачить архів");
     var driveBlock = document.getElementById("drive");
-    check(!!driveBlock && driveBlock.textContent.indexOf("Web-адреса спільної папки для обміну") !== -1 && driveBlock.textContent.indexOf("Ключ шифрування звіт") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі адреса папки і ключ без позначки адміна");
-    check(driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Посилання на теку") === -1 && driveBlock.textContent.indexOf("Здати") === -1, "немає заголовка Диск, старого підпису і кнопки Здати");
+    check(!!driveBlock && driveBlock.textContent.indexOf("Код доступу") !== -1 && driveBlock.textContent.indexOf("Адреса спільної папки") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі код доступу і кнопка адреси без позначки адміна");
+    check(driveBlock.textContent.indexOf("Ключ шифрування звіт") === -1 && driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Здати") === -1, "немає старого підпису ключа, Диск і Здати");
+    check(!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "поле адреси сховано, є код доступу");
     var saveDrive = document.querySelector("#drive-form button[type='submit']");
-    check(!!saveDrive && saveDrive.textContent === "Зберегти" && !!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "кнопка Зберегти і поля адреси/ключа без чекбокса адміна");
+    check(!!saveDrive && saveDrive.textContent === "Зберегти", "кнопка Зберегти");
+    document.querySelector("[data-open-drive-folder]").click();
+    check(!!document.getElementById("drive-folder-overlay") && !!document.getElementById("drive-folder") && document.getElementById("drive-folder-overlay").textContent.indexOf("Web-адреса спільної папки") !== -1, "вікно адреси спільної папки");
     document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("drive-folder-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(!document.getElementById("drive-folder-overlay") && state.driveFolder.indexOf("folders/abcTEST123") !== -1, "адреса збережена і вікно закрите");
     var keyField = document.getElementById("drive-encrypt-key");
     keyField.focus();
     keyField.value = "секрет";
     keyField.dispatchEvent(new Event("input", { bubbles: true }));
-    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і ключ зберігаються");
-    check(document.activeElement === document.getElementById("drive-encrypt-key") && document.getElementById("drive-encrypt-key").value === "секрет", "ключ не губить фокус при введенні");
-    check(!!localStorage.getItem("zvitnist.drive.v1") && localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") !== -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") !== -1, "адреса і ключ у пам’яті браузера");
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "адреса і код зберігаються");
+    check(document.activeElement === document.getElementById("drive-encrypt-key") && document.getElementById("drive-encrypt-key").value === "секрет", "код не губить фокус при введенні");
+    check(!!localStorage.getItem("zvitnist.drive.v1") && localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") !== -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") !== -1, "адреса і код у пам’яті браузера");
+    var packed = packInvite("abcTEST123", "секрет");
+    var unpacked = parseAccessCode(packed);
+    check(packed.indexOf("vs1.") === 0 && unpacked.invite && unpacked.folderId === "abcTEST123" && unpacked.code === "секрет", "упаковка і розбір коду-запрошення");
+    check(unitDriveFileName("секрет").indexOf("vu-") === 0 && unitDriveFileName("секрет").indexOf("секрет") === -1 && unitDriveFileName("секрет").slice(-4) === ".bin", "ім’я файлу від відбитка без відкритого коду");
+    check(pageSource.indexOf("toString(36) + " + '".bin"') === -1 && pageSource.indexOf("function " + "putReport") === -1, "немає заглушки випадкового .bin");
     state.driveNote = "";
     window.google = {
       accounts: {
@@ -5037,14 +5489,32 @@ button.count-toggle {
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
     state.driveFolder = "";
     state.driveEncryptKey = "";
+    state.units = [];
     load();
-    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "після reload адреса і ключ відновлюються");
-    state.driveNote = "";
-    document.getElementById("drive-encrypt-key").value = "";
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет", "після reload адреса і код відновлюються");
+    // Запрошення мовчки підставляє теку; короткий пароль роль служби не змінює.
+    document.getElementById("drive-encrypt-key").value = packed;
     document.getElementById("drive-encrypt-key").dispatchEvent(new Event("input", { bubbles: true }));
-    document.getElementById("drive-folder").value = "";
-    document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
-    check(!localStorage.getItem("zvitnist.drive.v1") || (localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") === -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") === -1), "очищені поля не лишають старий ключ");
+    state.driveFolder = "";
+    document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.openCode === "lead", "запрошення витягує теку і код без зміни ролі");
+    var unitInvite = packInvite("abcTEST123", "ABCD-EFGH-JKLM-NPQR-STUV");
+    state.driveFolder = "";
+    document.getElementById("drive-encrypt-key").value = unitInvite;
+    document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "ABCD-EFGH-JKLM-NPQR-STUV" && state.openCode === "ABCD-EFGH-JKLM-NPQR-STUV", "запрошення ланки відкриває підрозділ");
+    state.units = state.units.filter(function (unit) { return unit.code !== "ABCD-EFGH-JKLM-NPQR-STUV"; });
+    delete state.unitReportStatus["ABCD-EFGH-JKLM-NPQR-STUV"];
+    applyCode("lead");
+    state.driveFolder = "";
+    state.driveEncryptKey = "";
+    state.driveNote = "";
+    state.units = [];
+    state.unitReportStatus = {};
+    save();
+    var storedDrive = localStorage.getItem("zvitnist.drive.v1") || "";
+    check(storedDrive.indexOf("abcTEST123") === -1 && storedDrive.indexOf("секрет") === -1, "очищені поля не лишають старий код");
+    document.querySelector("[data-open-profile]").click();
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
     render();
@@ -5296,6 +5766,20 @@ button.count-toggle {
     check(born && born.textContent.length >= 20 && born.textContent.split("-").length === 5, "довгий код на екрані");
     check(document.getElementById("app").textContent.indexOf("Туз") !== -1, "назва підрозділу");
     check(state.units.length === 1 && state.units[0].code === born.textContent, "код збережено");
+    state.driveFolder = "https://drive.google.com/drive/folders/abcTEST123";
+    save();
+    render();
+    document.querySelector("[data-open-profile]").click();
+    var copyBtn = document.querySelector("#profile-overlay .unit-code [data-copy]");
+    var inviteValue = copyBtn ? copyBtn.getAttribute("data-copy") : "";
+    var inviteParsed = parseAccessCode(inviteValue);
+    check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code, "Копіювати дає рядок-запрошення з текою і кодом");
+    var keptCode = state.units[0].code;
+    var keptName = state.units[0].name;
+    state.units = [];
+    load();
+    check(state.units.length === 1 && state.units[0].code === keptCode && state.units[0].name === keptName, "після reload видані ланки відновлюються");
+    document.querySelector("[data-open-profile]").click();
     var builtUnit = emptyUnitReport(state.units[0]);
     var builtPeople = 0;
     (function countBuilt(node) {
@@ -6060,7 +6544,7 @@ button.count-toggle {
     check(settingsPayload.folderAdminKeyHash === keyFingerprint("секрет-адміна"), "відбиток збігається з локальним ключем");
     check(JSON.stringify(settingsPayload).indexOf("секрет-адміна") === -1, "у settings немає самого ключа");
     check(!settingsPayload.types.some(function (item) { return item.id === "other" || item.name === "Інше"; }), "settings без Інше");
-    check(!settingsPayload.reports && !settingsPayload.keys && !settingsPayload.people && !JSON.stringify(settingsPayload).includes("Бондар"), "settings без звітів і персональних даних");
+    check(!settingsPayload.reports && !settingsPayload.keys && !settingsPayload.people && !settingsPayload.units && !JSON.stringify(settingsPayload).includes("Бондар"), "settings без звітів, підрозділів і персональних даних");
     rememberSettingsAdmin(settingsPayload);
     check(state.settingsFolderAdmin && state.settingsFolderAdminHash === settingsPayload.folderAdminKeyHash, "після запису settings пам’ятає адміна");
     applyCode("1rota");
@@ -6092,15 +6576,32 @@ button.count-toggle {
       var sameWidth = workWidths[0];
       check(workWidths.every(function (n) { return n === sameWidth; }), "ширина вікна однакова в усіх станах");
     }
-    var report = el("pre", { attrs: { id: "test-result" } });
-    if (failures.length) {
-      report.textContent = "FAIL\n" + failures.join("\n");
-      document.title = "TEST FAIL";
-    } else {
-      report.textContent = "PASS";
-      document.title = "TEST PASS";
+
+    function finishSelfTest() {
+      var report = el("pre", { attrs: { id: "test-result" } });
+      if (failures.length) {
+        report.textContent = "FAIL\n" + failures.join("\n");
+        document.title = "TEST FAIL";
+      } else {
+        report.textContent = "PASS";
+        document.title = "TEST PASS";
+      }
+      document.body.append(report);
     }
-    document.body.append(report);
+
+    var samplePayload = JSON.stringify({ version: 1, name: "Тест", unit: { id: "root", name: "Тест", people: [] }, machines: [], tasks: [], children: [{ name: "Нижча", code: "AAAA-BBBB-CCCC-DDDD-EEEE" }] });
+    encryptWithCode("секрет-тест", samplePayload).then(function (bytes) {
+      check(bytes && bytes.length > 32 && bytes[0] === 118 && bytes[1] === 117, "шифротекст AES-GCM з заголовком");
+      return decryptWithCode("секрет-тест", bytes).then(function (plain) {
+        var parsed = JSON.parse(plain);
+        check(parsed && parsed.name === "Тест" && parsed.children && parsed.children[0].code.indexOf("AAAA") === 0, "розшифрування повертає о/с структуру і нижчих");
+      });
+    }).then(function () {
+      finishSelfTest();
+    }).catch(function (err) {
+      check(false, "шифрування кодом: " + (err && err.message ? err.message : err));
+      finishSelfTest();
+    });
   }
 
   var gesture = null;
@@ -6231,7 +6732,13 @@ button.count-toggle {
     OTHER_TYPE: OTHER_TYPE,
     resolveMachineTypeId: resolveMachineTypeId,
     canWriteDriveSettings: canWriteDriveSettings,
-    canEditCatalogs: canEditCatalogs
+    canEditCatalogs: canEditCatalogs,
+    packInvite: packInvite,
+    parseAccessCode: parseAccessCode,
+    unitDriveFileName: unitDriveFileName,
+    encryptWithCode: encryptWithCode,
+    decryptWithCode: decryptWithCode,
+    currentUnitSnapshot: currentUnitSnapshot
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
