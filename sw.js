@@ -1,11 +1,10 @@
 /* Вістовий — мінімальний service worker: cache-first для локальних ресурсів сторінки. */
-var CACHE = "vistovyi-v9";
+var CACHE = "vistovyi-v10";
 var PRECACHE = [
   "./zvitnist.html",
   "./manifest.webmanifest",
   "./icon-192.png",
   "./icon-512.png",
-  "./zvit-1rota.json",
   "./sw.js"
 ];
 
@@ -41,7 +40,6 @@ function isAppAsset(url) {
     /\/manifest\.webmanifest$/i.test(path) ||
     /\/sw\.js$/i.test(path) ||
     /\/icon-\d+\.png$/i.test(path) ||
-    /\/zvit-1rota\.json$/i.test(path) ||
     /\/zvit-[^/]+\.json$/i.test(path)
   );
 }

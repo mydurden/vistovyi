@@ -1041,117 +1041,11 @@ button.count-toggle {
     return { id: id, name: name, rank: rank, callsign: callsign, accounting: accounting, duty: duty, position: position };
   }
 
+  // Порожній стартовий звіт: без зашитих людей, техніки, завдань і назви підрозділу.
   var DATA = {
-    unit: {
-      id: "rota",
-      name: "1 рота",
-      children: [
-        {
-          id: "v1",
-          name: "1 взвод",
-          children: [
-            {
-              id: "s1",
-              name: "1 відділення",
-              people: [
-                person("p1", "Бондар Андрій Петрович", "Сержант", "Клен", "official", "in", "Командир відділення"),
-                person("p2", "Коваленко Олег Іванович", "Старший солдат", "Берест", "official", "in", "Сапер"),
-                person("p3", "Шевченко Тарас Григорович", "Солдат", "Дуб", "official", "in", "Стрілець"),
-                person("p4", "Мельник Ігор Васильович", "Солдат", "Сокіл", "unofficial", "in", ""),
-                person("p5", "Ткаченко Юрій Миколайович", "Солдат", "Ворон", "attached", "in", "Стрілець"),
-                person("p6", "Савчук Петро Олексійович", "Солдат", "Лиман", "official", "leave", "Стрілець")
-              ]
-            },
-            {
-              id: "s2",
-              name: "2 відділення",
-              people: [
-                person("p7", "Лисенко Максим Сергійович", "Молодший сержант", "Явір", "official", "in", "Командир відділення"),
-                person("p8", "Гнатюк Василь Романович", "Солдат", "Граніт", "official", "in", "Стрілець"),
-                person("p9", "Поліщук Назар Олегович", "Солдат", "Вітер", "unofficial", "in", "Зв’язківець"),
-                person("p10", "Романюк Богдан Ігорович", "Солдат", "Камінь", "official", "sick", "Стрілець")
-              ]
-            }
-          ]
-        },
-        {
-          id: "v2",
-          name: "2 взвод",
-          children: [
-            {
-              id: "s3",
-              name: "3 відділення",
-              people: [
-                person("p11", "Сидоренко Павло Андрійович", "Сержант", "Галич", "official", "in", "Командир відділення"),
-                person("p12", "Марчук Олексій Вікторович", "Солдат", "Шпак", "official", "in", "Стрілець"),
-                person("p13", "Данилюк Артем Богданович", "Солдат", "Мох", "attached", "in", "Стрілець"),
-                person("p14", "Кузьменко Денис Олександрович", "Старший солдат", "Барс", "official", "in", "Механік-водій"),
-                person("p15", "Іваненко Остап Тарасович", "Солдат", "Тиша", "official", "wounded", "Стрілець")
-              ]
-            },
-            {
-              id: "s4",
-              name: "4 відділення",
-              people: [
-                person("p16", "Павленко Роман Юрійович", "Молодший сержант", "Булат", "official", "in", "Командир відділення"),
-                person("p17", "Семенюк Владислав Петрович", "Солдат", "Зірка", "unofficial", "in", "Стрілець"),
-                person("p18", "Федорчук Микола Степанович", "Солдат", "Брід", "official", "off", "Стрілець")
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    machines: [
-      { id: "m1", type: "dump", name: "Січ", board: "101", accounting: "official", duty: "in", mileage: 48200, hours: 3100, service: "2026-09-12" },
-      { id: "m2", type: "dump", name: "Дніпро", board: "102", accounting: "official", duty: "in", mileage: 51040, hours: 3402, service: "2026-08-02" },
-      { id: "m3", type: "dump", name: "Буг", board: "103", accounting: "unofficial", duty: "in", mileage: 22010, hours: 1500, service: "2026-10-01" },
-      { id: "m4", type: "excavator", name: "Карпати", board: "201", accounting: "official", duty: "in", mileage: null, hours: 4200, service: "2026-07-20" },
-      { id: "m5", type: "excavator", name: "Полісся", board: "202", accounting: "official", duty: "repair", mileage: null, hours: 5088, service: "2026-05-03", reason: "не працює гідравліка", back: "2026-11-05" },
-      { id: "m6", type: "lat", name: "Чайка", board: "301", accounting: "official", duty: "in", mileage: 83400, hours: 2100, service: "2026-09-28" },
-      { id: "m7", type: "lat", name: "Лелека", board: "302", accounting: "attached", duty: "in", mileage: 12050, hours: 640, service: "2026-10-15" },
-      { id: "m8", type: "dozer", name: "Степ", board: "401", accounting: "official", duty: "in", mileage: null, hours: 2760, service: "2026-06-18" }
-    ],
-    tasks: [
-      {
-        id: "t1",
-        restricted: false,
-        name: "Огляд рубежу біля контрольної точки",
-        description: "Огляд рубежу біля контрольної точки.",
-        time: "30 жовтня 2026, 08:00–12:00",
-        start: "08:00",
-        place: "Контрольна точка «Явір»",
-        peopleIds: ["p1", "p2", "p3", "p5"],
-        author: "Клен · Бондар Андрій Петрович",
-        status: "Виконується"
-      },
-      {
-        id: "t2",
-        restricted: true,
-        name: "Інженерні загородження",
-        peopleCount: 6,
-        status: "Виконується"
-      },
-      {
-        id: "t3",
-        restricted: true,
-        name: "Виготовлення та переробка боєприпасів",
-        peopleCount: 3,
-        status: "Заплановано"
-      },
-      {
-        id: "t4",
-        restricted: false,
-        name: "Огляд майданчика техніки",
-        description: "Огляд майданчика техніки.",
-        time: "30 жовтня 2026, 09:30–11:00",
-        start: "09:30",
-        place: "Майданчик техніки",
-        peopleIds: ["p14", "p16"],
-        author: "Барс · Кузьменко Денис Олександрович",
-        status: "Зроблено"
-      }
-    ]
+    unit: { id: "root", name: "", people: [] },
+    machines: [],
+    tasks: []
   };
 
   var RESTRICTED_KEYS = { id: true, restricted: true, name: true, peopleCount: true, status: true };
@@ -1838,77 +1732,18 @@ button.count-toggle {
   }
 
   function assertSeed() {
-    var expected = {
-      s1: [5, 6],
-      s2: [3, 4],
-      s3: [4, 5],
-      s4: [2, 3],
-      v1: [8, 10],
-      v2: [6, 8],
-      rota: [14, 18]
-    };
-    function walk(node) {
-      if (node.people && node.children) throw new Error("вузол має і військовослужбовців, і дітей: " + node.id);
-      var stats = peopleStats(node);
-      var want = expected[node.id];
-      if (!want || stats.plus !== want[0] || stats.total !== want[1]) {
-        throw new Error("дріб військовослужбовців " + node.id + " = " + stats.plus + "/" + stats.total);
-      }
-      (node.children || []).forEach(walk);
-      (node.people || []).forEach(function (item) {
-        if (!DUTY[item.duty]) throw new Error("немає стану " + item.duty);
-        if (!ACCOUNTING[item.accounting]) throw new Error("немає обліку " + item.accounting);
-        if (item.rank && !listedRank(item.rank)) throw new Error("звання поза списком: " + item.rank);
-      });
-    }
-    walk(DATA.unit);
-    var machines = machineStats(DATA.machines);
-    if (machines.plus !== 7 || machines.total !== 8) throw new Error("дріб техніки");
-    var typeExpected = { dump: [3, 3], excavator: [1, 2], lat: [2, 2], dozer: [1, 1] };
-    typeCatalog().forEach(function (type) {
-      var stats = machineStats(machinesOf(type.id));
-      var wantType = typeExpected[type.id];
-      if (!wantType) return;
-      if (stats.plus !== wantType[0] || stats.total !== wantType[1]) throw new Error("тип " + type.id);
+    if (DATA.unit.children && DATA.unit.children.length) throw new Error("стартове дерево не порожнє");
+    if ((DATA.unit.people || []).length) throw new Error("стартові люди не порожні");
+    if (DATA.machines.length) throw new Error("стартова техніка не порожня");
+    if (DATA.tasks.length) throw new Error("стартові завдання не порожні");
+    if (String(DATA.unit.name || "").trim()) throw new Error("стартова назва підрозділу має бути порожньою");
+    var blob = JSON.stringify(DATA).toLowerCase();
+    ["бондар", "шевченко", "1 рота", "степ", "огляд рубежу", "рецепт", "детонатор", "тротил", "вибухів", "порядок виконання", "спосіб виконання", "забезпечення", "проблеми", "запасна тека", "години здачі"].forEach(function (word) {
+      if (blob.indexOf(word) !== -1) throw new Error("заборонене слово в даних: " + word);
     });
     if (typeCatalog().some(function (type) { return type.id === OTHER_TYPE.id || type.name === "Інше" || type.one === "Інше"; })) {
       throw new Error("Інше не має бути в налаштуваннях типів");
     }
-    var seen = {};
-    var personCount = 0;
-    var callsigns = {};
-    function take(id) {
-      if (seen[id]) throw new Error("повтор " + id);
-      seen[id] = true;
-    }
-    function walkPeople(node) {
-      (node.people || []).forEach(function (item) {
-        personCount += 1;
-        take(item.id);
-        if (callsigns[item.callsign]) throw new Error("повтор позивного " + item.callsign);
-        callsigns[item.callsign] = true;
-      });
-      (node.children || []).forEach(walkPeople);
-    }
-    walkPeople(DATA.unit);
-    if (personCount !== 18) throw new Error("не 18 військовослужбовців");
-    DATA.machines.forEach(function (item) {
-      take(item.id);
-      if (!MACHINE_DUTY[item.duty]) throw new Error("стан машини");
-    });
-    DATA.tasks.forEach(function (task) {
-      if (!TASK_STATUS[task.status]) throw new Error("стан завдання");
-      if (task.restricted) {
-        Object.keys(task).forEach(function (key) {
-          if (!RESTRICTED_KEYS[key]) throw new Error("зайве поле в обмеженому рядку: " + key);
-        });
-        if (typeof task.peopleCount !== "number" || !task.name || !task.status) throw new Error("неповний обмежений рядок");
-      }
-    });
-    var blob = JSON.stringify(DATA).toLowerCase();
-    ["рецепт", "детонатор", "тротил", "вибухів", "порядок виконання", "спосіб виконання", "забезпечення", "проблеми", "запасна тека", "години здачі"].forEach(function (word) {
-      if (blob.indexOf(word) !== -1) throw new Error("заборонене слово в даних: " + word);
-    });
     if (plural(1, "людина", "людини", "людей") !== "людина") throw new Error("plural 1");
     if (plural(4, "людина", "людини", "людей") !== "людини") throw new Error("plural 4");
     if (plural(6, "людина", "людини", "людей") !== "людей") throw new Error("plural 6");
@@ -1952,12 +1787,13 @@ button.count-toggle {
 
   function sampleReportDocument() {
     return {
-      name: DATA.unit.name,
+      name: "",
       code: "1rota",
       file: SAMPLE_FILE,
-      unit: JSON.parse(JSON.stringify(DATA.unit)),
-      machines: JSON.parse(JSON.stringify(DATA.machines)),
-      tasks: JSON.parse(JSON.stringify(DATA.tasks))
+      unit: { id: "root", name: "", people: [] },
+      machines: [],
+      tasks: [],
+      people: []
     };
   }
 
@@ -1968,7 +1804,7 @@ button.count-toggle {
       name: name,
       code: code,
       file: reportFileName(code),
-      unit: { id: "root", name: name, children: [] },
+      unit: { id: "root", name: name, people: [] },
       machines: [],
       tasks: [],
       people: []
@@ -1990,14 +1826,9 @@ button.count-toggle {
   }
 
   function installSample() {
-    var loaded = readSiblingJson(SAMPLE_FILE);
-    if (loaded && loaded.unit && Array.isArray(loaded.machines) && Array.isArray(loaded.tasks)) {
-      state.sampleReport = loaded;
-      state.reportSource = SAMPLE_FILE;
-    } else {
-      state.sampleReport = sampleReportDocument();
-      state.reportSource = "seed";
-    }
+    // Стартовий звіт завжди порожній — без підвантаження демо-файлу.
+    state.sampleReport = sampleReportDocument();
+    state.reportSource = "empty";
     state.report = state.sampleReport;
     state.reportKey = "1rota";
     bundles = {};
@@ -2799,9 +2630,17 @@ button.count-toggle {
     top.append(el("h2", { text: "Особовий склад", attrs: { id: "people-title" } }));
     top.append(sectionTools("gear:people", "Шестерня: що показувати в списку військовослужбовців", "person"));
     section.append(top);
-    section.append(frac(stats, "hero", root.name + ": " + stats.plus + " у строю з " + stats.total));
+    section.append(frac(stats, "hero", (root.name || "Звіт") + ": " + stats.plus + " у строю з " + stats.total));
     if (state.open.has("gear:people")) section.append(renderPeopleGear());
-    (root.children || []).forEach(function (child) { section.append(renderUnit(child)); });
+    if (root.people) {
+      root.people.forEach(function (item) {
+        if (state.removed.people[item.id]) return;
+        section.append(renderPerson(item));
+      });
+      extraPeople(root).forEach(function (item) { section.append(renderPerson(item)); });
+    } else {
+      (root.children || []).forEach(function (child) { section.append(renderUnit(child)); });
+    }
     return section;
   }
 
@@ -3925,10 +3764,12 @@ button.count-toggle {
       state.scope = scope;
       state.openCode = code;
       if (code === "lead") state.holder = "Служба";
-      else if (scope === "all") state.holder = DATA.unit.name;
       else state.holder = "";
     }
     activateReport(state.openCode);
+    if (!section && !unit && code !== "lead" && scope === "all") {
+      state.holder = (state.report && state.report.name) || "";
+    }
     if (state.scope === "all") state.reportRoot = state.openCode;
     state.codeError = "";
     state.codeDraft = "";
@@ -4084,6 +3925,19 @@ button.count-toggle {
     return found;
   }
 
+  function defaultPersonPlace() {
+    var root = viewUnit();
+    if (root.people) return root.id;
+    var found = "";
+    function walk(node) {
+      if (found) return;
+      if (node.people) found = node.id;
+      (node.children || []).forEach(walk);
+    }
+    walk(root);
+    return found || root.id;
+  }
+
   function typeFromLabel(value) {
     var raw = String(value || "").trim();
     if (!raw) return OTHER_TYPE.id;
@@ -4153,7 +4007,7 @@ button.count-toggle {
     syncDraftFromDom();
     var draft = state.draft;
     if (draft.kind === "person") {
-      var place = placeFromUnit(draft.unit) || "s1";
+      var place = placeFromUnit(draft.unit) || defaultPersonPlace();
       var personId = newId("np");
       state.added.people.push({
         id: personId,
@@ -5122,9 +4976,11 @@ button.count-toggle {
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "три блоки");
     var peopleFrac = document.querySelector("#people .frac");
     var gearFrac = document.querySelector("#equipment .frac");
-    check(peopleFrac && peopleFrac.getAttribute("data-plus") === "14" && peopleFrac.getAttribute("data-total") === "18", "14/18");
-    check(gearFrac && gearFrac.getAttribute("data-plus") === "7" && gearFrac.getAttribute("data-total") === "8", "7/8");
-    check(state.reportSource === "zvit-1rota.json" && state.sampleReport && state.sampleReport.code === "1rota" && state.sampleReport.machines.length === 8, "звіт роти з файлу zvit-1rota.json");
+    check(peopleFrac && peopleFrac.getAttribute("data-plus") === "0" && peopleFrac.getAttribute("data-total") === "0", "на старті 0/0 людей");
+    check(gearFrac && gearFrac.getAttribute("data-plus") === "0" && gearFrac.getAttribute("data-total") === "0", "на старті 0/0 техніки");
+    check(state.reportSource === "empty" && state.sampleReport && state.sampleReport.code === "1rota" && state.sampleReport.machines.length === 0 && state.sampleReport.tasks.length === 0, "стартовий звіт порожній");
+    check(JSON.stringify(DATA).indexOf("Бондар") === -1 && JSON.stringify(DATA).indexOf("1 рота") === -1 && JSON.stringify(DATA).indexOf("Степ") === -1, "у DATA немає демо-імен");
+    check(document.getElementById("people").textContent.indexOf("Бондар") === -1 && document.getElementById("equipment").textContent.indexOf("Степ") === -1 && document.getElementById("tasks").textContent.indexOf("Огляд рубежу") === -1, "на екрані немає демо-вмісту");
     var pageScript = "";
     document.querySelectorAll("script").forEach(function (node) { pageScript += node.textContent || ""; });
     var manifestLink = document.querySelector('link[rel="manifest"]');
@@ -5132,7 +4988,7 @@ button.count-toggle {
     check(!!document.querySelector('meta[name="theme-color"]'), "є theme-color");
     check(pageScript.indexOf("service" + "Worker") !== -1 && pageScript.indexOf("sw.js") !== -1, "є реєстрація робітника");
     var sampleFile = readSiblingJson("zvit-1rota.json");
-    check(sampleFile && sampleFile.machines && sampleFile.machines.length === 8 && JSON.stringify(sampleFile).indexOf("Бондар") !== -1, "файл роти читається поруч зі сторінкою");
+    check(!sampleFile, "демо-файл zvit-1rota.json не підхоплюється");
     check(!document.getElementById("code-switch") && !document.getElementById("code-form") && !document.getElementById("code") && !document.getElementById("open-code") && document.getElementById("app").textContent.indexOf("Код розділу") === -1 && document.getElementById("app").textContent.indexOf("Профільні розділи") === -1 && !document.querySelector(".samples") && !document.querySelector(".code-picks") && !document.querySelector(".code-pick"), "немає коду розділу і перемикача служби");
     check(state.openCode === "lead" && state.holder === "Служба" && !!document.getElementById("report-switch") && !document.getElementById("subordinates") && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1, "на старті відкрита служба без підпису ролі");
     var startReport = document.getElementById("report-switch");
@@ -5204,6 +5060,133 @@ button.count-toggle {
     var emptyChanges = document.getElementById("changes");
     check(emptyChanges && emptyChanges.textContent.indexOf("Змін ще немає") !== -1 && emptyChanges.textContent.indexOf("Що змінено") === -1, "порожній рядок змін");
     check(emptyChanges.offsetTop < document.getElementById("tasks").offsetTop, "порожній рядок над завданнями");
+    document.querySelector("#people [data-add='person']").click();
+    check(!!document.getElementById("card-overlay"), "плюс на порожньому звіті відкриває картку");
+    document.getElementById("call-draft").value = "Старт";
+    document.getElementById("call-draft").dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#card-overlay [data-save-card='draft']").click();
+    check(state.added.people.length === 1 && state.added.people[0].place === "root" && document.getElementById("people").textContent.indexOf("Старт") !== -1, "з нуля людина на root");
+    check(document.querySelector("#people .frac").getAttribute("data-plus") === "1" && document.querySelector("#people .frac").getAttribute("data-total") === "1", "дріб з нуля 1/1");
+    // Fixture лише для UI self-test після перевірки порожнього старту; у прод-старті його немає.
+    function installTestFixture() {
+      var fixture = {
+        name: "1 рота",
+        code: "1rota",
+        file: SAMPLE_FILE,
+        unit: {
+          id: "rota",
+          name: "1 рота",
+          children: [
+            {
+              id: "v1",
+              name: "1 взвод",
+              children: [
+                {
+                  id: "s1",
+                  name: "1 відділення",
+                  people: [
+                    person("p1", "Бондар Андрій Петрович", "Сержант", "Клен", "official", "in", "Командир відділення"),
+                    person("p2", "Коваленко Олег Іванович", "Старший солдат", "Берест", "official", "in", "Сапер"),
+                    person("p3", "Шевченко Тарас Григорович", "Солдат", "Дуб", "official", "in", "Стрілець"),
+                    person("p4", "Мельник Ігор Васильович", "Солдат", "Сокіл", "unofficial", "in", ""),
+                    person("p5", "Ткаченко Юрій Миколайович", "Солдат", "Ворон", "attached", "in", "Стрілець"),
+                    person("p6", "Савчук Петро Олексійович", "Солдат", "Лиман", "official", "leave", "Стрілець")
+                  ]
+                },
+                {
+                  id: "s2",
+                  name: "2 відділення",
+                  people: [
+                    person("p7", "Лисенко Максим Сергійович", "Молодший сержант", "Явір", "official", "in", "Командир відділення"),
+                    person("p8", "Гнатюк Василь Романович", "Солдат", "Граніт", "official", "in", "Стрілець"),
+                    person("p9", "Поліщук Назар Олегович", "Солдат", "Вітер", "unofficial", "in", "Зв’язківець"),
+                    person("p10", "Романюк Богдан Ігорович", "Солдат", "Камінь", "official", "sick", "Стрілець")
+                  ]
+                }
+              ]
+            },
+            {
+              id: "v2",
+              name: "2 взвод",
+              children: [
+                {
+                  id: "s3",
+                  name: "3 відділення",
+                  people: [
+                    person("p11", "Сидоренко Павло Андрійович", "Сержант", "Галич", "official", "in", "Командир відділення"),
+                    person("p12", "Марчук Олексій Вікторович", "Солдат", "Шпак", "official", "in", "Стрілець"),
+                    person("p13", "Данилюк Артем Богданович", "Солдат", "Мох", "attached", "in", "Стрілець"),
+                    person("p14", "Кузьменко Денис Олександрович", "Старший солдат", "Барс", "official", "in", "Механік-водій"),
+                    person("p15", "Іваненко Остап Тарасович", "Солдат", "Тиша", "official", "wounded", "Стрілець")
+                  ]
+                },
+                {
+                  id: "s4",
+                  name: "4 відділення",
+                  people: [
+                    person("p16", "Павленко Роман Юрійович", "Молодший сержант", "Булат", "official", "in", "Командир відділення"),
+                    person("p17", "Семенюк Владислав Петрович", "Солдат", "Зірка", "unofficial", "in", "Стрілець"),
+                    person("p18", "Федорчук Микола Степанович", "Солдат", "Брід", "official", "off", "Стрілець")
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        machines: [
+          { id: "m1", type: "dump", name: "Січ", board: "101", accounting: "official", duty: "in", mileage: 48200, hours: 3100, service: "2026-09-12" },
+          { id: "m2", type: "dump", name: "Дніпро", board: "102", accounting: "official", duty: "in", mileage: 51040, hours: 3402, service: "2026-08-02" },
+          { id: "m3", type: "dump", name: "Буг", board: "103", accounting: "unofficial", duty: "in", mileage: 22010, hours: 1500, service: "2026-10-01" },
+          { id: "m4", type: "excavator", name: "Карпати", board: "201", accounting: "official", duty: "in", mileage: null, hours: 4200, service: "2026-07-20" },
+          { id: "m5", type: "excavator", name: "Полісся", board: "202", accounting: "official", duty: "repair", mileage: null, hours: 5088, service: "2026-05-03", reason: "не працює гідравліка", back: "2026-11-05" },
+          { id: "m6", type: "lat", name: "Чайка", board: "301", accounting: "official", duty: "in", mileage: 83400, hours: 2100, service: "2026-09-28" },
+          { id: "m7", type: "lat", name: "Лелека", board: "302", accounting: "attached", duty: "in", mileage: 12050, hours: 640, service: "2026-10-15" },
+          { id: "m8", type: "dozer", name: "Степ", board: "401", accounting: "official", duty: "in", mileage: null, hours: 2760, service: "2026-06-18" }
+        ],
+        tasks: [
+          {
+            id: "t1",
+            restricted: false,
+            name: "Огляд рубежу біля контрольної точки",
+            description: "Огляд рубежу біля контрольної точки.",
+            time: "30 жовтня 2026, 08:00–12:00",
+            start: "08:00",
+            place: "Контрольна точка «Явір»",
+            peopleIds: ["p1", "p2", "p3", "p5"],
+            author: "Клен · Бондар Андрій Петрович",
+            status: "Виконується"
+          },
+          { id: "t2", restricted: true, name: "Інженерні загородження", peopleCount: 6, status: "Виконується" },
+          { id: "t3", restricted: true, name: "Виготовлення та переробка боєприпасів", peopleCount: 3, status: "Заплановано" },
+          {
+            id: "t4",
+            restricted: false,
+            name: "Огляд майданчика техніки",
+            description: "Огляд майданчика техніки.",
+            time: "30 жовтня 2026, 09:30–11:00",
+            start: "09:30",
+            place: "Майданчик техніки",
+            peopleIds: ["p14", "p16"],
+            author: "Барс · Кузьменко Денис Олександрович",
+            status: "Зроблено"
+          }
+        ],
+        people: []
+      };
+      state.sampleReport = fixture;
+      state.report = fixture;
+      state.reportSource = "fixture";
+      state.reportKey = "1rota";
+      bundles = {};
+      freshOverlays();
+      refreshPeopleIndex();
+      render();
+    }
+    installTestFixture();
+    peopleFrac = document.querySelector("#people .frac");
+    gearFrac = document.querySelector("#equipment .frac");
+    check(peopleFrac && peopleFrac.getAttribute("data-plus") === "14" && peopleFrac.getAttribute("data-total") === "18", "fixture 14/18");
+    check(gearFrac && gearFrac.getAttribute("data-plus") === "7" && gearFrac.getAttribute("data-total") === "8", "fixture 7/8");
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
     check(!document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
@@ -6094,8 +6077,9 @@ button.count-toggle {
     try {
       assertSeed();
     } catch (err) {
-      check(false, "зразок лишається 14/18 і 7/8: " + err.message);
+      check(false, "стартові DATA лишаються порожніми: " + err.message);
     }
+    check(JSON.stringify(DATA).indexOf("Бондар") === -1 && state.reportSource === "fixture", "DATA порожні після UI-fixture");
     ["забезпечення", "підготовка", "проблеми", "запасна тека", "години здачі"].forEach(function (word) {
       check(document.getElementById("app").textContent.toLowerCase().indexOf(word) === -1, "немає розділу: " + word);
     });
