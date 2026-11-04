@@ -3654,6 +3654,9 @@ button.count-toggle {
 
   var driveToken = "";
   var DRIVE_CLIENT = "829017169642-16n6qc0kenbv225obpbouiqhf9ii3juu.apps.googleusercontent.com";
+  // drive.file — запис файлів додатка; drive.readonly — читання спільної теки за id (чужі файли).
+  // Повний auth/drive не беремо: для sync за folder id з запрошення цього достатньо.
+  var DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly";
 
   function driveFolderId(link) {
     var match = String(link || "").match(/\/folders\/([a-zA-Z0-9_-]+)/);
@@ -4089,7 +4092,7 @@ button.count-toggle {
     loadGoogle(function () {
       google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: "https://www.googleapis.com/auth/drive",
+        scope: DRIVE_OAUTH_SCOPE,
         callback: function (response) {
           if (!response || response.error || !response.access_token) {
             state.driveNote = "Вхід не підтверджено.";
@@ -6007,10 +6010,12 @@ button.count-toggle {
     check(unitDriveFileName("секрет").indexOf("vu-") === 0 && unitDriveFileName("секрет").indexOf("секрет") === -1 && unitDriveFileName("секрет").slice(-4) === ".bin", "ім’я файлу від відбитка без відкритого коду");
     check(pageSource.indexOf("toString(36) + " + '".bin"') === -1 && pageSource.indexOf("function " + "putReport") === -1, "немає заглушки випадкового .bin");
     state.driveNote = "";
+    var seenDriveScope = "";
     window.google = {
       accounts: {
         oauth2: {
-          initTokenClient: function () {
+          initTokenClient: function (cfg) {
+            seenDriveScope = cfg && cfg.scope ? String(cfg.scope) : "";
             return { requestAccessToken: function () {} };
           }
         }
@@ -6018,6 +6023,13 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
+    check(
+      seenDriveScope.indexOf("https://www.googleapis.com/auth/drive.file") !== -1 &&
+      seenDriveScope.indexOf("https://www.googleapis.com/auth/drive.readonly") !== -1 &&
+      !/(^|\s)https:\/\/www\.googleapis\.com\/auth\/drive(?!\.)(\s|$)/.test(seenDriveScope) &&
+      seenDriveScope === DRIVE_OAUTH_SCOPE,
+      "OAuth scope — drive.file + drive.readonly, без повного auth/drive"
+    );
     state.driveFolder = "";
     state.driveEncryptKey = "";
     state.units = [];
