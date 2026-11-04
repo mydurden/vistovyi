@@ -297,6 +297,9 @@ h1 {
   min-height: 44px;
 }
 .day-nav-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
   width: 44px;
   min-width: 44px;
@@ -307,9 +310,7 @@ h1 {
   border-radius: 10px;
   background: transparent;
   color: var(--ink);
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1;
+  line-height: 0;
 }
 .day-nav-arrow:active { background: var(--amber-soft); }
 .day-nav-date {
@@ -478,7 +479,9 @@ h2 {
 .icon-x svg,
 .icon-check svg,
 .icon-pencil svg,
-.icon-profile svg { width: 36px; height: 36px; }
+.icon-profile svg,
+.icon-left svg,
+.icon-right svg { width: 36px; height: 36px; }
 .tool-profile {
   height: auto;
   min-height: 0;
@@ -1605,9 +1608,38 @@ button.count-toggle {
     };
   }
 
+  function countPeopleInUnit(unit) {
+    var total = 0;
+    function walk(node) {
+      if (!node || typeof node !== "object") return;
+      total += Array.isArray(node.people) ? node.people.length : 0;
+      (Array.isArray(node.children) ? node.children : []).forEach(walk);
+    }
+    walk(unit);
+    return total;
+  }
+
+  function daySliceHasReport(slice) {
+    var normalized = normalizeDaySlice(slice);
+    if (countPeopleInUnit(normalized.unit) > 0) return true;
+    if (Array.isArray(normalized.people) && normalized.people.length > 0) return true;
+    if (Array.isArray(normalized.machines) && normalized.machines.length > 0) return true;
+    if (Array.isArray(normalized.tasks) && normalized.tasks.length > 0) return true;
+    return false;
+  }
+
+  function viewDayHasReport() {
+    if (daySliceHasReport(daySliceFromState())) return true;
+    if ((state.added.people || []).some(function (item) { return !state.removed.people[item.id]; })) return true;
+    if ((state.added.machines || []).some(function (item) { return !state.removed.machines[item.id]; })) return true;
+    return false;
+  }
+
   function stashViewDay() {
     if (!state.viewDay) return;
-    state.daysArchive[state.viewDay] = daySliceFromState();
+    // Порожній зріз від самого лише відкриття дати в архів не кладемо.
+    if (viewDayHasReport()) state.daysArchive[state.viewDay] = daySliceFromState();
+    else delete state.daysArchive[state.viewDay];
   }
 
   function applyDaySliceToState(slice) {
@@ -1689,8 +1721,8 @@ button.count-toggle {
   }
 
   function hasDaySnapshot(iso) {
-    if (iso === state.viewDay) return true;
-    return !!state.daysArchive[iso];
+    if (iso === state.viewDay) return viewDayHasReport();
+    return daySliceHasReport(state.daysArchive[iso]);
   }
 
   function allDaysMap() {
@@ -2739,7 +2771,9 @@ button.count-toggle {
     x: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     check: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l5 5L19 7"/></svg>',
     pencil: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l4.2-1.1L19.5 7.6a2 2 0 0 0 0-2.8l-.3-.3a2 2 0 0 0-2.8 0L5.1 15.8 4 20z"/><path d="M13.5 6.5l4 4"/></svg>',
-    profile: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.2c1.3-3.1 3.6-4.6 6.5-4.6s5.2 1.5 6.5 4.6"/></svg>'
+    profile: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.2c1.3-3.1 3.6-4.6 6.5-4.6s5.2 1.5 6.5 4.6"/></svg>',
+    left: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
+    right: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>'
   };
 
   function icon(name) {
@@ -4429,15 +4463,19 @@ button.count-toggle {
     render();
   }
 
+  function dayNavArrow(dir, label, attrs) {
+    var all = { type: "button", "aria-label": label };
+    if (attrs) Object.keys(attrs).forEach(function (key) { all[key] = attrs[key]; });
+    var btn = el("button", { className: "day-nav-arrow", attrs: all });
+    btn.append(icon(dir === -1 ? "left" : "right"));
+    return btn;
+  }
+
   function renderDayNav() {
     if (!state.viewDay) state.viewDay = todayISO();
     var section = el("section", { className: "block day-nav", attrs: { id: "day-nav", "aria-labelledby": "day-nav-title" } });
     var row = el("div", { className: "day-nav-row" });
-    row.append(el("button", {
-      className: "day-nav-arrow",
-      text: "←",
-      attrs: { type: "button", "data-day-shift": "-1", "aria-label": "Попередній день" }
-    }));
+    row.append(dayNavArrow(-1, "Попередній день", { "data-day-shift": "-1" }));
     var dateBtn = el("button", {
       className: "day-nav-date",
       attrs: { type: "button", id: "day-nav-title", "data-open-calendar": "1", "aria-label": "Календар" }
@@ -4445,11 +4483,7 @@ button.count-toggle {
     dateBtn.append(el("span", { text: formatDayUi(state.viewDay) }));
     dateBtn.append(el("span", { className: "day-nav-weekday", text: weekdayLabel(state.viewDay) }));
     row.append(dateBtn);
-    row.append(el("button", {
-      className: "day-nav-arrow",
-      text: "→",
-      attrs: { type: "button", "data-day-shift": "1", "aria-label": "Наступний день" }
-    }));
+    row.append(dayNavArrow(1, "Наступний день", { "data-day-shift": "1" }));
     section.append(row);
     return section;
   }
@@ -4470,17 +4504,9 @@ button.count-toggle {
     head.append(iconButton("x", "Закрити", { "data-close-calendar": "1" }));
     sheet.append(head);
     var monthRow = el("div", { className: "calendar-month" });
-    monthRow.append(el("button", {
-      className: "day-nav-arrow",
-      text: "←",
-      attrs: { type: "button", "data-calendar-month": "-1", "aria-label": "Попередній місяць" }
-    }));
+    monthRow.append(dayNavArrow(-1, "Попередній місяць", { "data-calendar-month": "-1" }));
     monthRow.append(el("h3", { text: MONTH_NAMES[month - 1] + " " + year }));
-    monthRow.append(el("button", {
-      className: "day-nav-arrow",
-      text: "→",
-      attrs: { type: "button", "data-calendar-month": "1", "aria-label": "Наступний місяць" }
-    }));
+    monthRow.append(dayNavArrow(1, "Наступний місяць", { "data-calendar-month": "1" }));
     sheet.append(monthRow);
     var weekdays = el("div", { className: "calendar-weekdays" });
     WEEKDAY_SHORT.forEach(function (label) {
@@ -6036,17 +6062,33 @@ button.count-toggle {
     var dayNav = document.getElementById("day-nav");
     check(dayNav && dayNav.offsetTop < document.getElementById("tasks").offsetTop, "рядок дати над завданнями");
     check(!!document.querySelector("[data-day-shift='-1']") && !!document.querySelector("[data-day-shift='1']") && !!document.querySelector("[data-open-calendar]"), "стрілки дати і календар");
+    var leftArrow = document.querySelector("[data-day-shift='-1']");
+    var rightArrow = document.querySelector("[data-day-shift='1']");
+    check(leftArrow && leftArrow.querySelector("svg") && rightArrow && rightArrow.querySelector("svg"), "стрілки дати — товстий SVG");
+    check(leftArrow.textContent.indexOf("←") === -1 && rightArrow.textContent.indexOf("→") === -1, "немає системних шевронів ←→");
+    var leftStroke = leftArrow.querySelector("svg") && leftArrow.querySelector("svg").getAttribute("stroke-width");
+    var plusStroke = (ICONS.plus.match(/stroke-width="([^"]+)"/) || [])[1];
+    check(leftStroke && plusStroke && leftStroke === plusStroke, "stroke стрілок як у плюса");
     check(document.getElementById("day-nav-title") && document.getElementById("day-nav-title").textContent.indexOf(formatDayUi(todayISO())) !== -1, "сьогоднішня дата на екрані");
     check(document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "немає блоку «Змін ще немає»");
+    document.querySelector("[data-open-calendar]").click();
+    check(!!document.getElementById("calendar-overlay") && !!document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']"), "календар-оверлей");
+    var emptyToday = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
+    check(emptyToday && emptyToday.classList.contains("is-empty") && !emptyToday.classList.contains("has-report"), "порожній сьогодні без позначки звіту");
+    document.querySelector("[data-close-calendar]").click();
     var beforeDay = state.viewDay;
+    var openedDay = shiftISODate(beforeDay, 1);
     document.querySelector("[data-day-shift='1']").click();
-    check(state.viewDay === shiftISODate(beforeDay, 1), "стрілка вперед не заблокована");
+    check(state.viewDay === openedDay, "стрілка вперед не заблокована");
+    document.querySelector("[data-open-calendar]").click();
+    var openedCell = document.querySelector("#calendar-overlay [data-pick-day='" + openedDay + "']");
+    check(openedCell && !openedCell.classList.contains("has-report"), "відкриття дати без внесення не фарбує день");
+    document.querySelector("[data-close-calendar]").click();
     document.querySelector("[data-day-shift='-1']").click();
     check(state.viewDay === beforeDay, "стрілка назад повертає день");
     document.querySelector("[data-open-calendar]").click();
-    check(!!document.getElementById("calendar-overlay") && !!document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']"), "календар-оверлей");
-    var todayCell = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
-    check(todayCell && todayCell.classList.contains("has-report"), "день зі знімком темніший");
+    var stillEmpty = document.querySelector("#calendar-overlay [data-pick-day='" + openedDay + "']");
+    check(stillEmpty && !stillEmpty.classList.contains("has-report") && !state.daysArchive[openedDay], "після виходу порожній день не в архіві");
     document.querySelector("[data-close-calendar]").click();
     check(!document.getElementById("calendar-overlay"), "календар закрито хрестиком");
     var snap = currentUnitSnapshot();
@@ -6058,6 +6100,10 @@ button.count-toggle {
     document.querySelector("#card-overlay [data-save-card='draft']").click();
     check(state.added.people.length === 1 && state.added.people[0].place === "root" && document.getElementById("people").textContent.indexOf("Старт") !== -1, "з нуля людина на root");
     check(document.querySelector("#people .frac").getAttribute("data-plus") === "1" && document.querySelector("#people .frac").getAttribute("data-total") === "1", "дріб з нуля 1/1");
+    document.querySelector("[data-open-calendar]").click();
+    var filledToday = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
+    check(filledToday && filledToday.classList.contains("has-report"), "день із внесеним о/с темніший");
+    document.querySelector("[data-close-calendar]").click();
     // Fixture лише для UI self-test після перевірки порожнього старту; у прод-старті його немає.
     function installTestFixture() {
       var fixture = {
