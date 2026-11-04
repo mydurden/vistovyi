@@ -288,6 +288,114 @@ h1 {
 
 .changes-empty { margin: 4px 0 8px; font-weight: 700; }
 
+.day-nav { padding-top: 10px; padding-bottom: 6px; }
+.day-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 44px;
+}
+.day-nav-arrow {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.day-nav-arrow:active { background: var(--amber-soft); }
+.day-nav-date {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.25;
+}
+.day-nav-date:active { background: var(--amber-soft); }
+.day-nav-date .day-nav-weekday {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.calendar-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.calendar-month h3 {
+  margin: 0;
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 1.05rem;
+}
+.calendar-weekdays,
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.calendar-weekdays span {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 0;
+}
+.calendar-day {
+  min-height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #9a9286;
+  font-weight: 700;
+}
+.calendar-day.has-report {
+  background: var(--header);
+  color: var(--header-ink);
+}
+.calendar-day.is-empty {
+  background: #ece7de;
+  color: #8a8378;
+}
+.calendar-day.is-muted {
+  opacity: 0.35;
+}
+.calendar-day.is-selected {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+.calendar-day:active { opacity: 0.85; }
+
+.overlay-sheet.is-compact {
+  min-height: 0;
+  width: min(100%, 420px);
+  margin-top: 12vh;
+  padding-bottom: 20px;
+  border-radius: 16px;
+}
+
 main.wrap {
   padding-top: 12px;
   padding-bottom: calc(28px + env(safe-area-inset-bottom));
@@ -635,25 +743,6 @@ button.count-toggle {
 .unit-create .label,
 .archive .label { display: block; margin-top: 8px; font-weight: 700; }
 
-.drive-folder-open {
-  display: block;
-  width: auto;
-  min-height: 0;
-  margin: 6px 0 0;
-  padding: 2px 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.85rem;
-  font-weight: 700;
-  text-align: left;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.drive-folder-open:active { background: transparent; opacity: 0.75; }
-
 .section-access .label { display: block; margin-top: 8px; }
 
 .section-access input.for-whom {
@@ -951,6 +1040,12 @@ button.count-toggle {
     border-radius: 16px;
     box-shadow: var(--shadow);
   }
+  .overlay-sheet.is-compact {
+    width: min(100%, 420px);
+    min-width: 0;
+    max-width: 420px;
+    min-height: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1055,6 +1150,12 @@ button.count-toggle {
     "січня", "лютого", "березня", "квітня", "травня", "червня",
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
   ];
+  var MONTH_NAMES = [
+    "січень", "лютий", "березень", "квітень", "травень", "червень",
+    "липень", "серпень", "вересень", "жовтень", "листопад", "грудень"
+  ];
+  var WEEKDAYS = ["неділя", "понеділок", "вівторок", "середа", "четвер", "п’ятниця", "субота"];
+  var WEEKDAY_SHORT = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"];
 
   function person(id, name, rank, callsign, accounting, duty, position) {
     return { id: id, name: name, rank: rank, callsign: callsign, accounting: accounting, duty: duty, position: position };
@@ -1155,7 +1256,12 @@ button.count-toggle {
     driveQueue: [],
     driveFrom: "",
     driveTo: "",
-    driveNote: ""
+    driveNote: "",
+    viewDay: "",
+    fileDay: "",
+    daysArchive: {},
+    calendarOpen: false,
+    calendarMonth: ""
   };
 
   var bundles = {};
@@ -1411,19 +1517,225 @@ button.count-toggle {
     });
   }
 
-  function currentUnitSnapshot() {
+  function pad2(n) {
+    return n < 10 ? "0" + n : String(n);
+  }
+
+  function todayISO() {
+    var d = new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+
+  function parseISODate(iso) {
+    var parts = String(iso || "").split("-").map(Number);
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+
+  function toISODate(date) {
+    return date.getFullYear() + "-" + pad2(date.getMonth() + 1) + "-" + pad2(date.getDate());
+  }
+
+  function shiftISODate(iso, delta) {
+    var d = parseISODate(iso) || new Date();
+    d.setDate(d.getDate() + Number(delta || 0));
+    return toISODate(d);
+  }
+
+  function formatDayUi(iso) {
+    var d = parseISODate(iso);
+    if (!d) return String(iso || "");
+    return pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + "." + d.getFullYear();
+  }
+
+  function weekdayLabel(iso) {
+    var d = parseISODate(iso);
+    if (!d) return "";
+    return WEEKDAYS[d.getDay()] || "";
+  }
+
+  function monthKeyFromISO(iso) {
+    var d = parseISODate(iso) || new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1);
+  }
+
+  function cloneData(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function daySliceFromState() {
     var report = state.report || sampleReportDocument();
+    return {
+      unit: cloneData(report.unit || { id: "root", name: "", people: [] }),
+      machines: cloneData(Array.isArray(report.machines) ? report.machines : []),
+      tasks: cloneData(Array.isArray(report.tasks) ? report.tasks : []),
+      people: cloneData(Array.isArray(report.people) ? report.people : []),
+      changes: cloneData(Array.isArray(state.changes) ? state.changes : [])
+    };
+  }
+
+  function normalizeDaySlice(raw) {
+    if (!raw || typeof raw !== "object") {
+      return {
+        unit: { id: "root", name: "", people: [] },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: []
+      };
+    }
+    return {
+      unit: raw.unit && typeof raw.unit === "object" ? cloneData(raw.unit) : { id: "root", name: "", people: [] },
+      machines: Array.isArray(raw.machines) ? cloneData(raw.machines) : [],
+      tasks: Array.isArray(raw.tasks) ? cloneData(raw.tasks) : [],
+      people: Array.isArray(raw.people) ? cloneData(raw.people) : [],
+      changes: Array.isArray(raw.changes) ? cloneData(raw.changes) : []
+    };
+  }
+
+  // Правило rollover: плани лишаються планами, о/с і ОВТ як були.
+  function rolloverDaySlice(raw) {
+    var slice = normalizeDaySlice(raw);
+    return {
+      unit: slice.unit,
+      machines: slice.machines,
+      tasks: slice.tasks,
+      people: slice.people,
+      changes: []
+    };
+  }
+
+  function stashViewDay() {
+    if (!state.viewDay) return;
+    state.daysArchive[state.viewDay] = daySliceFromState();
+  }
+
+  function applyDaySliceToState(slice) {
+    var normalized = normalizeDaySlice(slice);
+    var base = state.report || sampleReportDocument();
+    state.report = {
+      name: base.name,
+      code: base.code,
+      file: base.file,
+      unit: normalized.unit,
+      machines: normalized.machines,
+      tasks: normalized.tasks,
+      people: normalized.people
+    };
+    state.changes = Array.isArray(normalized.changes) ? normalized.changes.slice(-100) : [];
+    state.edits = { people: {}, machines: {} };
+    state.removed = { people: {}, machines: {} };
+    state.added = { people: [], machines: [] };
+    state.positions = {};
+    state.editing = null;
+    state.pending = null;
+    state.draft = null;
+    state.confirm = null;
+  }
+
+  function nearestSourceSlice(iso, archive) {
+    var store = archive || state.daysArchive;
+    if (store[iso]) return normalizeDaySlice(store[iso]);
+    var cursor = iso;
+    var i;
+    for (i = 0; i < 370; i++) {
+      cursor = shiftISODate(cursor, -1);
+      if (store[cursor]) return normalizeDaySlice(store[cursor]);
+    }
+    return rolloverDaySlice(daySliceFromState());
+  }
+
+  function ensureDaySliceIn(archive, iso) {
+    if (archive[iso]) return;
+    archive[iso] = rolloverDaySlice(nearestSourceSlice(iso, archive));
+  }
+
+  function openViewDay(iso) {
+    var target = String(iso || todayISO());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) target = todayISO();
+    if (state.viewDay === target && state.report) return;
+    stashViewDay();
+    ensureDaySliceIn(state.daysArchive, target);
+    var slice = state.daysArchive[target];
+    delete state.daysArchive[target];
+    applyDaySliceToState(slice);
+    state.viewDay = target;
+    if (!state.fileDay || target > state.fileDay) state.fileDay = target;
+  }
+
+  function shiftViewDay(delta) {
+    openViewDay(shiftISODate(state.viewDay || todayISO(), delta));
+  }
+
+  function ensureDayRollover() {
+    var today = todayISO();
+    if (!state.fileDay) state.fileDay = today;
+    if (!state.viewDay) state.viewDay = state.fileDay;
+    if (state.fileDay >= today) {
+      if (!state.report) applyDaySliceToState(normalizeDaySlice(state.daysArchive[state.viewDay] || null));
+      return;
+    }
+    stashViewDay();
+    while (state.fileDay < today) {
+      ensureDaySliceIn(state.daysArchive, state.fileDay);
+      var next = shiftISODate(state.fileDay, 1);
+      if (!state.daysArchive[next]) {
+        state.daysArchive[next] = rolloverDaySlice(state.daysArchive[state.fileDay]);
+      }
+      state.fileDay = next;
+    }
+    state.viewDay = "";
+    openViewDay(state.fileDay);
+  }
+
+  function hasDaySnapshot(iso) {
+    if (iso === state.viewDay) return true;
+    return !!state.daysArchive[iso];
+  }
+
+  function allDaysMap() {
+    var archive = {};
+    Object.keys(state.daysArchive).forEach(function (key) {
+      archive[key] = normalizeDaySlice(state.daysArchive[key]);
+    });
+    var viewKey = state.viewDay || todayISO();
+    archive[viewKey] = daySliceFromState();
+    var today = todayISO();
+    var liveKey = state.fileDay || viewKey;
+    while (liveKey < today) {
+      ensureDaySliceIn(archive, liveKey);
+      var next = shiftISODate(liveKey, 1);
+      if (!archive[next]) archive[next] = rolloverDaySlice(archive[liveKey]);
+      liveKey = next;
+    }
+    ensureDaySliceIn(archive, liveKey);
+    return { archive: archive, liveKey: liveKey, viewKey: viewKey };
+  }
+
+  function currentUnitSnapshot() {
+    var packed = allDaysMap();
+    if (packed.liveKey !== state.fileDay) state.fileDay = packed.liveKey;
+    var live = packed.archive[packed.liveKey];
+    var days = {};
+    Object.keys(packed.archive).forEach(function (key) {
+      if (key === packed.liveKey) return;
+      days[key] = packed.archive[key];
+    });
     var children = unitsCreatedHere().map(function (unit) {
       return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
     }).filter(function (item) { return !!item.code; });
+    var report = state.report || sampleReportDocument();
     return {
-      version: 1,
+      version: 2,
       name: String(report.name || state.holder || "").slice(0, 80),
       code: String(state.driveEncryptKey || "").trim(),
-      unit: report.unit || { id: "root", name: "", people: [] },
-      machines: Array.isArray(report.machines) ? report.machines : [],
-      tasks: Array.isArray(report.tasks) ? report.tasks : [],
-      people: Array.isArray(report.people) ? report.people : [],
+      day: packed.liveKey,
+      unit: live.unit,
+      machines: live.machines,
+      tasks: live.tasks,
+      people: live.people,
+      changes: live.changes || [],
+      days: days,
       children: children
     };
   }
@@ -1440,6 +1752,29 @@ button.count-toggle {
       people: Array.isArray(raw.people) ? raw.people : []
     };
     return doc;
+  }
+
+  function loadDaysFromSnapshot(raw) {
+    var next = {};
+    if (raw && raw.days && typeof raw.days === "object") {
+      Object.keys(raw.days).forEach(function (key) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+        next[key] = normalizeDaySlice(raw.days[key]);
+      });
+    }
+    var day = raw && typeof raw.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.day) ? raw.day : todayISO();
+    next[day] = normalizeDaySlice({
+      unit: raw && raw.unit,
+      machines: raw && raw.machines,
+      tasks: raw && raw.tasks,
+      people: raw && raw.people,
+      changes: raw && raw.changes
+    });
+    state.daysArchive = next;
+    state.fileDay = day;
+    state.viewDay = "";
+    openViewDay(day);
+    ensureDayRollover();
   }
 
   function mergeChildrenFromSnapshot(raw) {
@@ -2065,6 +2400,11 @@ button.count-toggle {
     state.reportSource = "empty";
     state.report = state.sampleReport;
     state.reportKey = "1rota";
+    state.daysArchive = {};
+    state.fileDay = todayISO();
+    state.viewDay = state.fileDay;
+    state.calendarOpen = false;
+    state.calendarMonth = monthKeyFromISO(state.viewDay);
     bundles = {};
   }
 
@@ -2080,13 +2420,17 @@ button.count-toggle {
 
   function captureBundle(key) {
     if (!key) return;
+    stashViewDay();
     bundles[key] = {
       edits: state.edits,
       removed: state.removed,
       added: state.added,
       positions: state.positions,
       changes: state.changes,
-      report: state.report
+      report: state.report,
+      daysArchive: cloneData(state.daysArchive || {}),
+      fileDay: state.fileDay || todayISO(),
+      viewDay: state.viewDay || state.fileDay || todayISO()
     };
   }
 
@@ -2111,17 +2455,28 @@ button.count-toggle {
       state.positions = saved.positions;
       state.changes = saved.changes;
       state.report = saved.report;
+      state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
+      state.fileDay = saved.fileDay || todayISO();
+      state.viewDay = saved.viewDay || state.fileDay;
+      ensureDayRollover();
       return;
     }
     freshOverlays();
+    state.daysArchive = {};
+    state.fileDay = todayISO();
+    state.viewDay = state.fileDay;
     if (key === "1rota") {
       state.report = state.sampleReport || sampleReportDocument();
       return;
     }
     var unit = findUnitByCode(key);
     var loaded = readSiblingJson(reportFileName(key));
-    if (loaded && loaded.unit && Array.isArray(loaded.machines)) state.report = loaded;
-    else state.report = emptyUnitReport(unit || { name: String(key), code: String(key) });
+    if (loaded && loaded.unit && Array.isArray(loaded.machines)) {
+      state.report = applyUnitSnapshot(loaded, key) || loaded;
+      loadDaysFromSnapshot(loaded);
+    } else {
+      state.report = emptyUnitReport(unit || { name: String(key), code: String(key) });
+    }
   }
 
   function writeReportProof(doc) {
@@ -3539,15 +3894,34 @@ button.count-toggle {
     if (!doc) return false;
     var unit = findUnitByCode(code);
     if (unit && doc.name) unit.name = doc.name;
+    var day = rawJson && typeof rawJson.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawJson.day) ? rawJson.day : todayISO();
+    var days = {};
+    if (rawJson && rawJson.days && typeof rawJson.days === "object") {
+      Object.keys(rawJson.days).forEach(function (key) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+        days[key] = normalizeDaySlice(rawJson.days[key]);
+      });
+    }
+    var changes = Array.isArray(rawJson && rawJson.changes) ? rawJson.changes.slice(-100) : [];
     bundles[code] = {
       edits: { people: {}, machines: {} },
       removed: { people: {}, machines: {} },
       added: { people: [], machines: [] },
       positions: {},
-      changes: [],
-      report: doc
+      changes: changes,
+      report: doc,
+      daysArchive: days,
+      fileDay: day,
+      viewDay: day
     };
-    if (String(state.reportKey || "") === String(code)) state.report = doc;
+    if (String(state.reportKey || "") === String(code)) {
+      state.report = doc;
+      state.changes = changes;
+      state.daysArchive = days;
+      state.fileDay = day;
+      state.viewDay = day;
+      ensureDayRollover();
+    }
     setUnitReportStatus(code, "received");
     return true;
   }
@@ -3710,14 +4084,15 @@ button.count-toggle {
 
   function renderDriveFolderOverlay() {
     var overlay = el("div", { className: "overlay", attrs: { id: "drive-folder-overlay", role: "dialog", "aria-label": "Адреса спільної папки" } });
-    var sheet = el("div", { className: "overlay-sheet" });
-    sheet.append(el("div", { className: "pull-bar", attrs: { "data-close-drive-folder": "1" } }));
-    sheet.append(el("h2", { text: "Web-адреса спільної папки" }));
-    var form = el("form", { attrs: { id: "drive-folder-form" } });
-    form.append(el("label", { className: "label", text: "Web-адреса спільної папки", attrs: { for: "drive-folder" } }));
-    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Адреса" }));
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Адреса спільної папки" }));
+    head.append(iconButton("x", "Закрити", { "data-close-drive-folder": "1" }));
+    sheet.append(head);
+    var form = el("form", { className: "unit-create", attrs: { id: "drive-folder-form" } });
+    form.append(textInput("drive-folder", state.driveFolder, { maxlength: "240", placeholder: "Web-адреса" }));
     form.append(el("button", { text: "Готово", attrs: { type: "submit" } }));
-    form.append(el("button", { className: "drive-folder-open", text: "Закрити", attrs: { type: "button", "data-close-drive-folder": "1" } }));
     sheet.append(form);
     overlay.append(sheet);
     return overlay;
@@ -3729,7 +4104,6 @@ button.count-toggle {
     form.append(el("label", { className: "label", text: "Код доступу", attrs: { for: "drive-encrypt-key" } }));
     form.append(textInput("drive-encrypt-key", state.driveEncryptKey, { maxlength: "500", placeholder: "Код доступу" }));
     form.append(el("button", {
-      className: "drive-folder-open",
       text: "Адреса спільної папки",
       attrs: { type: "button", "data-open-drive-folder": "1" }
     }));
@@ -4055,12 +4429,93 @@ button.count-toggle {
     render();
   }
 
+  function renderDayNav() {
+    if (!state.viewDay) state.viewDay = todayISO();
+    var section = el("section", { className: "block day-nav", attrs: { id: "day-nav", "aria-labelledby": "day-nav-title" } });
+    var row = el("div", { className: "day-nav-row" });
+    row.append(el("button", {
+      className: "day-nav-arrow",
+      text: "←",
+      attrs: { type: "button", "data-day-shift": "-1", "aria-label": "Попередній день" }
+    }));
+    var dateBtn = el("button", {
+      className: "day-nav-date",
+      attrs: { type: "button", id: "day-nav-title", "data-open-calendar": "1", "aria-label": "Календар" }
+    });
+    dateBtn.append(el("span", { text: formatDayUi(state.viewDay) }));
+    dateBtn.append(el("span", { className: "day-nav-weekday", text: weekdayLabel(state.viewDay) }));
+    row.append(dateBtn);
+    row.append(el("button", {
+      className: "day-nav-arrow",
+      text: "→",
+      attrs: { type: "button", "data-day-shift": "1", "aria-label": "Наступний день" }
+    }));
+    section.append(row);
+    return section;
+  }
+
+  function renderCalendarOverlay() {
+    var monthKey = state.calendarMonth || monthKeyFromISO(state.viewDay || todayISO());
+    var parts = monthKey.split("-").map(Number);
+    var year = parts[0];
+    var month = parts[1];
+    var first = new Date(year, month - 1, 1);
+    var startWeekday = first.getDay();
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var overlay = el("div", { className: "overlay", attrs: { id: "calendar-overlay", role: "dialog", "aria-label": "Календар" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Календар" }));
+    head.append(iconButton("x", "Закрити", { "data-close-calendar": "1" }));
+    sheet.append(head);
+    var monthRow = el("div", { className: "calendar-month" });
+    monthRow.append(el("button", {
+      className: "day-nav-arrow",
+      text: "←",
+      attrs: { type: "button", "data-calendar-month": "-1", "aria-label": "Попередній місяць" }
+    }));
+    monthRow.append(el("h3", { text: MONTH_NAMES[month - 1] + " " + year }));
+    monthRow.append(el("button", {
+      className: "day-nav-arrow",
+      text: "→",
+      attrs: { type: "button", "data-calendar-month": "1", "aria-label": "Наступний місяць" }
+    }));
+    sheet.append(monthRow);
+    var weekdays = el("div", { className: "calendar-weekdays" });
+    WEEKDAY_SHORT.forEach(function (label) {
+      weekdays.append(el("span", { text: label }));
+    });
+    sheet.append(weekdays);
+    var grid = el("div", { className: "calendar-grid" });
+    var i;
+    for (i = 0; i < startWeekday; i++) {
+      grid.append(el("span", { className: "calendar-day is-muted", text: "" }));
+    }
+    for (i = 1; i <= daysInMonth; i++) {
+      var iso = year + "-" + pad2(month) + "-" + pad2(i);
+      var classes = "calendar-day";
+      if (hasDaySnapshot(iso)) classes += " has-report";
+      else classes += " is-empty";
+      if (iso === state.viewDay) classes += " is-selected";
+      grid.append(el("button", {
+        className: classes,
+        text: String(i),
+        attrs: { type: "button", "data-pick-day": iso, "aria-label": formatDayUi(iso) }
+      }));
+    }
+    sheet.append(grid);
+    overlay.append(sheet);
+    return overlay;
+  }
+
   function render() {
     refreshPeopleIndex();
     var y = window.scrollY;
     var root = document.getElementById("app");
     var main = el("main", { className: "wrap", attrs: { id: "main" } });
     if (state.scope === "all") {
+      main.append(renderDayNav());
       var changes = renderChanges();
       if (changes) main.append(changes);
     }
@@ -4071,6 +4526,7 @@ button.count-toggle {
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
     if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
+    if (state.calendarOpen) parts.push(renderCalendarOverlay());
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
     if (pendingScroll) {
@@ -4591,11 +5047,8 @@ button.count-toggle {
 
   function renderChanges() {
     if (state.scope !== "all") return null;
+    if (!state.changes.length) return null;
     var section = el("section", { className: "block", attrs: { id: "changes", "aria-labelledby": "changes-title" } });
-    if (!state.changes.length) {
-      section.append(el("p", { className: "changes-empty", attrs: { id: "changes-title" }, text: "Змін ще немає" }));
-      return section;
-    }
     section.append(el("h2", { text: "Що змінено", attrs: { id: "changes-title" } }));
     var list = el("ul", { className: "change-list" });
     state.changes.forEach(function (item) {
@@ -4845,6 +5298,11 @@ button.count-toggle {
       render();
       return;
     }
+    if (event.target.id === "calendar-overlay") {
+      state.calendarOpen = false;
+      render();
+      return;
+    }
     var openDriveFolder = event.target.closest("[data-open-drive-folder]");
     if (openDriveFolder) {
       state.driveFolderOpen = true;
@@ -4854,6 +5312,43 @@ button.count-toggle {
     var closeDriveFolder = event.target.closest("[data-close-drive-folder]");
     if (closeDriveFolder) {
       state.driveFolderOpen = false;
+      render();
+      return;
+    }
+    var dayShift = event.target.closest("[data-day-shift]");
+    if (dayShift) {
+      shiftViewDay(Number(dayShift.getAttribute("data-day-shift") || 0));
+      save();
+      render();
+      return;
+    }
+    var openCalendar = event.target.closest("[data-open-calendar]");
+    if (openCalendar) {
+      state.calendarOpen = true;
+      state.calendarMonth = monthKeyFromISO(state.viewDay || todayISO());
+      render();
+      return;
+    }
+    var closeCalendar = event.target.closest("[data-close-calendar]");
+    if (closeCalendar) {
+      state.calendarOpen = false;
+      render();
+      return;
+    }
+    var calendarMonth = event.target.closest("[data-calendar-month]");
+    if (calendarMonth) {
+      var base = state.calendarMonth || monthKeyFromISO(state.viewDay || todayISO());
+      var bits = base.split("-").map(Number);
+      var d = new Date(bits[0], bits[1] - 1 + Number(calendarMonth.getAttribute("data-calendar-month") || 0), 1);
+      state.calendarMonth = d.getFullYear() + "-" + pad2(d.getMonth() + 1);
+      render();
+      return;
+    }
+    var pickDay = event.target.closest("[data-pick-day]");
+    if (pickDay) {
+      openViewDay(pickDay.getAttribute("data-pick-day"));
+      state.calendarOpen = false;
+      save();
       render();
       return;
     }
@@ -5267,6 +5762,12 @@ button.count-toggle {
     state.sectionKeys = [];
     state.sectionScopeDraft = "people";
     state.sectionForDraft = "";
+    state.daysArchive = {};
+    state.fileDay = todayISO();
+    state.viewDay = state.fileDay;
+    state.calendarOpen = false;
+    state.calendarMonth = monthKeyFromISO(state.viewDay);
+    state.driveFolderOpen = false;
     discardEdits();
     save();
     render();
@@ -5457,8 +5958,12 @@ button.count-toggle {
     check(!document.getElementById("drive-folder") && !!document.getElementById("drive-encrypt-key") && !document.getElementById("drive-folder-admin"), "поле адреси сховано, є код доступу");
     var saveDrive = document.querySelector("#drive-form button[type='submit']");
     check(!!saveDrive && saveDrive.textContent === "Зберегти", "кнопка Зберегти");
-    document.querySelector("[data-open-drive-folder]").click();
-    check(!!document.getElementById("drive-folder-overlay") && !!document.getElementById("drive-folder") && document.getElementById("drive-folder-overlay").textContent.indexOf("Web-адреса спільної папки") !== -1, "вікно адреси спільної папки");
+    var folderOpenBtn = document.querySelector("#drive-form [data-open-drive-folder]");
+    check(!!folderOpenBtn && getComputedStyle(folderOpenBtn).textDecorationLine.indexOf("underline") === -1, "кнопка адреси без підкреслення як лінк");
+    folderOpenBtn.click();
+    check(!!document.getElementById("drive-folder-overlay") && !!document.getElementById("drive-folder") && document.getElementById("drive-folder-overlay").querySelector("h2") && document.getElementById("drive-folder-overlay").querySelector("h2").textContent === "Адреса спільної папки", "вікно адреси спільної папки");
+    check(!document.querySelector("#drive-folder-overlay label") && !document.querySelector("#drive-folder-overlay .drive-folder-open") && !!document.querySelector("#drive-folder-overlay [data-close-drive-folder]"), "оверлей без дубля label і без лінка Закрити");
+    check(document.getElementById("drive-folder-overlay").querySelector(".overlay-sheet").classList.contains("is-compact"), "компактний sheet адреси");
     document.getElementById("drive-folder").value = "https://drive.google.com/drive/folders/abcTEST123";
     document.getElementById("drive-folder").dispatchEvent(new Event("input", { bubbles: true }));
     document.getElementById("drive-folder-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -5528,9 +6033,24 @@ button.count-toggle {
     syncTitle.click();
     check(!state.profile && !document.getElementById("profile-overlay") && state.driveNote.indexOf("web-адресу") === -1 && state.driveNote.indexOf("Встав") === -1, "клік по назві синхронізує і не відкриває профіль");
     state.driveNote = "";
-    var emptyChanges = document.getElementById("changes");
-    check(emptyChanges && emptyChanges.textContent.indexOf("Змін ще немає") !== -1 && emptyChanges.textContent.indexOf("Що змінено") === -1, "порожній рядок змін");
-    check(emptyChanges.offsetTop < document.getElementById("tasks").offsetTop, "порожній рядок над завданнями");
+    var dayNav = document.getElementById("day-nav");
+    check(dayNav && dayNav.offsetTop < document.getElementById("tasks").offsetTop, "рядок дати над завданнями");
+    check(!!document.querySelector("[data-day-shift='-1']") && !!document.querySelector("[data-day-shift='1']") && !!document.querySelector("[data-open-calendar]"), "стрілки дати і календар");
+    check(document.getElementById("day-nav-title") && document.getElementById("day-nav-title").textContent.indexOf(formatDayUi(todayISO())) !== -1, "сьогоднішня дата на екрані");
+    check(document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "немає блоку «Змін ще немає»");
+    var beforeDay = state.viewDay;
+    document.querySelector("[data-day-shift='1']").click();
+    check(state.viewDay === shiftISODate(beforeDay, 1), "стрілка вперед не заблокована");
+    document.querySelector("[data-day-shift='-1']").click();
+    check(state.viewDay === beforeDay, "стрілка назад повертає день");
+    document.querySelector("[data-open-calendar]").click();
+    check(!!document.getElementById("calendar-overlay") && !!document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']"), "календар-оверлей");
+    var todayCell = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
+    check(todayCell && todayCell.classList.contains("has-report"), "день зі знімком темніший");
+    document.querySelector("[data-close-calendar]").click();
+    check(!document.getElementById("calendar-overlay"), "календар закрито хрестиком");
+    var snap = currentUnitSnapshot();
+    check(snap && snap.version === 2 && snap.day === (state.fileDay || todayISO()) && snap.children && typeof snap.days === "object", "у файлі current day + days archive");
     document.querySelector("#people [data-add='person']").click();
     check(!!document.getElementById("card-overlay"), "плюс на порожньому звіті відкриває картку");
     document.getElementById("call-draft").value = "Старт";
@@ -5664,12 +6184,12 @@ button.count-toggle {
     check(state.openCode === "1rota" && state.scope === "all", "після дотику 1rota вибрано");
     check(state.openCode !== "lead", "служба не лишається вибраною");
     check(!document.getElementById("status-create"), "рота не додає статус");
-    check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1, "після 1rota знову порожній рядок");
+    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "після 1rota рядок дати без порожніх змін");
     checkWorkWidth("підрозділ");
     useCode("lyudy");
     check(!document.getElementById("equipment") && !document.getElementById("tasks"), "один дотик ховає чужі розділи");
     check(!document.getElementById("section-access"), "вузький код не роздає доступ");
-    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "вужчий дотик без блоку змін");
+    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("day-nav"), "вужчий дотик без дати і змін");
     checkWorkWidth("один розділ");
     document.querySelector("[data-open-profile]").click();
     check(document.getElementById("profile-overlay") && document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "вужчий код бачить назви розділів");
@@ -5681,7 +6201,7 @@ button.count-toggle {
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
     check(state.openCode === "1rota", "після дотику 1rota вибрано");
-    check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1, "після 1rota знову порожній рядок");
+    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "після 1rota знову рядок дати");
     check(peopleFrac.getAttribute("aria-label").indexOf("1 рота") !== -1, "дріб роти");
     check(text("people-title") === "Особовий склад", "назва блоку людей");
     check(text("equipment-title") === "ОВТ", "назва блоку техніки");
@@ -5886,9 +6406,8 @@ button.count-toggle {
     check(!state.positions.p4, "до галочки посада не записана");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     check(state.edits.people.p4 && state.edits.people.p4.rank === "Капітан", "звання зберігається");
-    check(document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "після запису порожній рядок зникає");
-    check(text("changes-title") === "Що змінено", "заголовок що змінено");
-    check(document.getElementById("changes").offsetTop < document.getElementById("tasks").offsetTop, "що змінено над завданнями");
+    check(document.getElementById("day-nav") && text("changes-title") === "Що змінено", "після запису дата лишається і з’являється що змінено");
+    check(document.getElementById("day-nav").offsetTop < document.getElementById("changes").offsetTop && document.getElementById("changes").offsetTop < document.getElementById("tasks").offsetTop, "дата над змінами над завданнями");
     check(document.getElementById("changes").textContent.indexOf("Було:") !== -1 && document.getElementById("changes").textContent.indexOf("Стало:") !== -1, "запис було і стало над завданнями");
     check(!localStorage.getItem("zvitnist.lead.v1"), "звання не в пам’яті браузера");
     check(state.positions.p4 === "Водій групи", "посада зберігається");
@@ -6023,7 +6542,7 @@ button.count-toggle {
     check(state.edits.people.p4 && state.edits.people.p4.name === "Інше ПІП", "вужчий код може правити картку");
     check(state.changes.length === changesAtNarrow && !state.changes.some(function (item) { return item.after === "Інше ПІП"; }), "вужчий код не пише запис зміни");
     check(!document.getElementById("equipment") && !document.getElementById("tasks"), "вужчий код не відкриває інші розділи");
-    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "lyudy без блоку змін");
+    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("day-nav"), "lyudy без дати і змін");
     check(document.getElementById("app").textContent.indexOf("Самоскиди") === -1, "lyudy не показує техніку");
     applyCode("tekhnika");
     check(!document.getElementById("people") && document.getElementById("equipment") && !document.getElementById("tasks"), "вузький код техніки");
@@ -6107,7 +6626,7 @@ button.count-toggle {
     openFromList.click();
     check(state.scope === "all" && state.openCode === state.units[0].code && document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "код нового підрозділу відкриває звіт");
     check(state.holder === state.units[0].name, "відкрито звіт підлеглого");
-    check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf("Змін ще немає") !== -1 && document.getElementById("changes").offsetTop < document.getElementById("tasks").offsetTop, "у нового підрозділу свій порожній журнал");
+    check(document.getElementById("day-nav") && document.getElementById("day-nav").offsetTop < document.getElementById("tasks").offsetTop && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "у нового підрозділу свій рядок дати");
     var emptyPeople = document.querySelector("#people .frac");
     var emptyGear = document.querySelector("#equipment .frac");
     check(emptyPeople && emptyPeople.getAttribute("data-plus") === "0" && emptyPeople.getAttribute("data-total") === "0", "новий підрозділ не показує 14/18");
@@ -6589,14 +7108,44 @@ button.count-toggle {
       document.body.append(report);
     }
 
-    var samplePayload = JSON.stringify({ version: 1, name: "Тест", unit: { id: "root", name: "Тест", people: [] }, machines: [], tasks: [], children: [{ name: "Нижча", code: "AAAA-BBBB-CCCC-DDDD-EEEE" }] });
+    var samplePayload = JSON.stringify({
+      version: 2,
+      name: "Тест",
+      day: todayISO(),
+      unit: { id: "root", name: "Тест", people: [] },
+      machines: [],
+      tasks: [],
+      days: {},
+      children: [{ name: "Нижча", code: "AAAA-BBBB-CCCC-DDDD-EEEE" }]
+    });
     encryptWithCode("секрет-тест", samplePayload).then(function (bytes) {
       check(bytes && bytes.length > 32 && bytes[0] === 118 && bytes[1] === 117, "шифротекст AES-GCM з заголовком");
       return decryptWithCode("секрет-тест", bytes).then(function (plain) {
         var parsed = JSON.parse(plain);
-        check(parsed && parsed.name === "Тест" && parsed.children && parsed.children[0].code.indexOf("AAAA") === 0, "розшифрування повертає о/с структуру і нижчих");
+        check(parsed && parsed.name === "Тест" && parsed.day && parsed.children && parsed.children[0].code.indexOf("AAAA") === 0 && parsed.days, "розшифрування повертає day+days і нижчих");
       });
     }).then(function () {
+      // Rollover: вчора → архів, новий день копіює о/с і плани.
+      var yesterday = shiftISODate(todayISO(), -1);
+      state.daysArchive = {};
+      state.fileDay = yesterday;
+      state.viewDay = "";
+      state.report = {
+        name: "Тест",
+        code: "1rota",
+        file: SAMPLE_FILE,
+        unit: { id: "root", name: "Тест", people: [{ id: "px", name: "A", rank: "Солдат", callsign: "X", accounting: "official", duty: "in", position: "" }] },
+        machines: [{ id: "mx", name: "M", type: "lat", board: "1", accounting: "official", duty: "in" }],
+        tasks: [{ id: "tx", title: "План", status: "plan", people: [] }],
+        people: []
+      };
+      state.changes = [];
+      openViewDay(yesterday);
+      ensureDayRollover();
+      check(state.fileDay === todayISO() && state.viewDay === todayISO(), "rollover відкриває сьогодні");
+      check(state.daysArchive[yesterday] && state.daysArchive[yesterday].unit && (state.daysArchive[yesterday].unit.people || []).length === 1, "вчорашній зріз в архіві");
+      check(state.report.tasks && state.report.tasks[0] && state.report.tasks[0].status === "plan", "плани лишаються планами");
+      check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ОВТ як були");
       finishSelfTest();
     }).catch(function (err) {
       check(false, "шифрування кодом: " + (err && err.message ? err.message : err));
@@ -6650,7 +7199,13 @@ button.count-toggle {
       current.el.style.transform = "";
       if (current.active) {
         if (current.el.closest("#profile-overlay")) closeProfile();
-        else if (state.draft) discardDraft();
+        else if (current.el.closest("#drive-folder-overlay")) {
+          state.driveFolderOpen = false;
+          render();
+        } else if (current.el.closest("#calendar-overlay")) {
+          state.calendarOpen = false;
+          render();
+        } else if (state.draft) discardDraft();
         else {
           discardEdits();
           render();
