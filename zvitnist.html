@@ -4987,6 +4987,7 @@ button.count-toggle {
     check(!!manifestLink && /manifest\.webmanifest/i.test(manifestLink.getAttribute("href") || ""), "є посилання на manifest");
     check(!!document.querySelector('meta[name="theme-color"]'), "є theme-color");
     check(pageScript.indexOf("service" + "Worker") !== -1 && pageScript.indexOf("sw.js") !== -1, "є реєстрація робітника");
+    check(pageScript.indexOf("controllerchange") !== -1 && pageScript.indexOf(".update(") !== -1, "є оновлення робітника з одним reload");
     var sampleFile = readSiblingJson("zvit-1rota.json");
     check(!sampleFile, "демо-файл zvit-1rota.json не підхоплюється");
     check(!document.getElementById("code-switch") && !document.getElementById("code-form") && !document.getElementById("code") && !document.getElementById("open-code") && document.getElementById("app").textContent.indexOf("Код розділу") === -1 && document.getElementById("app").textContent.indexOf("Профільні розділи") === -1 && !document.querySelector(".samples") && !document.querySelector(".code-picks") && !document.querySelector(".code-pick"), "немає коду розділу і перемикача служби");
@@ -6199,7 +6200,15 @@ button.count-toggle {
     else render();
     if (params.get("test") === "1") runSelfTest();
     if ((location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1") && "serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(function () {});
+      var swRefreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (swRefreshing) return;
+        swRefreshing = true;
+        location.reload();
+      });
+      navigator.serviceWorker.register("sw.js").then(function (registration) {
+        registration.update().catch(function () {});
+      }).catch(function () {});
     }
   }
 

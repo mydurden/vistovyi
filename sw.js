@@ -1,5 +1,5 @@
-/* Вістовий — мінімальний service worker: cache-first для локальних ресурсів сторінки. */
-var CACHE = "vistovyi-v10";
+/* Вістовий — service worker: network-first для сторінки й app assets; Google/Drive лише мережа. */
+var CACHE = "vistovyi-v11";
 var PRECACHE = [
   "./zvitnist.html",
   "./manifest.webmanifest",
@@ -44,6 +44,12 @@ function isAppAsset(url) {
   );
 }
 
+function isHtmlOrShell(url) {
+  if (!sameOrigin(url)) return false;
+  var path = new URL(url, self.location.href).pathname;
+  return /\/zvitnist\.html$/i.test(path) || /\/sw\.js$/i.test(path);
+}
+
 self.addEventListener("install", function (event) {
   event.waitUntil(
     caches.open(CACHE).then(function (cache) {
@@ -84,17 +90,22 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
+  // HTML / sw.js і решта app assets — network-first: свіже з мережі, офлайн з кешу.
   event.respondWith(
     caches.open(CACHE).then(function (cache) {
-      return cache.match(request).then(function (cached) {
-        if (cached) return cached;
-        return fetch(request).then(function (response) {
-          if (response && response.ok) {
-            cache.put(request, response.clone());
-          }
-          return response;
-        }).catch(function () {
-          if (request.mode === "navigate" || (request.headers.get("accept") || "").indexOf("text/html") !== -1) {
+      return fetch(request).then(function (response) {
+        if (response && response.ok) {
+          cache.put(request, response.clone());
+        }
+        return response;
+      }).catch(function () {
+        return cache.match(request).then(function (cached) {
+          if (cached) return cached;
+          if (
+            isHtmlOrShell(url) ||
+            request.mode === "navigate" ||
+            (request.headers.get("accept") || "").indexOf("text/html") !== -1
+          ) {
             return cache.match("./zvitnist.html");
           }
           return cached;
