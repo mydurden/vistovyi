@@ -1677,6 +1677,7 @@ button.count-toggle {
       ? edit.accounting
       : (ACCOUNTING[item.accounting] ? item.accounting : "official");
     var parts = personNameParts(item);
+    var unitText = edit.unit != null ? edit.unit : (item.unit != null ? item.unit : "");
     return {
       id: item.id,
       surname: parts.surname,
@@ -1685,6 +1686,7 @@ button.count-toggle {
       name: joinPersonName(parts),
       rank: edit.rank != null ? edit.rank : (item.rank || ""),
       callsign: edit.callsign != null ? edit.callsign : (item.callsign || ""),
+      unit: String(unitText || "").slice(0, 80),
       accounting: accounting,
       duty: duty,
       position: Object.prototype.hasOwnProperty.call(state.positions, item.id)
@@ -2318,6 +2320,7 @@ button.count-toggle {
   function personUnit(item) {
     var edit = personEdit(item.id);
     if (edit.unit != null) return edit.unit;
+    if (item && item.unit != null && String(item.unit).trim() !== "") return item.unit;
     var path = findPath(viewUnit(), item.id, []);
     if (!path && item.place) path = findNode(viewUnit(), item.place, []);
     if (!path) return "";
@@ -2339,8 +2342,9 @@ button.count-toggle {
     var names = path.map(function (node) { return node.name; });
     var lowerFirst = names.slice().reverse().join(" ");
     var edit = personEdit(item.id);
-    if (edit.unit != null) {
-      var custom = String(edit.unit).replace(/\s+/g, " ").trim();
+    var customRaw = edit.unit != null ? edit.unit : (item && item.unit != null ? item.unit : null);
+    if (customRaw != null) {
+      var custom = String(customRaw).replace(/\s+/g, " ").trim();
       var asStored = names.join(" · ");
       var asSpace = names.join(" ");
       if (custom && custom !== asStored && custom !== asSpace && custom !== lowerFirst) {
@@ -3217,6 +3221,7 @@ button.count-toggle {
           name: joinPersonName(nameParts) || String(item.name || item.callsign).slice(0, 80),
           rank: String(item.rank || "").slice(0, 80),
           callsign: item.callsign.trim().slice(0, 80),
+          unit: String(item.unit || "").slice(0, 80),
           accounting: item.accounting,
           duty: item.duty,
           position: String(item.position || "").slice(0, 80),
@@ -5959,6 +5964,7 @@ button.count-toggle {
         name: joinPersonName(draftParts),
         rank: draft.rank || "",
         callsign: draft.callsign || "",
+        unit: String(draft.unit || "").slice(0, 80),
         accounting: draft.accounting || "official",
         duty: draft.duty || "in",
         position: draft.position || "",
@@ -6360,10 +6366,12 @@ button.count-toggle {
       }
     }
     if (kind === "person" && fieldName === "unit") {
-      var personItem = addedPerson(id);
-      var place = personItem ? placeFromUnit(bucket[id].unit) : "";
-      if (personItem && place) {
-        personItem.place = place;
+      var personItem = addedPerson(id) || findPerson(id);
+      if (personItem) personItem.unit = String(bucket[id].unit || "").slice(0, 80);
+      var addedOnly = addedPerson(id);
+      var place = addedOnly ? placeFromUnit(bucket[id].unit) : "";
+      if (addedOnly && place) {
+        addedOnly.place = place;
         openUnitPath(place);
       }
     }
@@ -7780,6 +7788,23 @@ button.count-toggle {
     check(!localStorage.getItem("zvitnist.lead.v1"), "звання не в пам’яті браузера");
     check(state.positions.p4 === "Водій групи", "посада зберігається");
     check(state.edits.people.p4 && state.edits.people.p4.surname === "Тестов" && state.edits.people.p4.name === "Тестов Ігор Васильович", "прізвище змінюється і збирає name");
+    // ZS-102: поле «Підрозділ» лишається після збереження і після bake (без повного materialize — він зріже reason/back машин).
+    if (!state.open.has("person:p4")) toggle("person:p4");
+    document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
+    var unitField = document.getElementById("unitp-p4");
+    unitField.value = "Рота Альфа";
+    unitField.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
+    check(state.edits.people.p4 && state.edits.people.p4.unit === "Рота Альфа", "підрозділ у edits після збереження");
+    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Рота Альфа", "підрозділ видно в картці після збереження");
+    var bakedUnitPerson = bakedPersonFields(findPerson("p4"));
+    check(bakedUnitPerson && bakedUnitPerson.unit === "Рота Альфа", "bakedPersonFields зберігає unit");
+    findPerson("p4").unit = "Рота Альфа";
+    delete state.edits.people.p4.unit;
+    render();
+    if (!state.open.has("person:p4")) toggle("person:p4");
+    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Рота Альфа", "personUnit читає item.unit після зняття edits");
+    state.edits.people.p4.unit = "Рота Альфа";
     check(!!document.querySelector("#panel-person-p4 [data-remove='person:p4']"), "створювач видаляє картку");
     check(!!document.querySelector("#people [data-add='person']") && !!document.querySelector("#equipment [data-add='machine']"), "плюс біля шестерень");
     check(!document.getElementById("add-person-form") && !document.getElementById("add-machine-form") && !document.getElementById("add-person-name") && !document.getElementById("add-machine-name"), "немає коротких полів додавання");
