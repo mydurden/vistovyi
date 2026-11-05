@@ -1410,6 +1410,7 @@ button.count-toggle {
     calendarMonth: "",
     changesOpen: false,
     mergeConflicts: [],
+    mergeDupes: [],
     removedAt: { people: {}, machines: {} }
   };
 
@@ -5698,15 +5699,19 @@ button.count-toggle {
   function localOwnSnapshotForMerge(encryptKey) {
     var bundleKey = canonicalOwnBundleKey(encryptKey);
     var openChild = driveChildWriteCode();
+    // Відкрита підлегла ланка: живий state — її звіт; власний файл брати з bundles.
     if (openChild) {
-      return snapshotFromStoredBundle(bundleKey);
+      return snapshotFromStoredBundle(bundleKey) || null;
+    }
+    // ZS-127: завжди канонічний reportKey і живий знімок (не stale bundles).
+    normalizeOwnReportKey();
+    if (String(state.reportKey || "") !== String(bundleKey || "")) {
+      state.reportKey = bundleKey;
     }
     materializeOverlays();
-    captureBundle(state.reportKey);
-    if (String(state.reportKey || "") === String(bundleKey || "")) {
-      return currentUnitSnapshot();
-    }
-    return snapshotFromStoredBundle(bundleKey) || currentUnitSnapshot();
+    captureBundle(bundleKey);
+    if (state.report) return currentUnitSnapshot();
+    return snapshotFromStoredBundle(bundleKey) || null;
   }
 
   function applyMergedRemovals(snapshot) {
@@ -5724,6 +5729,62 @@ button.count-toggle {
       state.removed.machines[item.id] = true;
       state.removedAt.machines[item.id] = item.updatedAt || stampNow();
     });
+  }
+
+  function personFioKey(person) {
+    if (!person) return "";
+    var parts = personNameParts(person);
+    var surname = lowerUa(parts.surname).replace(/\s+/g, " ").trim();
+    var given = lowerUa(parts.givenName).replace(/\s+/g, " ").trim();
+    var patronymic = lowerUa(parts.patronymic).replace(/\s+/g, " ").trim();
+    if (!surname || !given) return "";
+    return surname + "|" + given + "|" + patronymic;
+  }
+
+  function personFilledScore(person) {
+    if (!person) return 0;
+    var score = 0;
+    PERSON_MERGE_FIELDS.forEach(function (field) {
+      var value = person[field];
+      if (value != null && String(value).trim() !== "") score += 1;
+    });
+    return score;
+  }
+
+  // ZS-127: після sync — пари людей з однаковим ПІБ і різними id (питати, не автозливати).
+  function findPersonDuplicatePairs(peopleList) {
+    var groups = {};
+    (Array.isArray(peopleList) ? peopleList : []).forEach(function (person) {
+      if (!person || !person.id || state.removed.people[person.id]) return;
+      var key = personFioKey(person);
+      if (!key) return;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(person);
+    });
+    var pairs = [];
+    Object.keys(groups).forEach(function (key) {
+      var list = groups[key];
+      if (list.length < 2) return;
+      var i;
+      for (i = 0; i < list.length - 1; i++) {
+        var left = list[i];
+        var right = list[i + 1];
+        var keep = personFilledScore(left) >= personFilledScore(right) ? left : right;
+        var drop = keep.id === left.id ? right : left;
+        pairs.push({
+          key: key,
+          keepId: keep.id,
+          dropId: drop.id,
+          label: joinPersonName(personNameParts(keep)) || personCallsign(keep) || keep.id
+        });
+      }
+    });
+    return pairs;
+  }
+
+  function queuePersonDuplicatePrompts(snapshot) {
+    var people = snapshot && snapshot.unit ? flattenPeopleFromUnit(snapshot.unit) : flattenPeopleFromUnit(viewUnit());
+    state.mergeDupes = findPersonDuplicatePairs(people);
   }
 
   function pullOwnUnitFile(token, folderId) {
@@ -5761,11 +5822,14 @@ button.count-toggle {
             }
           }
           state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
+          if (!driveChildWriteCode()) queuePersonDuplicatePrompts(merged.snapshot);
+          else state.mergeDupes = [];
           return {
             pulled: true,
             keptLocal: false,
             merged: true,
             conflicts: state.mergeConflicts.length,
+            dupes: (state.mergeDupes || []).length,
             name: name,
             fileId: file.id,
             fromLegacy: !!resolved.fromLegacy
@@ -6132,9 +6196,10 @@ button.count-toggle {
     if (settings && settings.wroteSettings) parts.push("довідники записано");
     else if (settings && settings.readSettings) parts.push("довідники прочитано");
     if (pulled && pulled.pulled && pulled.quarantined) parts.push("звіт підлеглої ланки перенесено в загальний");
-    else if (pulled && pulled.pulled && pulled.merged) {
+    else     if (pulled && pulled.pulled && pulled.merged) {
       parts.push("свій файл злито");
       if (pulled.conflicts) parts.push("є поля на вибір: " + pulled.conflicts);
+      if (pulled.dupes) parts.push("схожі картки: " + pulled.dupes);
     } else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
@@ -6426,6 +6491,102 @@ button.count-toggle {
       }
     }
     state.mergeConflicts = list.slice(1);
+    materializeOverlays();
+    captureBundle(state.reportKey);
+    save();
+    render();
+  }
+
+  function renderMergeDupeOverlay() {
+    var list = Array.isArray(state.mergeDupes) ? state.mergeDupes : [];
+    if (!list.length) return null;
+    if (state.mergeConflicts && state.mergeConflicts.length) return null;
+    var dupe = list[0];
+    var keep = findPerson(dupe.keepId);
+    var drop = findPerson(dupe.dropId);
+    var keepLabel = keep ? (personCallsign(keep) || personName(keep) || dupe.keepId) : dupe.keepId;
+    var dropLabel = drop ? (personCallsign(drop) || personName(drop) || dupe.dropId) : dupe.dropId;
+    var overlay = el("div", { className: "overlay", attrs: { id: "merge-dupe-overlay", role: "dialog", "aria-label": "Схожі картки після sync" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Схожі картки" }));
+    sheet.append(head);
+    sheet.append(el("p", {
+      className: "hint",
+      text: "Після sync знайдено дві картки з однаковим ПІБ («" + (dupe.label || "без імені") + "»). Що зробити?"
+    }));
+    sheet.append(el("p", { className: "hint", text: "1: " + keepLabel }));
+    sheet.append(el("p", { className: "hint", text: "2: " + dropLabel }));
+    if (list.length > 1) {
+      sheet.append(el("p", { className: "hint", text: "Ще таких пар: " + (list.length - 1) }));
+    }
+    var form = el("div", { className: "unit-create" });
+    form.append(el("button", {
+      text: "Об’єднати в одну",
+      attrs: { type: "button", "data-merge-dupe": "combine" }
+    }));
+    form.append(el("button", {
+      text: "Лишити обидві",
+      attrs: { type: "button", "data-merge-dupe": "keep" }
+    }));
+    sheet.append(form);
+    overlay.append(sheet);
+    return overlay;
+  }
+
+  function removePersonFromUnitTree(root, personId) {
+    if (!root || !personId) return false;
+    var removed = false;
+    if (Array.isArray(root.people)) {
+      var next = root.people.filter(function (item) {
+        if (item && item.id === personId) {
+          removed = true;
+          return false;
+        }
+        return true;
+      });
+      root.people = next;
+    }
+    (Array.isArray(root.children) ? root.children : []).forEach(function (child) {
+      if (removePersonFromUnitTree(child, personId)) removed = true;
+    });
+    return removed;
+  }
+
+  function applyMergeDupeChoice(action) {
+    var list = Array.isArray(state.mergeDupes) ? state.mergeDupes : [];
+    if (!list.length) return;
+    var dupe = list[0];
+    if (action === "combine") {
+      var keep = findPerson(dupe.keepId);
+      var drop = findPerson(dupe.dropId);
+      if (keep && drop) {
+        var ts = stampNow();
+        if (!keep.fieldsUpdatedAt) keep.fieldsUpdatedAt = {};
+        PERSON_MERGE_FIELDS.forEach(function (field) {
+          var keepVal = keep[field];
+          var dropVal = drop[field];
+          if ((keepVal == null || String(keepVal).trim() === "") && dropVal != null && String(dropVal).trim() !== "") {
+            keep[field] = dropVal;
+            keep.fieldsUpdatedAt[field] = ts;
+          }
+        });
+        keep.name = joinPersonName(personNameParts(keep));
+        keep.updatedAt = ts;
+        if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+        if (!state.removedAt.people) state.removedAt.people = {};
+        state.removed.people[dupe.dropId] = true;
+        state.removedAt.people[dupe.dropId] = ts;
+        removePersonFromUnitTree(viewUnit(), dupe.dropId);
+        state.added.people = (state.added.people || []).filter(function (item) {
+          return !(item && item.id === dupe.dropId);
+        });
+        delete state.edits.people[dupe.dropId];
+        delete state.positions[dupe.dropId];
+      }
+    }
+    state.mergeDupes = list.slice(1);
     materializeOverlays();
     captureBundle(state.reportKey);
     save();
@@ -7049,6 +7210,9 @@ button.count-toggle {
     if (state.mergeConflicts && state.mergeConflicts.length) {
       var mergeOverlay = renderMergeConflictOverlay();
       if (mergeOverlay) parts.push(mergeOverlay);
+    } else if (state.mergeDupes && state.mergeDupes.length) {
+      var dupeOverlay = renderMergeDupeOverlay();
+      if (dupeOverlay) parts.push(dupeOverlay);
     }
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
@@ -7955,6 +8119,11 @@ button.count-toggle {
     var mergePick = event.target.closest("[data-merge-pick]");
     if (mergePick) {
       applyMergeConflictChoice(mergePick.getAttribute("data-merge-pick"));
+      return;
+    }
+    var mergeDupe = event.target.closest("[data-merge-dupe]");
+    if (mergeDupe) {
+      applyMergeDupeChoice(mergeDupe.getAttribute("data-merge-dupe"));
       return;
     }
     var openAccess = event.target.closest("[data-change-access]");
@@ -10754,6 +10923,112 @@ button.count-toggle {
       applyMergeConflictChoice("remote");
       check((state.edits.people.p126 && state.edits.people.p126.callsign === "RemoteCS") || (findPerson("p126") && personCallsign(findPerson("p126")) === "RemoteCS"), "ZS-126: вибір remote застосовує значення");
       state.mergeConflicts = [];
+      // ZS-127: complementary fields — звання з remote + по батькові з local; живий знімок при збитому reportKey.
+      var base127 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p127", name: "Шевченко Тарас", surname: "Шевченко", givenName: "Тарас", patronymic: "", rank: "Солдат", callsign: "Кобзар", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T09:00:00.000Z", fieldsUpdatedAt: {} }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var local127 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p127", name: "Шевченко Тарас Григорович", surname: "Шевченко", givenName: "Тарас", patronymic: "Григорович", rank: "Солдат", callsign: "Кобзар", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T10:00:00.000Z", fieldsUpdatedAt: { patronymic: "2026-11-05T10:00:00.000Z", name: "2026-11-05T10:00:00.000Z" } }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var remote127 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p127", name: "Шевченко Тарас", surname: "Шевченко", givenName: "Тарас", patronymic: "", rank: "Сержант", callsign: "Кобзар", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T11:00:00.000Z", fieldsUpdatedAt: { rank: "2026-11-05T11:00:00.000Z" } }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var merged127 = mergeUnitSnapshots(local127, remote127, base127);
+      var p127 = flattenPeopleFromUnit(merged127.snapshot.unit).filter(function (row) { return row.id === "p127"; })[0];
+      check(!!p127 && p127.patronymic === "Григорович" && p127.rank === "Сержант", "ZS-127: complementary — по батькові local + звання remote");
+      check(!(merged127.conflicts || []).length, "ZS-127: complementary без конфліктів");
+      state.driveEncryptKey = "секрет-127";
+      state.openCode = "lead";
+      state.reportRoot = "lead";
+      state.scope = "all";
+      state.reportKey = "lead";
+      state.report = cloneData(local127);
+      state.report.unit = cloneData(local127.unit);
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.removed = { people: {}, machines: {} };
+      state.daysArchive = {};
+      state.fileDay = todayISO();
+      state.viewDay = todayISO();
+      captureBundle("lead");
+      state.reportKey = "секрет-127";
+      bundles["секрет-127"] = bundles["lead"];
+      var live127 = localOwnSnapshotForMerge("секрет-127");
+      check(!!live127 && JSON.stringify(live127.unit || {}).indexOf("Григорович") !== -1, "ZS-127: localOwnSnapshotForMerge бачить по батькові навіть при reportKey=пароль");
+      check(state.reportKey === "lead", "ZS-127: normalizeOwnReportKey під час localOwnSnapshotForMerge");
+      // ZS-127: дублікати за ПІБ з різними id — питати, не мовчки зливати.
+      var dupPeople = [
+        { id: "dupA", name: "Бондар Іван Петрович", surname: "Бондар", givenName: "Іван", patronymic: "Петрович", rank: "", callsign: "Схід", accounting: "official", duty: "in", position: "" },
+        { id: "dupB", name: "Бондар Іван Петрович", surname: "Бондар", givenName: "Іван", patronymic: "Петрович", rank: "Сержант", callsign: "", accounting: "official", duty: "in", position: "" }
+      ];
+      var pairs127 = findPersonDuplicatePairs(dupPeople);
+      check(pairs127.length === 1 && pairs127[0].keepId && pairs127[0].dropId && pairs127[0].keepId !== pairs127[0].dropId, "ZS-127: знайдено пару дублікатів за ПІБ");
+      state.report = {
+        name: "Служба",
+        code: "lead",
+        file: SAMPLE_FILE,
+        unit: { id: "root", name: "Служба", people: cloneData(dupPeople) },
+        machines: [],
+        tasks: [],
+        people: []
+      };
+      state.reportKey = "lead";
+      state.openCode = "lead";
+      state.mergeConflicts = [];
+      state.mergeDupes = pairs127.slice();
+      state.removed = { people: {}, machines: {} };
+      state.edits = { people: {}, machines: {} };
+      state.added = { people: [], machines: [] };
+      indexPeople(viewUnit());
+      render();
+      check(!!document.getElementById("merge-dupe-overlay"), "ZS-127: діалог схожих карток на екрані");
+      var keptId127 = pairs127[0].keepId;
+      var droppedId127 = pairs127[0].dropId;
+      applyMergeDupeChoice("combine");
+      check(!!state.removed.people[droppedId127] && !findPerson(droppedId127), "ZS-127: після об’єднання друга картка прибрана");
+      var kept127 = findPerson(keptId127);
+      check(!!kept127 && kept127.rank === "Сержант" && personCallsign(kept127) === "Схід", "ZS-127: об’єднана картка зібрала звання і позивний");
+      check(!document.getElementById("merge-dupe-overlay"), "ZS-127: діалог дублікатів закрито");
+      state.mergeDupes = [];
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125;
       });
