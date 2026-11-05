@@ -1373,6 +1373,9 @@ button.count-toggle {
     machineStatusListOpen: false,
     typeListOpen: false,
     settingsReserve: {},
+    // ZS-128: канонічні назви підрозділів для vu-*.bin (від lead), не від коду доступу.
+    driveUnitNames: {},
+    driveUnitFileLabel: {},
     profile: false,
     profilePane: "",
     report: null,
@@ -1641,39 +1644,91 @@ button.count-toggle {
     return out.slice(0, 48);
   }
 
+  function rememberCanonUnitName(code, name) {
+    var key = String(code || "").trim();
+    var label = String(name || "").trim().slice(0, 80);
+    if (!key || !label || isDefaultUnitName(label)) return false;
+    if (!state.driveUnitNames || typeof state.driveUnitNames !== "object") state.driveUnitNames = {};
+    state.driveUnitNames[key] = label;
+    state.driveUnitNames[key.toLowerCase()] = label;
+    var unit = findUnitByCode(key);
+    if (unit) {
+      var kept = preferUnitName(unit.name, label);
+      if (kept) unit.name = kept;
+    }
+    return true;
+  }
+
+  // Канонічна назва для файлу unit — лише від lead (інвайт / units / settings), не від коду.
+  function canonUnitDriveName(code) {
+    var key = String(code || "").trim();
+    if (!key) return "";
+    var unit = findUnitByCode(key);
+    var fromUnit = unit ? String(unit.name || "").trim() : "";
+    var map = state.driveUnitNames && typeof state.driveUnitNames === "object" ? state.driveUnitNames : {};
+    var fromMap = String(map[key] || map[key.toLowerCase()] || "").trim();
+    var name = preferUnitName(fromMap, fromUnit);
+    if (isDefaultUnitName(name)) return "";
+    return name;
+  }
+
+  function driveFileNameFromLabel(label) {
+    var slug = sanitizeDriveSlug(label);
+    if (!slug) return "";
+    return "vu-" + slug + ".bin";
+  }
+
   function unitDriveLabelForKey(code) {
     var key = String(code || "").trim();
     if (!key) return "";
     var lower = key.toLowerCase();
     // ZS-120: канон файлу служби — lead (не sluzhba).
     if (lower === "lead" || lower === "sluzhba" || lower === "1rota") return "lead";
-    var unit = findUnitByCode(key);
-    if (unit && unit.name) return String(unit.name);
-    if (looksLikeUnitCode(key)) {
-      var parts = key.split("-");
-      return parts[parts.length - 1] || "unit";
-    }
+    // ZS-128: файл підрозділу — від назви lead (units/інвайт/settings), без хвоста коду і без «Підрозділ».
+    var canon = canonUnitDriveName(key);
+    if (canon) return canon;
+    if (findUnitByCode(key) || looksLikeUnitCode(key)) return "";
     // Пароль адміна / загальний — не світити пароль; ярлик lead.
     if (String(state.reportRoot || "").toLowerCase() === "lead" || String(state.openCode || "").toLowerCase() === "lead") {
       return "lead";
     }
-    if (state.holder) return String(state.holder);
+    if (state.holder && !findUnitByCode(state.holder) && !looksLikeUnitCode(state.holder)) return String(state.holder);
     return "zagalnyi";
   }
 
   function unitDriveFileName(code) {
     var key = String(code || "").trim();
     if (!key) return "";
-    var slug = sanitizeDriveSlug(unitDriveLabelForKey(key));
-    if (!slug) {
-      if (looksLikeUnitCode(key)) {
-        var tail = key.replace(/[^A-Za-z0-9]/g, "").slice(-4).toLowerCase();
-        slug = "unit-" + (tail || "x");
-      } else {
-        slug = "zagalnyi";
-      }
+    var lower = key.toLowerCase();
+    if (lower === "lead" || lower === "sluzhba" || lower === "1rota") return "vu-lead.bin";
+    var canon = canonUnitDriveName(key);
+    if (canon) return driveFileNameFromLabel(canon);
+    // Без канонічної назви відомий unit / unit-код / відомий запис у map — не вигадувати slug.
+    var map = state.driveUnitNames && typeof state.driveUnitNames === "object" ? state.driveUnitNames : {};
+    if (findUnitByCode(key) || looksLikeUnitCode(key) || map[key] || map[lower]) return "";
+    var label = unitDriveLabelForKey(key);
+    var name = driveFileNameFromLabel(label);
+    if (name) return name;
+    return "vu-zagalnyi.bin";
+  }
+
+  // Лише для пошуку/міграції на читанні — старі помилкові ярлики, не для нового запису.
+  function unitDriveAliasLabels(code) {
+    var key = String(code || "").trim();
+    var out = [];
+    function push(label) {
+      var text = String(label || "").trim();
+      if (!text || isDefaultUnitName(text)) return;
+      if (out.indexOf(text) === -1) out.push(text);
     }
-    return "vu-" + slug + ".bin";
+    push(canonUnitDriveName(key));
+    var prev = state.driveUnitFileLabel && state.driveUnitFileLabel[key];
+    if (prev) push(prev);
+    var map = state.driveUnitNames && typeof state.driveUnitNames === "object" ? state.driveUnitNames : {};
+    Object.keys(map).forEach(function (mapKey) {
+      if (String(mapKey).toLowerCase() === key.toLowerCase()) push(map[mapKey]);
+    });
+    return out;
   }
 
   // ZS-120: проміжний ярлик ZS-112 для файлу служби.
@@ -1687,35 +1742,63 @@ button.count-toggle {
     var modern = unitDriveFileName(key);
     var sluzhba = unitDriveFileNameSluzhbaLegacy(key);
     var legacy = unitDriveFileNameLegacy(key);
-    if (!modern) return Promise.resolve({ file: null, name: "", legacyName: legacy, fromLegacy: false });
     var queryOpts = opts || { kind: "binary", decryptKey: key };
+    // Кандидати імені: канон lead → попередня назва → інші відомі ярлики → legacy.
+    var aliasNames = [];
+    unitDriveAliasLabels(key).forEach(function (label) {
+      var fileName = driveFileNameFromLabel(label);
+      if (fileName && fileName !== modern && aliasNames.indexOf(fileName) === -1) aliasNames.push(fileName);
+    });
+    // Старі помилкові записи (читання/міграція): «Підрозділ» і хвіст коду — ніколи для нового upsert.
+    if (looksLikeUnitCode(key)) {
+      var badDefault = driveFileNameFromLabel("Підрозділ");
+      if (badDefault && badDefault !== modern && aliasNames.indexOf(badDefault) === -1) aliasNames.push(badDefault);
+      var tail = String(key).split("-");
+      var tailLabel = tail[tail.length - 1] || "";
+      var badTail = driveFileNameFromLabel(tailLabel);
+      if (badTail && badTail !== modern && aliasNames.indexOf(badTail) === -1) aliasNames.push(badTail);
+    }
     function found(fileInfo, fromLegacy, legacyName) {
       return {
         file: fileInfo && fileInfo.file ? fileInfo.file : null,
-        name: modern,
+        name: modern || legacyName || "",
         legacyName: legacyName || legacy,
         fromLegacy: !!fromLegacy,
         trashed: fileInfo && fileInfo.trashed ? fileInfo.trashed : 0
       };
     }
-    return resolveDriveFileByName(token, folderId, modern, queryOpts).then(function (info) {
-      if (info && info.file) return found(info, false, legacy);
-      function tryHash() {
-        if (!legacy || legacy === modern || legacy === sluzhba) {
-          return Promise.resolve(found(null, false, legacy));
+    function tryHash() {
+      if (!legacy || legacy === modern || legacy === sluzhba || (modern && aliasNames.indexOf(legacy) !== -1)) {
+        return Promise.resolve(found(null, false, legacy));
+      }
+      return resolveDriveFileByName(token, folderId, legacy, queryOpts).then(function (legacyInfo) {
+        return found(legacyInfo, !!(legacyInfo && legacyInfo.file), legacy);
+      });
+    }
+    function tryAliases(index) {
+      if (index >= aliasNames.length) {
+        if (sluzhba && sluzhba !== modern && aliasNames.indexOf(sluzhba) === -1) {
+          return resolveDriveFileByName(token, folderId, sluzhba, queryOpts).then(function (sluzhbaInfo) {
+            if (sluzhbaInfo && sluzhbaInfo.file) return found(sluzhbaInfo, true, sluzhba);
+            return tryHash();
+          });
         }
-        return resolveDriveFileByName(token, folderId, legacy, queryOpts).then(function (legacyInfo) {
-          return found(legacyInfo, !!(legacyInfo && legacyInfo.file), legacy);
-        });
+        return tryHash();
       }
-      if (sluzhba && sluzhba !== modern) {
-        return resolveDriveFileByName(token, folderId, sluzhba, queryOpts).then(function (sluzhbaInfo) {
-          if (sluzhbaInfo && sluzhbaInfo.file) return found(sluzhbaInfo, true, sluzhba);
-          return tryHash();
-        });
-      }
-      return tryHash();
-    });
+      var alias = aliasNames[index];
+      return resolveDriveFileByName(token, folderId, alias, queryOpts).then(function (info) {
+        if (info && info.file) return found(info, true, alias);
+        return tryAliases(index + 1);
+      });
+    }
+    if (modern) {
+      return resolveDriveFileByName(token, folderId, modern, queryOpts).then(function (info) {
+        if (info && info.file) return found(info, false, legacy);
+        return tryAliases(0);
+      });
+    }
+    // Немає канонічної назви — лише aliases/hash (підхопити чужий файл і мігрувати після появи назви).
+    return tryAliases(0);
   }
 
   function bytesToArrayBuffer(bytes) {
@@ -2347,7 +2430,20 @@ button.count-toggle {
       if (existing) {
         var healed = preferUnitName(existing.name, incoming);
         healed = preferUnitName(healed, bundleName);
-        if (healed) existing.name = healed;
+        if (healed) {
+          // ZS-128: при зміні назви лишаємо старий ярлик файлу для resolve/rename на Диску.
+          if (
+            existing.name &&
+            healed !== existing.name &&
+            !isDefaultUnitName(existing.name) &&
+            (!state.driveUnitFileLabel || !state.driveUnitFileLabel[code])
+          ) {
+            if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+            state.driveUnitFileLabel[code] = existing.name;
+          }
+          existing.name = healed;
+          rememberCanonUnitName(code, healed);
+        }
         if (!existing.parent && parentKey) existing.parent = parentKey;
         return;
       }
@@ -2358,6 +2454,7 @@ button.count-toggle {
         code: code,
         parent: parentKey
       });
+      if (seed && !isDefaultUnitName(seed)) rememberCanonUnitName(code, seed);
       if (!state.unitReportStatus[code]) setUnitReportStatus(code, "missing");
     });
   }
@@ -2408,14 +2505,25 @@ button.count-toggle {
     if (parsed && parsed.invite && parsed.folderId) {
       state.driveFolder = folderLinkFromId(parsed.folderId).slice(0, 240);
       // Підлеглий з довгим кодом ланки — відкрити цю ланку. Звичайний пароль адміна роль не чіпає.
-      var unit = ensureInviteUnit(code, parsed.name || "");
+      var inviteName = String(parsed.name || "").trim();
+      if (inviteName && !isDefaultUnitName(inviteName)) rememberCanonUnitName(code, inviteName);
+      var unit = ensureInviteUnit(code, inviteName || canonUnitDriveName(code) || "");
       if (unit) {
+        if (canonUnitDriveName(code)) {
+          unit.name = preferUnitName(unit.name, canonUnitDriveName(code));
+          state.holder = unit.name;
+        } else {
+          state.holder = unit.name;
+        }
         state.scope = "all";
         state.openCode = unit.code;
-        state.holder = unit.name;
         state.reportRoot = unit.code;
         activateReport(unit.code);
       }
+    } else if (looksLikeUnitCode(code)) {
+      // Голий код: назву підхопимо з settings/children на sync, не вигадуємо файл.
+      var known = canonUnitDriveName(code);
+      if (known) ensureInviteUnit(code, known);
     }
   }
 
@@ -3437,6 +3545,17 @@ button.count-toggle {
         });
         state.accessGrants = nextGrants;
       }
+      if (data.driveUnitNames && typeof data.driveUnitNames === "object") {
+        applyCanonUnitNamesMap(data.driveUnitNames);
+      }
+      if (data.driveUnitFileLabel && typeof data.driveUnitFileLabel === "object") {
+        state.driveUnitFileLabel = {};
+        Object.keys(data.driveUnitFileLabel).forEach(function (key) {
+          var label = String(data.driveUnitFileLabel[key] || "").trim().slice(0, 80);
+          if (!key || !label || isDefaultUnitName(label)) return;
+          state.driveUnitFileLabel[key] = label;
+        });
+      }
     } catch (err) {}
   }
 
@@ -3457,6 +3576,8 @@ button.count-toggle {
           };
         }),
         unitReportStatus: state.unitReportStatus || {},
+        driveUnitNames: collectCanonUnitNamesForSettings(),
+        driveUnitFileLabel: state.driveUnitFileLabel && typeof state.driveUnitFileLabel === "object" ? state.driveUnitFileLabel : {},
         accessGrants: (state.accessGrants || []).map(function (item) {
           return {
             id: String(item.id || "").slice(0, 40),
@@ -4897,6 +5018,38 @@ button.count-toggle {
     });
   }
 
+  function collectCanonUnitNamesForSettings() {
+    var out = {};
+    function put(code, name) {
+      var key = String(code || "").trim();
+      var label = String(name || "").trim().slice(0, 80);
+      if (!key || !looksLikeUnitCode(key) || !label || isDefaultUnitName(label)) return;
+      out[key] = label;
+    }
+    (state.units || []).forEach(function (unit) {
+      if (unit) put(unit.code, unit.name);
+    });
+    var map = state.driveUnitNames && typeof state.driveUnitNames === "object" ? state.driveUnitNames : {};
+    Object.keys(map).forEach(function (key) {
+      if (key === String(key).toLowerCase() && map[key] && map[String(key).toUpperCase()]) return;
+      put(key, map[key]);
+    });
+    return out;
+  }
+
+  function applyCanonUnitNamesMap(rawMap) {
+    if (!rawMap || typeof rawMap !== "object") return;
+    Object.keys(rawMap).forEach(function (key) {
+      rememberCanonUnitName(key, rawMap[key]);
+    });
+    // Unit без назви в інвайті: підхопити канон lead і завести локальний запис.
+    var own = String(state.driveEncryptKey || "").trim();
+    if (looksLikeUnitCode(own)) {
+      var canon = canonUnitDriveName(own);
+      if (canon) ensureInviteUnit(own, canon);
+    }
+  }
+
   function buildSettingsPayload() {
     var payload = {
       version: 1,
@@ -4905,7 +5058,9 @@ button.count-toggle {
       }),
       duties: serializeDutyList(false),
       machineDuties: serializeDutyList(true),
-      reserve: state.settingsReserve && typeof state.settingsReserve === "object" ? state.settingsReserve : {}
+      reserve: state.settingsReserve && typeof state.settingsReserve === "object" ? state.settingsReserve : {},
+      // ZS-128: назви підрозділів для спільного vu-*.bin (не коди доступу).
+      unitNames: collectCanonUnitNamesForSettings()
     };
     var hash = localAdminKeyHash();
     if (canWriteDriveSettings() && hash) {
@@ -4919,12 +5074,22 @@ button.count-toggle {
     if (!raw || typeof raw !== "object") return null;
     if (raw.reports || raw.keys || raw.people || raw.machines || raw.units) return null;
     var hash = raw.folderAdminKeyHash != null ? String(raw.folderAdminKeyHash).trim().slice(0, 128) : "";
+    var unitNames = {};
+    if (raw.unitNames && typeof raw.unitNames === "object") {
+      Object.keys(raw.unitNames).forEach(function (key) {
+        var code = String(key || "").trim();
+        var name = String(raw.unitNames[key] || "").trim().slice(0, 80);
+        if (!code || !looksLikeUnitCode(code) || !name || isDefaultUnitName(name)) return;
+        unitNames[code] = name;
+      });
+    }
     return {
       version: Number(raw.version) || 1,
       types: Array.isArray(raw.types) ? raw.types : [],
       duties: Array.isArray(raw.duties) ? raw.duties : [],
       machineDuties: Array.isArray(raw.machineDuties) ? raw.machineDuties : [],
       reserve: raw.reserve && typeof raw.reserve === "object" ? raw.reserve : {},
+      unitNames: unitNames,
       folderAdmin: !!raw.folderAdmin && !!hash,
       folderAdminKeyHash: hash
     };
@@ -4994,6 +5159,7 @@ button.count-toggle {
     applyDutySide(data.duties, false);
     applyDutySide(data.machineDuties, true);
     state.settingsReserve = data.reserve || {};
+    applyCanonUnitNamesMap(data.unitNames);
     rememberSettingsAdmin(data);
     return true;
   }
@@ -5258,6 +5424,14 @@ button.count-toggle {
     var to = String(newCode || "").trim();
     if (!token || !folderId || !from || !to || from === to) {
       return Promise.resolve({ ok: false, reason: "skip" });
+    }
+    // ZS-128: назва файлу лишається від lead; переносимо канон зі старого коду на новий.
+    var label = canonUnitDriveName(to) || canonUnitDriveName(from);
+    if (label) {
+      rememberCanonUnitName(to, label);
+      if (state.driveUnitFileLabel && state.driveUnitFileLabel[from] && !state.driveUnitFileLabel[to]) {
+        state.driveUnitFileLabel[to] = state.driveUnitFileLabel[from];
+      }
     }
     var newName = unitDriveFileName(to);
     if (!newName) return Promise.resolve({ ok: false, reason: "name" });
@@ -5847,7 +6021,8 @@ button.count-toggle {
   function upsertKeyedUnitFile(token, folderId, key, snap) {
     if (!key) return Promise.reject(new Error("nocode"));
     var name = unitDriveFileName(key);
-    if (!name) return Promise.reject(new Error("nocode"));
+    // ZS-128: без канонічної назви від lead не створюємо/не пишемо vu-*.bin.
+    if (!name) return Promise.reject(new Error("noname"));
     return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
       var file = resolved && resolved.file;
       var fromLegacy = !!(resolved && resolved.fromLegacy);
@@ -5883,6 +6058,13 @@ button.count-toggle {
             return done.then(function (out) {
               // ZS-126/128: база для наступного 3-way — і для lead, і для файлу підрозділу.
               saveMergeBase(key, payload);
+              if (looksLikeUnitCode(key)) {
+                var canonLabel = canonUnitDriveName(key);
+                if (canonLabel) {
+                  if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+                  state.driveUnitFileLabel[key] = canonLabel;
+                }
+              }
               return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
             });
           });
@@ -5986,6 +6168,10 @@ button.count-toggle {
     normalizeOwnReportKey();
     state.reportKey = ownBundleKey;
     captureBundle(ownBundleKey);
+    // ZS-128: unit без канонічної назви від lead — не створювати файл під вигаданим slug.
+    if (!unitDriveFileName(parentKey) && looksLikeUnitCode(parentKey)) {
+      return Promise.resolve({ ok: false, skipped: true, reason: "noname" });
+    }
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
 
@@ -6208,6 +6394,7 @@ button.count-toggle {
     list.forEach(function (unit) {
       chain = chain.then(function () {
         var code = String(unit.code || "").trim();
+        if (unit && unit.name) rememberCanonUnitName(code, unit.name);
         var name = unitDriveFileName(code);
         if (!name || !code) {
           missing += 1;
@@ -6804,6 +6991,18 @@ button.count-toggle {
       state.unitReportStatus[to] = state.unitReportStatus[from];
       delete state.unitReportStatus[from];
     }
+    if (state.driveUnitNames && state.driveUnitNames[from]) {
+      rememberCanonUnitName(to, state.driveUnitNames[from]);
+      delete state.driveUnitNames[from];
+      delete state.driveUnitNames[String(from).toLowerCase()];
+    }
+    if (state.driveUnitFileLabel && state.driveUnitFileLabel[from]) {
+      if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+      state.driveUnitFileLabel[to] = state.driveUnitFileLabel[from];
+      delete state.driveUnitFileLabel[from];
+    }
+    var unit = findUnitByCode(to) || findUnitByCode(from);
+    if (unit && unit.name) rememberCanonUnitName(to, unit.name);
     if (String(state.openCode || "") === from) state.openCode = to;
     if (String(state.reportRoot || "") === from) state.reportRoot = to;
     if (String(state.reportKey || "") === from) {
@@ -8065,6 +8264,9 @@ button.count-toggle {
       parent: actorKey()
     };
     state.units.push(created);
+    rememberCanonUnitName(created.code, created.name);
+    if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+    state.driveUnitFileLabel[created.code] = created.name;
     setUnitReportStatus(created.code, "missing");
     var doc = emptyUnitReport(created);
     bundles[created.code] = {
@@ -9260,7 +9462,7 @@ button.count-toggle {
         code: "lead",
         file: SAMPLE_FILE,
         unit: {
-          id: "rota",
+          id: "root-service",
           name: "Служба",
           children: [
             {
@@ -9680,19 +9882,19 @@ button.count-toggle {
     if (!state.open.has("person:p4")) toggle("person:p4");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     var unitField = document.getElementById("unitp-p4");
-    unitField.value = "Рота Альфа";
+    unitField.value = "Ланка Схід";
     unitField.dispatchEvent(new Event("input", { bubbles: true }));
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
-    check(state.edits.people.p4 && state.edits.people.p4.unit === "Рота Альфа", "підрозділ у edits після збереження");
-    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Рота Альфа", "підрозділ видно в картці після збереження");
+    check(state.edits.people.p4 && state.edits.people.p4.unit === "Ланка Схід", "підрозділ у edits після збереження");
+    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Ланка Схід", "підрозділ видно в картці після збереження");
     var bakedUnitPerson = bakedPersonFields(findPerson("p4"));
-    check(bakedUnitPerson && bakedUnitPerson.unit === "Рота Альфа", "bakedPersonFields зберігає unit");
-    findPerson("p4").unit = "Рота Альфа";
+    check(bakedUnitPerson && bakedUnitPerson.unit === "Ланка Схід", "bakedPersonFields зберігає unit");
+    findPerson("p4").unit = "Ланка Схід";
     delete state.edits.people.p4.unit;
     render();
     if (!state.open.has("person:p4")) toggle("person:p4");
-    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Рота Альфа", "personUnit читає item.unit після зняття edits");
-    state.edits.people.p4.unit = "Рота Альфа";
+    check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Ланка Схід", "personUnit читає item.unit після зняття edits");
+    state.edits.people.p4.unit = "Ланка Схід";
     check(!!document.querySelector("#panel-person-p4 [data-remove='person:p4']"), "створювач видаляє картку");
     check(!!document.querySelector("#people [data-add='person']") && !!document.querySelector("#equipment [data-add='machine']"), "плюс біля шестерень");
     check(!document.getElementById("add-person-form") && !document.getElementById("add-machine-form") && !document.getElementById("add-person-name") && !document.getElementById("add-machine-name"), "немає коротких полів додавання");
@@ -10043,14 +10245,14 @@ button.count-toggle {
     document.getElementById("status-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.customDuties.some(function (item) { return item.label === "Наряд" && item.plus === false; }), "служба створила мінус-статус");
     applyCode("lead");
-    check(!document.getElementById("status-create") && !document.getElementById("profile-overlay"), "після роти форми статусу немає");
+    check(!document.getElementById("status-create") && !document.getElementById("profile-overlay"), "після підрозділу форми статусу немає");
     toggle("unit:v1");
     toggle("unit:s1");
     toggle("person:p4");
     var dutyAfter = document.getElementById("duty-p4");
-    check(dutyAfter && dutyAfter.tagName !== "SELECT", "рота без системного вікна статусу");
+    check(dutyAfter && dutyAfter.tagName !== "SELECT", "підрозділ без системного вікна статусу");
     dutyAfter.querySelector("[data-pick-toggle]").click();
-    check(document.getElementById("panel-person-p4").contains(dutyAfter.querySelector(".pick-list")) && dutyAfter.textContent.indexOf("Наряд") !== -1 && dutyAfter.textContent.indexOf("У строю") !== -1, "рота обирає наявний статус");
+    check(document.getElementById("panel-person-p4").contains(dutyAfter.querySelector(".pick-list")) && dutyAfter.textContent.indexOf("Наряд") !== -1 && dutyAfter.textContent.indexOf("У строю") !== -1, "підрозділ обирає наявний статус");
     applyCode("lead");
     toggle("unit:v1");
     toggle("unit:s1");
@@ -10339,7 +10541,7 @@ button.count-toggle {
     document.querySelector("[data-profile-pane='people']").click();
     document.querySelector("[data-profile-pane='gear']").click();
     check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.querySelector("[data-choose-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-choose-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]") && !document.querySelector("[data-edit-duty]") && !document.querySelector("[data-edit-machine-duty]"), "без відбитка адміна довідники не правлять");
-    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "рота бачить назви розділів");
+    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "підрозділ бачить назви розділів");
     document.querySelector("[data-close-profile]").click();
     check(!canWriteDriveSettings() && !canEditCatalogs(), "без ключа немає прав на settings і довідники");
     state.driveEncryptKey = "секрет-адміна";
@@ -10416,6 +10618,11 @@ button.count-toggle {
     }).then(function () {
       var oldChildCode = "OLD1-OLD2-OLD3-OLD4-OLD5";
       var newChildCode = "NEW1-NEW2-NEW3-NEW4-NEW5";
+      state.units = (state.units || []).filter(function (unit) {
+        return unit.code !== oldChildCode && unit.code !== newChildCode;
+      });
+      state.units.push({ id: "u-reseal", name: "Нижча", code: oldChildCode, parent: "lead" });
+      rememberCanonUnitName(oldChildCode, "Нижча");
       var childPayload = JSON.stringify({
         version: 2,
         name: "Нижча",
@@ -10483,8 +10690,9 @@ button.count-toggle {
         return resealChildUnitFile("token", "folderX", oldChildCode, newChildCode).then(function (result) {
           window.fetch = originalFetch;
           check(result && result.ok && result.resealed, "перезапечатування файлу підлеглого вдалося");
-          var newEntry = store[unitDriveFileName(newChildCode)];
-          check(!!newEntry && !store[unitDriveFileName(oldChildCode)], "новий файл на місці, старий у кошику");
+          // ZS-128: ім’я файлу від назви, не від коду — після зміни коду slug той самий.
+          check(unitDriveFileName(oldChildCode) === unitDriveFileName(newChildCode) && unitDriveFileName(newChildCode) === "vu-nyzhcha.bin", "після зміни коду ім’я файлу лишається від назви");
+          check(!!store[unitDriveFileName(newChildCode)], "файл підрозділу на місці під назвою");
           // body may be Blob from multipart — for mock we stored opts.body; decrypt needs Uint8Array.
           // У mock POST ми поклали raw body; для перевірки розшифруємо через повторний encrypt у тесті нижче.
           return encryptWithCode(newChildCode, childPayload.replace(oldChildCode, newChildCode)).then(function (fresh) {
@@ -10602,12 +10810,33 @@ button.count-toggle {
       var childSnap103 = currentUnitSnapshot();
       check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с unit");
       check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл unit ≠ файл видавця");
-      check(sanitizeDriveSlug("1 Рота") === "1-rota" || sanitizeDriveSlug("1 Рота").indexOf("rota") !== -1, "sanitize дає зрозумілий slug");
-      state.units = (state.units || []).filter(function (unit) { return unit.code !== "ROTA-TEST-NAME-CODE-AAAA"; });
-      state.units.push({ id: "u112", name: "1 Рота", code: "ROTA-TEST-NAME-CODE-AAAA", parent: "lead" });
-      check(unitDriveFileName("ROTA-TEST-NAME-CODE-AAAA") === "vu-1-rota.bin", "файл ланки від назви");
-      check(unitDriveFileName("ROTA-TEST-NAME-CODE-AAAA").indexOf("ROTA-TEST-NAME-CODE-AAAA") === -1, "повний код ланки не в імені файлу");
-      state.units = (state.units || []).filter(function (unit) { return unit.code !== "ROTA-TEST-NAME-CODE-AAAA"; });
+      check(sanitizeDriveSlug("Ланка Схід") === "lanka-skhid", "sanitize дає зрозумілий slug");
+      var child112 = "AAAA-BBBB-CCCC-DDDD-112A";
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child112; });
+      state.units.push({ id: "u112", name: "Ланка Схід", code: child112, parent: "lead" });
+      rememberCanonUnitName(child112, "Ланка Схід");
+      check(unitDriveFileName(child112) === "vu-lanka-skhid.bin", "файл ланки від назви lead");
+      check(unitDriveFileName(child112).indexOf(child112) === -1, "повний код ланки не в імені файлу");
+      check(unitDriveFileName("EEEE-FFFF-GGGG-HHHH-BARE") === "", "без канонічної назви unit-файл не іменуємо");
+      rememberCanonUnitName("EEEE-FFFF-GGGG-HHHH-BARE", "Підрозділ");
+      check(unitDriveFileName("EEEE-FFFF-GGGG-HHHH-BARE") === "", "дефолт «Підрозділ» не стає ім’ям файлу");
+      var settingsNames = collectCanonUnitNamesForSettings();
+      check(settingsNames[child112] === "Ланка Схід", "settings несуть канонічну назву від lead");
+      var namedCode = "EEEE-FFFF-GGGG-HHHH-NAME";
+      applyCanonUnitNamesMap({ "EEEE-FFFF-GGGG-HHHH-NAME": "Група Північ" });
+      check(unitDriveFileName(namedCode) === "vu-hrupa-pivnich.bin", "unit підхоплює назву з settings lead");
+      // Rename lead: старий ярлик лишається для resolve, новий — канон запису.
+      if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+      state.driveUnitFileLabel[child112] = "Ланка Схід";
+      rememberCanonUnitName(child112, "Ланка Захід");
+      findUnitByCode(child112).name = "Ланка Захід";
+      check(unitDriveFileName(child112) === "vu-lanka-zakhid.bin", "після rename канон файлу — нова назва");
+      check(unitDriveAliasLabels(child112).indexOf("Ланка Схід") !== -1, "стара назва лишається alias для міграції");
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child112 && unit.code !== namedCode; });
+      delete state.driveUnitNames[child112];
+      delete state.driveUnitNames[namedCode];
+      delete state.driveUnitNames[String(namedCode).toLowerCase()];
+      delete state.driveUnitFileLabel[child112];
       // ZS-112: upsert мігрує з legacy hash на зрозуміле ім’я.
       return (function () {
         var key112 = "секрет-112";
