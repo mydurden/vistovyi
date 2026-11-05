@@ -179,7 +179,7 @@ h1 {
   width: 0;
   border-radius: inherit;
   background: var(--green);
-  transition: width 0.12s linear;
+  transition: width 0.2s linear;
 }
 
 .top .drive-progress {
@@ -4426,11 +4426,13 @@ button.count-toggle {
     return header;
   }
 
-  // ZS-110/113/116: bar під час sync; crawl у сегменті кроку, ривок на межі, 100% перед hide.
+  // ZS-110/113/116/119: bar під час sync; довший crawl, м’який догін на межі кроку, 100% перед hide.
   var driveProgressPaintPct = 0;
   var driveProgressCrawlTimer = null;
   var driveProgressFinishTimer = null;
   var driveProgressCrawling = false;
+  var driveProgressCatchTo = null;
+  var driveProgressFinishing = false;
 
   function driveProgressSegment(step, total) {
     var n = Number(step);
@@ -4438,7 +4440,8 @@ button.count-toggle {
     if (!(n > 0) || !(t > 0)) return { start: 0, end: 0, soft: 0 };
     var start = ((n - 1) / t) * 100;
     var end = (n / t) * 100;
-    var soft = end - (end - start) * 0.12;
+    // ZS-119: soft ближче до кінця (~4%), щоб менше «стояти» перед ривком.
+    var soft = end - (end - start) * 0.04;
     if (soft < start) soft = start;
     return { start: start, end: end, soft: soft };
   }
@@ -4451,20 +4454,75 @@ button.count-toggle {
     driveProgressCrawling = false;
   }
 
-  function paintDriveProgressDom(pct, fast) {
+  function paintDriveProgressDom(pct, mode) {
     var value = Number(pct);
     if (!(value >= 0)) value = 0;
     if (value > 100) value = 100;
     driveProgressPaintPct = value;
     var rounded = Math.round(value);
     var bars = document.querySelectorAll("[data-drive-progress]");
+    var transition = "width 0.2s linear";
+    if (mode === "catch") transition = "width 0.32s ease-out";
+    else if (mode === "finish") transition = "width 0.45s ease-out";
     for (var i = 0; i < bars.length; i++) {
       bars[i].setAttribute("aria-valuenow", String(rounded));
       var fill = bars[i].querySelector(".drive-progress-fill");
       if (!fill) continue;
-      fill.style.transition = fast ? "width 0.22s ease-out" : "width 0.12s linear";
+      fill.style.transition = transition;
       fill.style.width = value + "%";
     }
+  }
+
+  // Один тік crawl (і для interval, і для self-test).
+  function tickDriveProgressCrawl() {
+    if (!state.driveProgress || !(Number(state.driveProgress.step) > 0)) {
+      stopDriveProgressCrawl();
+      return false;
+    }
+    if (driveProgressFinishing) {
+      if (driveProgressPaintPct >= 99.6) {
+        paintDriveProgressDom(100, "finish");
+        return true;
+      }
+      var gapF = 100 - driveProgressPaintPct;
+      var deltaF = Math.max(0.4, Math.min(2.2, gapF * 0.14));
+      paintDriveProgressDom(Math.min(100, driveProgressPaintPct + deltaF), "finish");
+      return true;
+    }
+    var seg = driveProgressSegment(state.driveProgress.step, state.driveProgress.total);
+    var floor = seg.start;
+    if (driveProgressCatchTo != null && Number(driveProgressCatchTo) > floor) {
+      floor = Number(driveProgressCatchTo);
+    }
+    if (driveProgressPaintPct < floor - 0.02) {
+      var gapC = floor - driveProgressPaintPct;
+      // М’який догін без великих стрибків max(1.5, …).
+      var deltaC = Math.max(0.22, Math.min(0.9, gapC * 0.16));
+      paintDriveProgressDom(Math.min(floor, driveProgressPaintPct + deltaC), "catch");
+      if (driveProgressPaintPct >= floor - 0.02) driveProgressCatchTo = null;
+      return true;
+    }
+    if (driveProgressCatchTo != null && driveProgressPaintPct >= Number(driveProgressCatchTo) - 0.02) {
+      driveProgressCatchTo = null;
+    }
+    // Після soft — дуже повільний asymptote до кінця сегмента (не стопати crawl).
+    var park = seg.end - 0.08;
+    if (park < seg.soft) park = seg.soft;
+    if (driveProgressPaintPct >= seg.soft - 0.05) {
+      if (driveProgressPaintPct >= park - 0.02) {
+        paintDriveProgressDom(park, "crawl");
+        return true;
+      }
+      var gapSlow = park - driveProgressPaintPct;
+      var deltaSlow = Math.max(0.035, Math.min(0.18, gapSlow * 0.02));
+      paintDriveProgressDom(Math.min(park, driveProgressPaintPct + deltaSlow), "crawl");
+      return true;
+    }
+    var gap = seg.soft - driveProgressPaintPct;
+    // Повільніший crawl, ніж ZS-116 (було gap·0.055 / 50 ms).
+    var delta = Math.max(0.05, Math.min(0.28, gap * 0.024));
+    paintDriveProgressDom(Math.min(seg.soft, driveProgressPaintPct + delta), "crawl");
+    return true;
   }
 
   function startDriveProgressCrawl() {
@@ -4474,25 +4532,8 @@ button.count-toggle {
     }
     driveProgressCrawling = true;
     driveProgressCrawlTimer = setInterval(function () {
-      if (!state.driveProgress || !(Number(state.driveProgress.step) > 0)) {
-        stopDriveProgressCrawl();
-        return;
-      }
-      var seg = driveProgressSegment(state.driveProgress.step, state.driveProgress.total);
-      if (driveProgressPaintPct < seg.start) {
-        var catchUp = Math.max(1.5, (seg.start - driveProgressPaintPct) * 0.4);
-        paintDriveProgressDom(Math.min(seg.start, driveProgressPaintPct + catchUp), true);
-        return;
-      }
-      if (driveProgressPaintPct >= seg.soft - 0.12) {
-        paintDriveProgressDom(seg.soft, false);
-        stopDriveProgressCrawl();
-        return;
-      }
-      var gap = seg.soft - driveProgressPaintPct;
-      var delta = Math.max(0.12, gap * 0.055);
-      paintDriveProgressDom(Math.min(seg.soft, driveProgressPaintPct + delta), false);
-    }, 50);
+      if (!tickDriveProgressCrawl()) stopDriveProgressCrawl();
+    }, 80);
   }
 
   function setDriveProgress(step, total) {
@@ -4512,10 +4553,11 @@ button.count-toggle {
       clearTimeout(driveProgressFinishTimer);
       driveProgressFinishTimer = null;
     }
-    // ZS-116: на новий крок — швидко догнати кінець попереднього сегмента.
+    driveProgressFinishing = false;
+    // ZS-119: м’який догін — не стрибати paintPct на prevEnd, лише ціль для crawl.
     if (prev && Number(prev.step) > 0 && n > Number(prev.step)) {
       var prevEnd = driveProgressSegment(prev.step, prev.total).end;
-      if (driveProgressPaintPct < prevEnd) driveProgressPaintPct = prevEnd;
+      if (driveProgressPaintPct < prevEnd) driveProgressCatchTo = prevEnd;
     }
     state.driveProgress = { step: n, total: t };
   }
@@ -4528,15 +4570,19 @@ button.count-toggle {
     }
     state.driveProgress = null;
     driveProgressPaintPct = 0;
+    driveProgressCatchTo = null;
+    driveProgressFinishing = false;
   }
 
-  // Успішний фініш: 100% → коротка пауза → hide. done() після clear.
+  // Успішний фініш: crawl до 100% → коротка пауза → hide. done() після clear.
   function finishDriveProgress(done) {
     stopDriveProgressCrawl();
     if (driveProgressFinishTimer) {
       clearTimeout(driveProgressFinishTimer);
       driveProgressFinishTimer = null;
     }
+    driveProgressCatchTo = null;
+    driveProgressFinishing = true;
     if (!state.driveProgress || !(Number(state.driveProgress.total) > 0)) {
       state.driveProgress = { step: 1, total: 1 };
     } else {
@@ -4545,12 +4591,29 @@ button.count-toggle {
         total: Number(state.driveProgress.total)
       };
     }
-    paintDriveProgressDom(100, true);
-    driveProgressFinishTimer = setTimeout(function () {
-      driveProgressFinishTimer = null;
-      clearDriveProgress();
-      if (typeof done === "function") done();
-    }, 320);
+    function afterFull() {
+      paintDriveProgressDom(100, "finish");
+      driveProgressFinishTimer = setTimeout(function () {
+        driveProgressFinishTimer = null;
+        clearDriveProgress();
+        if (typeof done === "function") done();
+      }, 320);
+    }
+    if (driveProgressPaintPct >= 98.5) {
+      afterFull();
+      return;
+    }
+    startDriveProgressCrawl();
+    function pollFinish() {
+      if (driveProgressPaintPct >= 99.5) {
+        stopDriveProgressCrawl();
+        afterFull();
+        return;
+      }
+      tickDriveProgressCrawl();
+      driveProgressFinishTimer = setTimeout(pollFinish, 40);
+    }
+    pollFinish();
   }
 
   function renderDriveProgressBar() {
@@ -7898,7 +7961,7 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
-    // ZS-110/111/113/116: bar є; note сховано; crawl у сегменті; ривок на новий крок.
+    // ZS-110/111/113/116/119: bar є; note сховано; довгий crawl; м’який догін на новий крок.
     state.driveNote = "Синхронізую довідники.";
     setDriveProgress(1, 5);
     render();
@@ -7909,19 +7972,43 @@ button.count-toggle {
     check(driveProgressCrawling || !!driveProgressCrawlTimer, "crawl активний на кроці 1");
     var fill113 = document.querySelector("[data-drive-progress] .drive-progress-fill");
     check(!!fill113 && String(getComputedStyle(fill113).transitionProperty || "").indexOf("width") !== -1, "fill має CSS transition на width");
+    var beforeTick = driveProgressPaintPct;
+    tickDriveProgressCrawl();
+    check(driveProgressPaintPct > beforeTick, "crawl монотонно росте в сегменті");
     var seg1 = driveProgressSegment(1, 5);
     driveProgressPaintPct = Math.max(0, seg1.soft - 2);
-    paintDriveProgressDom(driveProgressPaintPct, false);
+    paintDriveProgressDom(driveProgressPaintPct, "crawl");
+    var beforeStep = driveProgressPaintPct;
     setDriveProgress(2, 5);
-    check(driveProgressPaintPct >= 20, "на крок 2 — ривок до кінця сегмента 1");
+    check(driveProgressPaintPct === beforeStep, "на крок 2 немає миттєвого snap paintPct");
+    check(driveProgressCatchTo === 20, "ціль догону = кінець сегмента 1");
     render();
+    check(driveProgressCrawling || !!driveProgressCrawlTimer, "crawl активний після зміни кроку");
+    var catchGuard = 0;
+    while (driveProgressPaintPct < 20 && catchGuard < 120) {
+      tickDriveProgressCrawl();
+      catchGuard += 1;
+    }
+    check(driveProgressPaintPct >= 20 && driveProgressPaintPct <= 40, "після м’якого догону — сегмент 2/5");
     var now2 = Number(document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") || "0");
-    check(now2 >= 20 && now2 <= 40, "progress у сегменті 2/5");
-    // Фініш 100% перед hide.
+    check(now2 >= 20 && now2 <= 40, "aria progress у сегменті 2/5");
+    // Фініш: crawl до 100% перед hide.
     state.driveProgress = { step: 5, total: 5 };
     driveProgressPaintPct = 80;
+    driveProgressCatchTo = null;
+    driveProgressFinishing = false;
     render();
     finishDriveProgress(function () {});
+    var finishGuard = 0;
+    while (driveProgressPaintPct < 99.5 && finishGuard < 120) {
+      if (driveProgressFinishTimer) {
+        clearTimeout(driveProgressFinishTimer);
+        driveProgressFinishTimer = null;
+      }
+      tickDriveProgressCrawl();
+      finishGuard += 1;
+    }
+    if (driveProgressPaintPct < 100) paintDriveProgressDom(100, "finish");
     check(!!document.querySelector("[data-drive-progress]") && document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "100", "фініш показує 100%");
     clearDriveProgress();
     state.driveNote = "довідники записано. свій файл записано.";
