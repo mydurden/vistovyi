@@ -5813,17 +5813,20 @@ button.count-toggle {
           var merged = mergeUnitSnapshots(localSnap, raw, baseSnap);
           if (!merged.snapshot) return { pulled: false };
           applyOwnUnitSnapshot(merged.snapshot, key);
-          if (!driveChildWriteCode()) applyMergedRemovals(merged.snapshot);
-          else {
+          if (!driveChildWriteCode()) {
+            applyMergedRemovals(merged.snapshot);
+            state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
+            queuePersonDuplicatePrompts(merged.snapshot);
+          } else {
+            // Відкрита вкладка unit: конфлікти lead тут нерелевантні — їх покаже merge файлу unit.
             var ownKey = canonicalOwnBundleKey(key);
             if (bundles[ownKey]) {
               bundles[ownKey].removedPeople = cloneData(merged.snapshot.removedPeople || []);
               bundles[ownKey].removedMachines = cloneData(merged.snapshot.removedMachines || []);
             }
+            state.mergeConflicts = [];
+            state.mergeDupes = [];
           }
-          state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
-          if (!driveChildWriteCode()) queuePersonDuplicatePrompts(merged.snapshot);
-          else state.mergeDupes = [];
           return {
             pulled: true,
             keptLocal: false,
@@ -5878,16 +5881,53 @@ button.count-toggle {
               done = trashDriveFile(token, file.id).then(function () { return result; });
             }
             return done.then(function (out) {
-              // ZS-126: база для наступного 3-way — успішно записаний злитий знімок.
-              if (String(key) === String(state.driveEncryptKey || "").trim()) {
-                saveMergeBase(key, payload);
-              }
+              // ZS-126/128: база для наступного 3-way — і для lead, і для файлу підрозділу.
+              saveMergeBase(key, payload);
               return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
             });
           });
         });
       });
     });
+  }
+
+  function childSnapshotHasContent(snap) {
+    if (!snap || typeof snap !== "object") return false;
+    return daySliceHasReport({
+      unit: snap.unit,
+      machines: snap.machines,
+      tasks: snap.tasks,
+      people: snap.people
+    });
+  }
+
+  // ZS-128: локальний знімок вкладки/bundle підрозділу для 3-way з її файлом на Диску.
+  function localChildSnapshotForMerge(unitCode) {
+    var code = String(unitCode || "").trim();
+    if (!code) return null;
+    var open = String(state.openCode || "").trim();
+    var key = String(state.reportKey || "").trim();
+    var snap = null;
+    if (open.toLowerCase() === code.toLowerCase() && key.toLowerCase() === code.toLowerCase() && state.report) {
+      materializeOverlays();
+      captureBundle(code);
+      snap = currentUnitSnapshot();
+    } else {
+      if (key.toLowerCase() === code.toLowerCase() && state.report) {
+        materializeOverlays();
+        captureBundle(code);
+      }
+      snap = snapshotFromStoredBundle(code);
+    }
+    if (!snap) return null;
+    snap.code = code;
+    snap.children = subordinatesFor(code).map(function (unit) {
+      var childCode = String(unit.code || "");
+      var label = preferUnitName(unit.name, unitNameFromBundle(childCode));
+      if (label && unit.name !== label) unit.name = label;
+      return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
+    }).filter(function (item) { return !!item.code; });
+    return snap;
   }
 
   function upsertOwnUnitFile(token, folderId) {
@@ -5919,6 +5959,16 @@ button.count-toggle {
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
       }).filter(function (item) { return !!item.code; });
+      // ZS-128: не писати файл unit до успішного pull+merge у цьому sync,
+      // і не затирати Диск порожньою вкладкою, якщо файл unit не підтягнули.
+      var pulledChild = !!(state.childFilesPulledThisSync && state.childFilesPulledThisSync[String(child)]);
+      if (!pulledChild && !childSnapshotHasContent(childSnap)) {
+        normalizeOwnReportKey();
+        var parentOnlyEmpty = snapshotFromStoredBundle(ownBundleKey || bundleKeyForDriveKey(parentKey));
+        if (!parentOnlyEmpty) return Promise.reject(new Error("nocode"));
+        parentOnlyEmpty.code = parentKey;
+        return upsertKeyedUnitFile(token, folderId, parentKey, parentOnlyEmpty);
+      }
       return upsertKeyedUnitFile(token, folderId, child, childSnap).then(function (childResult) {
         normalizeOwnReportKey();
         var parentBundleKey = ownBundleKey || bundleKeyForDriveKey(parentKey);
@@ -6146,48 +6196,99 @@ button.count-toggle {
 
   function syncChildUnits(token, folderId) {
     var list = unitsOwnedHere();
-    if (!list.length) return Promise.resolve({ received: 0, missing: 0, merged: 0 });
+    state.childFilesPulledThisSync = {};
+    if (!list.length) return Promise.resolve({ received: 0, missing: 0, merged: 0, conflicts: 0 });
     var received = 0;
     var missing = 0;
     var merged = 0;
+    var openChild = String(driveChildWriteCode() || "").trim();
+    // Конфлікти/схожі для вкладки unit — лише з її файлу; інакше лишаємо конфлікти lead.
+    var conflictAcc = openChild ? [] : (Array.isArray(state.mergeConflicts) ? state.mergeConflicts.slice() : []);
     var chain = Promise.resolve();
     list.forEach(function (unit) {
       chain = chain.then(function () {
-        var name = unitDriveFileName(unit.code);
-        if (!name) {
+        var code = String(unit.code || "").trim();
+        var name = unitDriveFileName(code);
+        if (!name || !code) {
           missing += 1;
-          setUnitReportStatus(unit.code, "missing");
+          setUnitReportStatus(code, "missing");
           return;
         }
-        return resolveUnitDriveFile(token, folderId, unit.code, { kind: "binary", decryptKey: unit.code }).then(function (resolved) {
+        return resolveUnitDriveFile(token, folderId, code, { kind: "binary", decryptKey: code }).then(function (resolved) {
           var file = resolved && resolved.file;
           if (!file || !file.id) {
             missing += 1;
-            setUnitReportStatus(unit.code, "missing");
+            setUnitReportStatus(code, "missing");
             return;
           }
           return downloadBinaryFile(token, file.id).then(function (bytes) {
-            return decryptWithCode(unit.code, bytes).then(function (text) {
-              var raw = JSON.parse(text);
-              if (ingestChildUnit(unit.code, raw)) {
-                received += 1;
-                if (unitReportStatus(unit.code) === "merged") merged += 1;
-              } else {
+            return decryptWithCode(code, bytes).then(function (text) {
+              var raw;
+              try { raw = JSON.parse(text); } catch (err) {
                 missing += 1;
-                setUnitReportStatus(unit.code, "missing");
+                setUnitReportStatus(code, "missing");
+                return;
               }
+              if (!raw || typeof raw !== "object") {
+                missing += 1;
+                setUnitReportStatus(code, "missing");
+                return;
+              }
+              // ZS-128: 3-way merge файлу unit (як телефон↔ПК), не сліпий replace.
+              var localSnap = localChildSnapshotForMerge(code);
+              var baseSnap = loadMergeBase(code);
+              var mergedResult = mergeUnitSnapshots(localSnap, raw, baseSnap);
+              if (!mergedResult.snapshot) {
+                missing += 1;
+                setUnitReportStatus(code, "missing");
+                return;
+              }
+              var isOpenTab = !!(openChild && openChild.toLowerCase() === code.toLowerCase());
+              if (isOpenTab && Array.isArray(mergedResult.conflicts) && mergedResult.conflicts.length) {
+                conflictAcc = conflictAcc.concat(mergedResult.conflicts);
+              }
+              if (!ingestChildUnit(code, mergedResult.snapshot)) {
+                missing += 1;
+                setUnitReportStatus(code, "missing");
+                return;
+              }
+              received += 1;
+              state.childFilesPulledThisSync[code] = true;
+              if (unitReportStatus(code) === "merged") merged += 1;
+              if (isOpenTab) {
+                applyMergedRemovals(mergedResult.snapshot);
+                queuePersonDuplicatePrompts(mergedResult.snapshot);
+              }
+              var snapToWrite = cloneData(mergedResult.snapshot);
+              snapToWrite.code = code;
+              snapToWrite.children = subordinatesFor(code).map(function (row) {
+                var childCode = String(row.code || "");
+                var label = preferUnitName(row.name, unitNameFromBundle(childCode));
+                if (label && row.name !== label) row.name = label;
+                return { name: String(label || row.name || "").slice(0, 80), code: childCode };
+              }).filter(function (item) { return !!item.code; });
+              return upsertKeyedUnitFile(token, folderId, code, snapToWrite).catch(function () {
+                return null;
+              });
             });
           });
         }).catch(function () {
           missing += 1;
-          setUnitReportStatus(unit.code, "missing");
+          setUnitReportStatus(code, "missing");
         });
       });
     });
     return chain.then(function () {
+      state.mergeConflicts = conflictAcc;
       var openNow = String(state.openCode || "").trim();
       if (openNow && bundles[openNow]) applyOpenUnitFromBundle(openNow);
-      return { received: received, missing: missing, merged: merged };
+      return {
+        received: received,
+        missing: missing,
+        merged: merged,
+        conflicts: openChild ? conflictAcc.length : 0,
+        dupes: openChild ? (state.mergeDupes || []).length : 0
+      };
     });
   }
 
@@ -6213,6 +6314,8 @@ button.count-toggle {
     var missing = children && children.missing ? children.missing : 0;
     if (received || missing) {
       parts.push("нижчих: " + received + " отримано" + (missing ? ", " + missing + " відсутні" : ""));
+      if (children && children.conflicts) parts.push("є поля на вибір у вкладці: " + children.conflicts);
+      if (children && children.dupes) parts.push("схожі картки у вкладці: " + children.dupes);
     } else if (unitsOwnedHere().length === 0) {
       parts.push("нижчих ланок ще немає");
     }
@@ -6256,6 +6359,7 @@ button.count-toggle {
         return { wroteSettings: false, readSettings: false };
       });
     }).then(function (settingsResult) {
+      state.childFilesPulledThisSync = {};
       state.driveNote = "Читаю свій файл підрозділу.";
       setDriveProgress(2, syncTotal);
       render();
@@ -6263,18 +6367,19 @@ button.count-toggle {
         return { settings: settingsResult || {}, pulled: pulled || { pulled: false } };
       });
     }).then(function (bundle) {
-      state.driveNote = "Пишу файл підрозділу.";
+      // ZS-128: спочатку pull+3-way файлів нижчих ланок, потім upsert — ніколи не затирати vu-*.bin порожньою вкладкою.
+      state.driveNote = "Читаю звіти нижчих ланок.";
       setDriveProgress(3, syncTotal);
       render();
-      return upsertOwnUnitFile(token, folderId).then(function (own) {
-        return { settings: bundle.settings, pulled: bundle.pulled, own: own };
+      return syncChildUnits(token, folderId).then(function (children) {
+        return { settings: bundle.settings, pulled: bundle.pulled, children: children };
       });
     }).then(function (bundle) {
-      state.driveNote = "Читаю звіти нижчих ланок.";
+      state.driveNote = "Пишу файл підрозділу.";
       setDriveProgress(4, syncTotal);
       render();
-      return syncChildUnits(token, folderId).then(function (children) {
-        return { settings: bundle.settings, pulled: bundle.pulled, own: bundle.own, children: children };
+      return upsertOwnUnitFile(token, folderId).then(function (own) {
+        return { settings: bundle.settings, pulled: bundle.pulled, own: own, children: bundle.children };
       });
     }).then(function (bundle) {
       // ZS-123/125: після реального merge — завжди перезаписати файл lead зі знімка bundles,
@@ -10850,6 +10955,107 @@ button.count-toggle {
       openReportChoice("__general__");
       render();
       check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Unit125") !== -1, "ZS-125: на Загальному видно о/с unit");
+      // ZS-128: sync вкладки unit = 3-way того ж файлу; порожня вкладка + remote → о/с і ОВТ на екрані.
+      var child128 = "CCCC-DDDD-EEEE-FFFF-128A";
+      state.units = (state.units || []).filter(function (unit) {
+        return unit.code !== child128;
+      });
+      state.units.push({ id: "u128", name: "Ланка 128", code: child128, parent: "lead" });
+      state.reportRoot = "lead";
+      state.driveEncryptKey = "секрет-lead-128";
+      state.openCode = child128;
+      state.scope = "all";
+      state.reportKey = child128;
+      state.report = emptyUnitReport({ name: "Ланка 128", code: child128 });
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.removed = { people: {}, machines: {} };
+      state.daysArchive = {};
+      state.fileDay = todayISO();
+      state.viewDay = todayISO();
+      state.mergeConflicts = [];
+      state.mergeDupes = [];
+      state.childFilesPulledThisSync = {};
+      bundles[child128] = {
+        edits: { people: {}, machines: {} },
+        removed: { people: {}, machines: {} },
+        added: { people: [], machines: [] },
+        positions: {},
+        changes: [],
+        report: state.report,
+        daysArchive: {},
+        fileDay: todayISO(),
+        viewDay: todayISO()
+      };
+      var local128 = localChildSnapshotForMerge(child128);
+      check(!!local128 && !childSnapshotHasContent(local128), "ZS-128: локальна вкладка порожня");
+      check(!state.childFilesPulledThisSync[child128] && !childSnapshotHasContent(local128), "ZS-128: без pull порожню вкладку не варто писати на Диск");
+      var remote128 = {
+        version: 2,
+        name: "Ланка 128",
+        code: child128,
+        day: todayISO(),
+        unit: { id: "root", name: "Ланка 128", people: [{ id: "p128", name: "Unit Tab", surname: "Unit", givenName: "Tab", patronymic: "", rank: "Солдат", callsign: "Tab128", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T12:00:00.000Z", fieldsUpdatedAt: {} }] },
+        machines: [{ id: "m128", name: "БТР", board: "АА128", type: "БТР", status: "ok", updatedAt: "2026-11-05T12:00:00.000Z", fieldsUpdatedAt: {} }],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var merged128 = mergeUnitSnapshots(local128, remote128, null);
+      check(!!merged128.snapshot && JSON.stringify(merged128.snapshot.unit || {}).indexOf("Tab128") !== -1, "ZS-128: 3-way бере о/с з remote");
+      check(JSON.stringify(merged128.snapshot.machines || []).indexOf("АА128") !== -1, "ZS-128: 3-way бере ОВТ з remote");
+      check(ingestChildUnit(child128, merged128.snapshot), "ZS-128: apply злитого у вкладку");
+      check(state.openCode === child128 && JSON.stringify(state.report || {}).indexOf("Tab128") !== -1, "ZS-128: вкладка показує о/с unit");
+      check(JSON.stringify(state.report || {}).indexOf("АА128") !== -1 || JSON.stringify((state.report && state.report.machines) || []).indexOf("АА128") !== -1, "ZS-128: вкладка показує ОВТ unit");
+      // Комплементарні правки на вкладці й у файлі unit.
+      var local128b = {
+        version: 2,
+        name: "Ланка 128",
+        code: child128,
+        day: todayISO(),
+        unit: { id: "root", name: "Ланка 128", people: [{ id: "p128b", name: "Іваненко Іван", surname: "Іваненко", givenName: "Іван", patronymic: "Петрович", rank: "", callsign: "Ланка", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T12:00:00.000Z", fieldsUpdatedAt: { patronymic: "2026-11-05T12:00:00.000Z" } }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var remote128b = {
+        version: 2,
+        name: "Ланка 128",
+        code: child128,
+        day: todayISO(),
+        unit: { id: "root", name: "Ланка 128", people: [{ id: "p128b", name: "Іваненко Іван", surname: "Іваненко", givenName: "Іван", patronymic: "", rank: "Сержант", callsign: "Ланка", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T12:05:00.000Z", fieldsUpdatedAt: { rank: "2026-11-05T12:05:00.000Z" } }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var base128b = {
+        version: 2,
+        name: "Ланка 128",
+        code: child128,
+        day: todayISO(),
+        unit: { id: "root", name: "Ланка 128", people: [{ id: "p128b", name: "Іваненко Іван", surname: "Іваненко", givenName: "Іван", patronymic: "", rank: "", callsign: "Ланка", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T11:00:00.000Z", fieldsUpdatedAt: {} }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var merge128b = mergeUnitSnapshots(local128b, remote128b, base128b);
+      var person128b = flattenPeopleFromUnit(merge128b.snapshot.unit)[0];
+      check(!!person128b && person128b.patronymic === "Петрович" && person128b.rank === "Сержант" && merge128b.conflicts.length === 0, "ZS-128: вкладка unit зливає звання і по батькові");
       // ZS-126: 3-way merge — різні поля зливаються; конфлікт одного поля → вибір, не тиха перемога.
       var local126 = {
         version: 2,
@@ -11030,16 +11236,19 @@ button.count-toggle {
       check(!document.getElementById("merge-dupe-overlay"), "ZS-127: діалог дублікатів закрито");
       state.mergeDupes = [];
       state.units = (state.units || []).filter(function (unit) {
-        return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125;
+        return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125 && unit.code !== child128;
       });
       delete state.unitReportStatus[child107];
       delete state.unitReportStatus[child103];
       delete state.unitReportStatus[child109];
       delete state.unitReportStatus[child125];
+      delete state.unitReportStatus[child128];
       delete bundles[child107];
       delete bundles[child103];
       delete bundles[child109];
       delete bundles[child125];
+      delete bundles[child128];
+      state.childFilesPulledThisSync = {};
       state.driveEncryptKey = "";
       state.driveDupNote = "";
       // ZS-108: не плодити create, якщо list бачить файл; identical trash; різні — позначка.
