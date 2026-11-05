@@ -5405,6 +5405,128 @@ button.count-toggle {
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
 
+  function mergeIdPrefix(code) {
+    return "mg" + String(code || "").replace(/[^A-Za-z0-9]/g, "").toLowerCase().slice(-16) + "_";
+  }
+
+  function generalBundleKey() {
+    var root = String(state.reportRoot || "").trim();
+    if (root) return reportKey(root) || "lead";
+    if (String(state.openCode || "").toLowerCase() === "lead") return "lead";
+    return "lead";
+  }
+
+  function ensureGeneralBundle() {
+    var key = generalBundleKey();
+    if (String(state.reportKey || "") === key) captureBundle(key);
+    if (bundles[key] && bundles[key].report) return key;
+    var base = emptyUnitReport({ name: key === "lead" ? "Служба" : key, code: key });
+    if (String(state.reportKey || "") === key && state.report) base = cloneData(state.report);
+    bundles[key] = {
+      edits: { people: {}, machines: {} },
+      removed: { people: {}, machines: {} },
+      added: { people: [], machines: [] },
+      positions: {},
+      changes: [],
+      report: base,
+      daysArchive: {},
+      fileDay: todayISO(),
+      viewDay: todayISO()
+    };
+    return key;
+  }
+
+  // ZS-123: після ingest unit — перенести о/с/ОВТ/завдання в Загальний (lead).
+  function mergeUnitIntoGeneral(code) {
+    var unitCode = String(code || "").trim();
+    var child = bundles[unitCode];
+    if (!child || !child.report) return false;
+    var prefix = mergeIdPrefix(unitCode);
+    var unitLabel = "";
+    var meta = findUnitByCode(unitCode);
+    if (meta) unitLabel = preferUnitName(meta.name, child.report.name);
+    if (!unitLabel) unitLabel = String(child.report.name || "Підрозділ").slice(0, 80);
+
+    function walkPeople(node, acc) {
+      if (!node || typeof node !== "object") return;
+      (Array.isArray(node.people) ? node.people : []).forEach(function (person) {
+        if (!person) return;
+        var copy = cloneData(person);
+        copy.id = prefix + String(person.id || newId("p"));
+        if (!copy.unit) copy.unit = unitLabel;
+        acc.push(copy);
+      });
+      (Array.isArray(node.children) ? node.children : []).forEach(function (row) { walkPeople(row, acc); });
+    }
+    var people = [];
+    walkPeople(child.report.unit, people);
+    var childMachines = Array.isArray(child.report.machines) ? child.report.machines : [];
+    var childTasks = Array.isArray(child.report.tasks) ? child.report.tasks : [];
+    // Порожній звіт ланки — не чіпати дерево загального (інакше people:[] ховає children фікстури).
+    if (!people.length && !childMachines.length && !childTasks.length) {
+      setUnitReportStatus(unitCode, "merged");
+      return true;
+    }
+
+    var leadKey = ensureGeneralBundle();
+    var lead = bundles[leadKey];
+    var report = cloneData(lead.report || emptyUnitReport({ name: "Служба", code: leadKey }));
+    if (!report.unit || typeof report.unit !== "object") report.unit = { id: "root", name: report.name || "Служба", people: [] };
+    if (!Array.isArray(report.machines)) report.machines = [];
+    if (!Array.isArray(report.tasks)) report.tasks = [];
+
+    // Плоский список людей у корені (видно в #people без розкриття гілок).
+    if (!Array.isArray(report.unit.people)) report.unit.people = [];
+    report.unit.people = report.unit.people.filter(function (person) {
+      return String(person && person.id || "").indexOf(prefix) !== 0;
+    });
+    report.machines = report.machines.filter(function (machine) {
+      return String(machine && machine.id || "").indexOf(prefix) !== 0;
+    });
+    report.tasks = report.tasks.filter(function (task) {
+      return String(task && task.id || "").indexOf(prefix) !== 0;
+    });
+    report.unit.people = report.unit.people.concat(people);
+
+    childMachines.forEach(function (machine) {
+      if (!machine) return;
+      var copy = cloneData(machine);
+      copy.id = prefix + String(machine.id || newId("m"));
+      report.machines.push(copy);
+    });
+    childTasks.forEach(function (task) {
+      if (!task) return;
+      var copy = cloneData(task);
+      copy.id = prefix + String(task.id || newId("t"));
+      report.tasks.push(copy);
+    });
+
+    lead.report = report;
+    var day = lead.fileDay || todayISO();
+    if (!lead.daysArchive) lead.daysArchive = {};
+    lead.daysArchive[day] = normalizeDaySlice({
+      unit: report.unit,
+      machines: report.machines,
+      tasks: report.tasks,
+      people: report.people,
+      changes: lead.changes
+    });
+    lead.fileDay = day;
+    setUnitReportStatus(unitCode, "merged");
+
+    var openNow = String(state.openCode || "").toLowerCase();
+    var viewingGeneral = openNow === "lead" || (String(state.reportKey || "") === leadKey && openNow === String(leadKey).toLowerCase());
+    if (viewingGeneral) {
+      state.reportKey = leadKey;
+      state.report = report;
+      state.daysArchive = lead.daysArchive ? cloneData(lead.daysArchive) : {};
+      state.fileDay = day;
+      if (!state.viewDay) state.viewDay = day;
+      indexPeople(viewUnit());
+    }
+    return true;
+  }
+
   function applyOpenUnitFromBundle(code) {
     var key = String(code || "").trim();
     var saved = bundles[key];
@@ -5477,15 +5599,18 @@ button.count-toggle {
     };
     // Якщо unit зараз відкритий — показати знімок з посіяним днем.
     applyOpenUnitFromBundle(code);
-    setUnitReportStatus(code, "received");
+    // ZS-123: одразу перенести в Загальний (merged), не лишати лише received.
+    mergeUnitIntoGeneral(code);
+    if (unitReportStatus(code) !== "merged") setUnitReportStatus(code, "received");
     return true;
   }
 
   function syncChildUnits(token, folderId) {
     var list = unitsOwnedHere();
-    if (!list.length) return Promise.resolve({ received: 0, missing: 0 });
+    if (!list.length) return Promise.resolve({ received: 0, missing: 0, merged: 0 });
     var received = 0;
     var missing = 0;
+    var merged = 0;
     var chain = Promise.resolve();
     list.forEach(function (unit) {
       chain = chain.then(function () {
@@ -5505,8 +5630,10 @@ button.count-toggle {
           return downloadBinaryFile(token, file.id).then(function (bytes) {
             return decryptWithCode(unit.code, bytes).then(function (text) {
               var raw = JSON.parse(text);
-              if (ingestChildUnit(unit.code, raw)) received += 1;
-              else {
+              if (ingestChildUnit(unit.code, raw)) {
+                received += 1;
+                if (unitReportStatus(unit.code) === "merged") merged += 1;
+              } else {
                 missing += 1;
                 setUnitReportStatus(unit.code, "missing");
               }
@@ -5521,7 +5648,7 @@ button.count-toggle {
     return chain.then(function () {
       var openNow = String(state.openCode || "").trim();
       if (openNow && bundles[openNow]) applyOpenUnitFromBundle(openNow);
-      return { received: received, missing: missing };
+      return { received: received, missing: missing, merged: merged };
     });
   }
 
@@ -5529,7 +5656,7 @@ button.count-toggle {
     var parts = [];
     if (settings && settings.wroteSettings) parts.push("довідники записано");
     else if (settings && settings.readSettings) parts.push("довідники прочитано");
-    if (pulled && pulled.pulled && pulled.quarantined) parts.push("чужий звіт підлеглого не в загальний");
+    if (pulled && pulled.pulled && pulled.quarantined) parts.push("звіт підлеглої ланки перенесено в загальний");
     else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
@@ -5605,6 +5732,17 @@ button.count-toggle {
       render();
       return syncChildUnits(token, folderId).then(function (children) {
         return { settings: bundle.settings, pulled: bundle.pulled, own: bundle.own, children: children };
+      });
+    }).then(function (bundle) {
+      // ZS-123: після merge unit у Загальний — перезаписати файл lead на Диску.
+      var needParentWrite = bundle.children && Number(bundle.children.merged) > 0 && !driveChildWriteCode();
+      if (!needParentWrite) return bundle;
+      state.driveNote = "Пишу загальний звіт із перенесеними ланками.";
+      return upsertOwnUnitFile(token, folderId).then(function (own) {
+        bundle.own = own || bundle.own;
+        return bundle;
+      }).catch(function () {
+        return bundle;
       });
     }).then(function (bundle) {
       if (bundle.own && bundle.own.name) {
@@ -9766,7 +9904,7 @@ button.count-toggle {
           });
         });
       })().then(function () {
-      // ZS-107: ingest на загальному не підміняє людей; applyCode зберігає reportRoot; upsert цілить файл unit.
+      // ZS-123: ingest unit → о/с у Загальному (merged); applyCode зберігає reportRoot; upsert цілить файл unit.
       var child107 = "ZZZZ-YYYY-XXXX-WWWW-VVVV";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child107 && unit.code !== child103; });
       state.units.push({ id: "u107", name: "Ланка 107", code: child107, parent: "lead" });
@@ -9778,6 +9916,8 @@ button.count-toggle {
       state.reportKey = "lead";
       state.report = emptyUnitReport({ name: "Служба", code: "lead" });
       state.added = { people: [], machines: [] };
+      bundles["lead"] = null;
+      delete bundles["lead"];
       render();
       check(ingestChildUnit(child107, {
         name: "Ланка 107",
@@ -9791,15 +9931,18 @@ button.count-toggle {
         changes: []
       }), "ingest unit 107");
       render();
-      check(unitReportStatus(child107) === "received", "статус unit — отримано");
-      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "на загальному немає о/с unit після ingest");
-      check(!!bundles[child107] && JSON.stringify(bundles[child107].report).indexOf("Bleed107") !== -1, "о/с unit лише в bundles");
-      check(ownPullLooksLikeChildBleed({ code: child107, unit: bundles[child107].report.unit }, "секрет-lead"), "pull бачить bleed коду unit");
+      check(unitReportStatus(child107) === "merged", "статус unit — додано у загальний");
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "на загальному видно о/с unit після ingest");
+      check(!!bundles[child107] && JSON.stringify(bundles[child107].report).indexOf("Bleed107") !== -1, "о/с unit лишається в bundles");
+      check(!!bundles["lead"] && JSON.stringify(bundles["lead"].report).indexOf("Bleed107") !== -1, "о/с unit перенесено в bundle lead");
+      check(ownPullLooksLikeChildBleed({ code: child107, unit: bundles[child107].report.unit }, "секрет-lead"), "pull бачить код unit у чужому файлі");
       var quarantined = { code: child107, name: "Ланка 107", day: todayISO(), days: {}, unit: bundles[child107].report.unit, machines: [], tasks: [], people: [], changes: [] };
       state.report = emptyUnitReport({ name: "Служба", code: "lead" });
+      state.reportKey = "lead";
+      state.openCode = "lead";
       if (ownPullLooksLikeChildBleed(quarantined, "секрет-lead")) ingestChildUnit(child107, quarantined);
       render();
-      check(document.getElementById("people").textContent.indexOf("Bleed107") === -1, "quarantine bleed не кладе unit в загальний");
+      check(document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "після quarantine-ingest о/с знову в загальному");
       applyCode(child107);
       check(state.openCode === child107 && state.reportRoot === "lead", "applyCode unit зберігає reportRoot служби");
       check(driveChildWriteCode() === child107, "driveChildWriteCode бачить unit навіть для запису");
@@ -9813,7 +9956,7 @@ button.count-toggle {
       check(viewingManagedChild() === "" && driveChildWriteCode() === child107, "збитий reportRoot: fallback пише unit");
       state.reportRoot = "lead";
       openReportChoice("__general__");
-      check(state.openCode === "lead" && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "назад у загальний без bleed");
+      check(state.openCode === "lead" && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "назад у загальний — о/с unit на місці");
       // ZS-109: pull/upsert lead не ставить пароль як reportKey; загальний пишеться з bundles["lead"].
       var child109 = "AAAA-BBBB-CCCC-DDDD-109A";
       state.units = (state.units || []).filter(function (unit) {
