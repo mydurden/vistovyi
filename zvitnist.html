@@ -1421,31 +1421,37 @@ button.count-toggle {
     return "https://drive.google.com/drive/folders/" + id;
   }
 
-  // Упаковка Вістового: vs1. + base64url(тека\\nкод)
+  // Упаковка Вістового: base64url(тека\\nкод). Префікс vs1./ВСТ-1. лише для старих рядків.
   function packInvite(folderId, code) {
     var id = String(folderId || "").trim();
     var pass = String(code || "").trim();
     if (!id || !pass) return pass;
     var bytes = new TextEncoder().encode(id + "\n" + pass);
-    return "vs1." + toBase64Url(bytes);
+    return toBase64Url(bytes);
+  }
+
+  function decodeInvitePayload(payload) {
+    try {
+      var decoded = new TextDecoder().decode(fromBase64Url(payload));
+      var cut = decoded.indexOf("\n");
+      if (cut > 0) {
+        var folderId = decoded.slice(0, cut).trim();
+        var code = decoded.slice(cut + 1).trim();
+        if (folderId && code && /^[a-zA-Z0-9_-]{10,}$/.test(folderId)) {
+          return { invite: true, folderId: folderId, code: code };
+        }
+      }
+    } catch (err) {}
+    return null;
   }
 
   function parseAccessCode(raw) {
     var typed = String(raw || "").trim();
     if (!typed) return { invite: false, folderId: "", code: "" };
-    if (typed.indexOf("vs1.") === 0) {
-      try {
-        var decoded = new TextDecoder().decode(fromBase64Url(typed.slice(4)));
-        var cut = decoded.indexOf("\n");
-        if (cut > 0) {
-          return {
-            invite: true,
-            folderId: decoded.slice(0, cut).trim(),
-            code: decoded.slice(cut + 1).trim()
-          };
-        }
-      } catch (err) {}
-    }
+    var prefix = typed.match(/^(vs1\.|вст-?1\.)/i);
+    var payload = prefix ? typed.slice(prefix[0].length) : typed;
+    var parsed = decodeInvitePayload(payload);
+    if (parsed) return parsed;
     return { invite: false, folderId: "", code: typed };
   }
 
@@ -4217,11 +4223,12 @@ button.count-toggle {
     section.append(form);
     if (state.unitError) section.append(el("p", { className: "error", text: state.unitError, attrs: { role: "alert" } }));
     unitsCreatedHere().forEach(function (unit) {
+      var invite = inviteForCode(unit.code);
       var row = el("div", { className: "unit-code" });
       row.append(el("div", { className: "label", text: unit.name }));
       row.append(el("div", { className: "label", text: "Код" }));
-      row.append(el("p", { className: "code-line", text: unit.code, attrs: { "data-unit-code": unit.code, "data-use-code": unit.code, role: "button", tabindex: "0" } }));
-      row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": inviteForCode(unit.code) } }));
+      row.append(el("p", { className: "code-line", text: invite, attrs: { "data-unit-code": unit.code, "data-use-code": unit.code, role: "button", tabindex: "0" } }));
+      row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": invite } }));
       row.append(el("button", { text: "Змінити доступ", attrs: { type: "button", "data-change-access": unit.id } }));
       section.append(row);
     });
@@ -6269,7 +6276,12 @@ button.count-toggle {
     check(!!localStorage.getItem("zvitnist.drive.v1") && localStorage.getItem("zvitnist.drive.v1").indexOf("abcTEST123") !== -1 && localStorage.getItem("zvitnist.drive.v1").indexOf("секрет") !== -1, "адреса і код у пам’яті браузера");
     var packed = packInvite("abcTEST123", "секрет");
     var unpacked = parseAccessCode(packed);
-    check(packed.indexOf("vs1.") === 0 && unpacked.invite && unpacked.folderId === "abcTEST123" && unpacked.code === "секрет", "упаковка і розбір коду-запрошення");
+    check(packed.indexOf("vs1.") === -1 && packed.indexOf(".") === -1 && unpacked.invite && unpacked.folderId === "abcTEST123" && unpacked.code === "секрет", "упаковка і розбір коду-запрошення без префікса");
+    var legacyPacked = parseAccessCode("vs1." + packed);
+    var legacyUa = parseAccessCode("ВСТ-1." + packed);
+    check(legacyPacked.invite && legacyPacked.folderId === "abcTEST123" && legacyPacked.code === "секрет", "старий рядок з префіксом vs1. приймається");
+    check(legacyUa.invite && legacyUa.folderId === "abcTEST123" && legacyUa.code === "секрет", "старий рядок з префіксом ВСТ-1. приймається");
+    check(!parseAccessCode("секрет").invite && parseAccessCode("секрет").code === "секрет", "звичайний пароль не плутається з запрошенням");
     check(unitDriveFileName("секрет").indexOf("vu-") === 0 && unitDriveFileName("секрет").indexOf("секрет") === -1 && unitDriveFileName("секрет").slice(-4) === ".bin", "ім’я файлу від відбитка без відкритого коду");
     check(pageSource.indexOf("toString(36) + " + '".bin"') === -1 && pageSource.indexOf("function " + "putReport") === -1, "немає заглушки випадкового .bin");
     state.driveNote = "";
@@ -6604,16 +6616,18 @@ button.count-toggle {
     unitName.value = "Туз";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var born = document.querySelector("#profile-overlay [data-unit-code]");
-    check(born && born.textContent.length >= 20 && born.textContent.split("-").length === 5, "довгий код на екрані");
+    check(born && born.getAttribute("data-unit-code").length >= 20 && born.getAttribute("data-unit-code").split("-").length === 5, "довгий код ланки збережено");
     check(document.getElementById("app").textContent.indexOf("Туз") !== -1, "назва підрозділу");
-    check(state.units.length === 1 && state.units[0].code === born.textContent, "код збережено");
+    check(state.units.length === 1 && state.units[0].code === born.getAttribute("data-unit-code"), "код збережено");
     state.driveFolder = "https://drive.google.com/drive/folders/abcTEST123";
     save();
     render();
     document.querySelector("[data-open-profile]").click();
+    born = document.querySelector("#profile-overlay [data-unit-code]");
     var copyBtn = document.querySelector("#profile-overlay .unit-code [data-copy]");
     var inviteValue = copyBtn ? copyBtn.getAttribute("data-copy") : "";
     var inviteParsed = parseAccessCode(inviteValue);
+    check(born && born.textContent === inviteValue && inviteValue.indexOf("vs1.") === -1 && inviteValue.indexOf(state.units[0].code) === -1, "на екрані одразу довге запрошення без префікса, не короткий код");
     check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code, "Копіювати дає рядок-запрошення з текою і кодом");
     var changeAccessBtn = document.querySelector("#profile-overlay [data-change-access]");
     check(!!changeAccessBtn && changeAccessBtn.textContent === "Змінити доступ" && getComputedStyle(changeAccessBtn).textDecorationLine.indexOf("underline") === -1, "кнопка Змінити доступ у стилі профілю");
@@ -6636,6 +6650,7 @@ button.count-toggle {
     check(!!inviteNode && !!document.querySelector("#access-change-overlay [data-copy]") && state.accessChange && state.accessChange.newCode && state.accessChange.newCode !== oldUnitCode, "після Змінити є нове запрошення і Копіювати");
     var pendingCode = state.accessChange.newCode;
     var pendingInvite = parseAccessCode(inviteNode.textContent);
+    check(inviteNode.textContent.indexOf("vs1.") === -1 && inviteNode.textContent.indexOf(pendingCode) === -1, "нове запрошення без префікса і без короткого коду на екрані");
     check(pendingInvite.invite && pendingInvite.code === pendingCode && pendingInvite.folderId === "abcTEST123", "нове запрошення містить теку і код");
     document.querySelector("#access-change-overlay [data-access-confirm]").click();
     check(!document.getElementById("access-change-overlay") && state.units[0].code === pendingCode && state.units[0].code !== oldUnitCode, "Підтвердити зберігає новий код у children");
@@ -6667,7 +6682,7 @@ button.count-toggle {
       builtPeople += (node.people || []).length;
       (node.children || []).forEach(countBuilt);
     })(builtUnit.unit);
-    check(builtUnit.name === "Туз" && builtUnit.code === born.textContent && builtUnit.file === reportFileName(born.textContent) && builtPeople === 0 && builtUnit.machines.length === 0 && builtUnit.tasks.length === 0, "файл нового підрозділу порожній");
+    check(builtUnit.name === "Туз" && builtUnit.code === born.getAttribute("data-unit-code") && builtUnit.file === reportFileName(born.getAttribute("data-unit-code")) && builtPeople === 0 && builtUnit.machines.length === 0 && builtUnit.tasks.length === 0, "файл нового підрозділу порожній");
     check(JSON.stringify(builtUnit).indexOf("Бондар") === -1 && JSON.stringify(builtUnit).indexOf("Степ") === -1, "порожній файл без імен зразка");
     check(writeReportProof(builtUnit).indexOf("Бондар") === -1, "підтвердження порожнього файлу");
     check(!localStorage.getItem("zvitnist.lead.v1"), "звіт не лежить у пам’яті браузера");
@@ -7046,7 +7061,8 @@ button.count-toggle {
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var childUnit = state.units[1];
     var childShown = document.querySelector("#profile-overlay [data-unit-code]");
-    check(childUnit && childUnit.parent === state.units[0].code && childUnit.name === "Вал" && childShown && childShown.textContent === childUnit.code, "підрозділ створив ланку нижче");
+    var childInvite = inviteForCode(childUnit.code);
+    check(childUnit && childUnit.parent === state.units[0].code && childUnit.name === "Вал" && childShown && childShown.getAttribute("data-unit-code") === childUnit.code && childShown.textContent === childInvite, "підрозділ створив ланку нижче з довгим запрошенням");
     var childDoc = emptyUnitReport(childUnit);
     check(childDoc.file === reportFileName(childUnit.code) && childDoc.file !== SAMPLE_FILE && childDoc.machines.length === 0 && childDoc.tasks.length === 0 && JSON.stringify(childDoc).indexOf("Бондар") === -1 && JSON.stringify(childDoc).indexOf("Степ") === -1, "нижча ланка порожня, не зразок 1 роти");
     document.querySelector("[data-close-profile]").click();
