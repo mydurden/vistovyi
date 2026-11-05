@@ -2169,21 +2169,26 @@ button.count-toggle {
     return reportKey(key);
   }
 
+  // ZS-122: порожній зріз дня не має перебивати о/с з report.unit.
+  function daySliceFromReportOrArchive(report, archive, day, changes) {
+    var fromArchive = archive && archive[day] ? normalizeDaySlice(archive[day]) : null;
+    var fromReport = normalizeDaySlice({
+      unit: report && report.unit,
+      machines: report && report.machines,
+      tasks: report && report.tasks,
+      people: report && report.people,
+      changes: changes
+    });
+    if (fromArchive && daySliceHasReport(fromArchive)) return fromArchive;
+    if (daySliceHasReport(fromReport)) return fromReport;
+    return fromArchive || fromReport;
+  }
+
   function snapshotFromStoredBundle(unitKey) {
     var b = bundles[unitKey];
     if (!b || !b.report) return null;
     var day = b.fileDay || b.viewDay || todayISO();
-    var live = null;
-    if (b.daysArchive && b.daysArchive[day]) live = normalizeDaySlice(b.daysArchive[day]);
-    else {
-      live = normalizeDaySlice({
-        unit: b.report.unit,
-        machines: b.report.machines,
-        tasks: b.report.tasks,
-        people: b.report.people,
-        changes: b.changes
-      });
-    }
+    var live = daySliceFromReportOrArchive(b.report, b.daysArchive, day, b.changes);
     var days = {};
     Object.keys(b.daysArchive || {}).forEach(function (key) {
       if (key === day) return;
@@ -3223,6 +3228,10 @@ button.count-toggle {
       state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
       state.fileDay = saved.fileDay || todayISO();
       state.viewDay = saved.viewDay || state.fileDay;
+      // ZS-122: посіяти живий день з report, якщо архів порожній.
+      var liveDay = state.fileDay || state.viewDay || todayISO();
+      var seeded = daySliceFromReportOrArchive(state.report, state.daysArchive, liveDay, state.changes);
+      if (daySliceHasReport(seeded)) state.daysArchive[liveDay] = seeded;
       ensureDayRollover();
       return;
     }
@@ -5396,6 +5405,38 @@ button.count-toggle {
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
 
+  function applyOpenUnitFromBundle(code) {
+    var key = String(code || "").trim();
+    var saved = bundles[key];
+    if (!saved || !saved.report) return false;
+    var openNow = String(state.openCode || "").trim();
+    if (!openNow || openNow.toLowerCase() !== key.toLowerCase()) return false;
+    if (String(state.reportKey || "").toLowerCase() !== key.toLowerCase()) return false;
+    state.edits = saved.edits || { people: {}, machines: {} };
+    state.removed = saved.removed || { people: {}, machines: {} };
+    state.added = saved.added || { people: [], machines: [] };
+    state.positions = saved.positions || {};
+    state.changes = Array.isArray(saved.changes) ? saved.changes : [];
+    state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
+    state.fileDay = saved.fileDay || todayISO();
+    state.viewDay = saved.viewDay || state.fileDay;
+    var liveDay = state.fileDay || state.viewDay || todayISO();
+    var seeded = daySliceFromReportOrArchive(saved.report, state.daysArchive, liveDay, state.changes);
+    if (daySliceHasReport(seeded)) state.daysArchive[liveDay] = seeded;
+    state.report = {
+      name: saved.report.name,
+      code: saved.report.code,
+      file: saved.report.file,
+      unit: seeded.unit,
+      machines: seeded.machines,
+      tasks: seeded.tasks,
+      people: seeded.people
+    };
+    if (daySliceHasReport(seeded) && Array.isArray(seeded.changes)) state.changes = seeded.changes.slice(-100);
+    ensureDayRollover();
+    return true;
+  }
+
   function ingestChildUnit(code, rawJson) {
     var doc = applyUnitSnapshot(rawJson, code);
     if (!doc) return false;
@@ -5414,6 +5455,15 @@ button.count-toggle {
       });
     }
     var changes = Array.isArray(rawJson && rawJson.changes) ? rawJson.changes.slice(-100) : [];
+    // ZS-122: посіяти живий день з unit (як loadDaysFromSnapshot), навіть якщо raw.days без цього ключа.
+    var liveSlice = daySliceFromReportOrArchive(doc, days, day, changes);
+    if (daySliceHasReport(liveSlice) || !days[day]) days[day] = liveSlice;
+    if (daySliceHasReport(liveSlice)) {
+      doc.unit = liveSlice.unit;
+      doc.machines = liveSlice.machines;
+      doc.tasks = liveSlice.tasks;
+      doc.people = liveSlice.people;
+    }
     bundles[code] = {
       edits: { people: {}, machines: {} },
       removed: { people: {}, machines: {} },
@@ -5425,18 +5475,8 @@ button.count-toggle {
       fileDay: day,
       viewDay: day
     };
-    // ZS-107: на загальному не підміняти state.report вмістом unit.
-    var openNow = String(state.openCode || "").trim();
-    var rootNow = String(state.reportRoot || "").trim();
-    var onGeneral = !openNow || !rootNow || openNow.toLowerCase() === rootNow.toLowerCase();
-    if (!onGeneral && String(state.reportKey || "") === String(code) && openNow.toLowerCase() === String(code).toLowerCase()) {
-      state.report = doc;
-      state.changes = changes;
-      state.daysArchive = days;
-      state.fileDay = day;
-      state.viewDay = day;
-      ensureDayRollover();
-    }
+    // Якщо unit зараз відкритий — показати знімок з посіяним днем.
+    applyOpenUnitFromBundle(code);
     setUnitReportStatus(code, "received");
     return true;
   }
@@ -5479,6 +5519,8 @@ button.count-toggle {
       });
     });
     return chain.then(function () {
+      var openNow = String(state.openCode || "").trim();
+      if (openNow && bundles[openNow]) applyOpenUnitFromBundle(openNow);
       return { received: received, missing: missing };
     });
   }
@@ -9479,6 +9521,10 @@ button.count-toggle {
         changes: []
       }), "ingest unit для кешу");
       check(!!bundles[childCacheCode] && countPeopleInUnit(bundles[childCacheCode].report.unit) === 1, "unit в bundles після ingest");
+      // ZS-122: порожній raw.days — живий день усе одно з о/с.
+      check(daySliceHasReport(bundles[childCacheCode].daysArchive[todayISO()]), "ingest сіє daysArchive[day] з unit");
+      var snap122 = snapshotFromStoredBundle(childCacheCode);
+      check(snap122 && countPeopleInUnit(snap122.unit) === 1, "snapshotFromStoredBundle не губить о/с при порожніх days");
       check(saveReportCache() && !!localStorage.getItem(CACHE_KEY), "знімки записані в zvitnist.cache.v1");
       bundles = {};
       state.report = emptyUnitReport({ name: "", code: "lead" });
@@ -9759,6 +9805,7 @@ button.count-toggle {
       check(driveChildWriteCode() === child107, "driveChildWriteCode бачить unit навіть для запису");
       activateReport(child107);
       check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "у звіті unit люди на місці");
+      check(daySliceHasReport(state.daysArchive[todayISO()]) && daySliceHasReport(bundles[child107].daysArchive[todayISO()]), "ZS-122: відкритий unit має посіяний день з о/с");
       // reportRoot навмисно збитий — upsert усе одно має писати файл unit, не lead.
       state.reportRoot = child107;
       state.openCode = child107;
