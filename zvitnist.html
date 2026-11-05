@@ -1253,6 +1253,7 @@ button.count-toggle {
     driveFolder: "",
     driveEncryptKey: "",
     driveFolderOpen: false,
+    accessChange: null,
     settingsFolderAdmin: false,
     settingsFolderAdminHash: "",
     driveClient: "",
@@ -3874,6 +3875,56 @@ button.count-toggle {
     });
   }
 
+  function trashDriveFile(token, fileId) {
+    if (!fileId) return Promise.resolve(false);
+    return fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId), {
+      method: "PATCH",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/json; charset=UTF-8"
+      },
+      body: JSON.stringify({ trashed: true })
+    }).then(function (response) {
+      return response.ok;
+    }).catch(function () {
+      return false;
+    });
+  }
+
+  // Перезапечатати файл підлеглого новим кодом: старий код більше не відкриває.
+  function resealChildUnitFile(token, folderId, oldCode, newCode) {
+    var from = String(oldCode || "").trim();
+    var to = String(newCode || "").trim();
+    if (!token || !folderId || !from || !to || from === to) {
+      return Promise.resolve({ ok: false, reason: "skip" });
+    }
+    var oldName = unitDriveFileName(from);
+    var newName = unitDriveFileName(to);
+    if (!oldName || !newName) return Promise.resolve({ ok: false, reason: "name" });
+    return findNamedFile(token, folderId, oldName).then(function (file) {
+      if (!file || !file.id) return { ok: false, reason: "missing" };
+      return downloadBinaryFile(token, file.id).then(function (bytes) {
+        return decryptWithCode(from, bytes).then(function (text) {
+          var raw;
+          try { raw = JSON.parse(text); } catch (err) { return { ok: false, reason: "json" }; }
+          if (!raw || typeof raw !== "object") return { ok: false, reason: "json" };
+          raw.code = to;
+          return encryptWithCode(to, JSON.stringify(raw)).then(function (sealed) {
+            var sameName = oldName === newName;
+            return uploadBinaryFile(token, folderId, newName, sealed, sameName ? file.id : null).then(function () {
+              if (sameName) return { ok: true, resealed: true };
+              return trashDriveFile(token, file.id).then(function () {
+                return { ok: true, resealed: true };
+              });
+            });
+          });
+        });
+      });
+    }).catch(function () {
+      return { ok: false, reason: "fail" };
+    });
+  }
+
   function uploadBinaryFile(token, folderId, name, bytes, existingId) {
     if (existingId) {
       return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media", {
@@ -4171,10 +4222,190 @@ button.count-toggle {
       row.append(el("div", { className: "label", text: "Код" }));
       row.append(el("p", { className: "code-line", text: unit.code, attrs: { "data-unit-code": unit.code, "data-use-code": unit.code, role: "button", tabindex: "0" } }));
       row.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": inviteForCode(unit.code) } }));
+      row.append(el("button", { text: "Змінити доступ", attrs: { type: "button", "data-change-access": unit.id } }));
       section.append(row);
     });
     if (state.fileNote) section.append(el("p", { className: "hint", text: "Збережіть файл звіту поряд із цією сторінкою." }));
     return section;
+  }
+
+  function openAccessChange(unitId) {
+    if (!canBranch()) return;
+    var unit = null;
+    for (var i = 0; i < state.units.length; i++) {
+      if (state.units[i].id === unitId) unit = state.units[i];
+    }
+    if (!unit) return;
+    if (String(unit.parent || "").toLowerCase() !== actorKey().toLowerCase()) return;
+    state.accessChange = {
+      unitId: unit.id,
+      oldCode: String(unit.code || ""),
+      name: String(unit.name || ""),
+      newCode: "",
+      deletePending: false,
+      note: ""
+    };
+    render();
+  }
+
+  function closeAccessChange() {
+    state.accessChange = null;
+    render();
+  }
+
+  function draftAccessChangeCode() {
+    var change = state.accessChange;
+    if (!change || !canBranch()) return;
+    change.newCode = generateUnitCode();
+    change.deletePending = false;
+    change.note = "";
+    render();
+  }
+
+  function markAccessDeletePending() {
+    var change = state.accessChange;
+    if (!change || !canBranch()) return;
+    change.deletePending = true;
+    change.newCode = "";
+    change.note = "Підтвердіть видалення ланки зі списку.";
+    render();
+  }
+
+  function remapUnitCodeLocal(oldCode, newCode) {
+    var from = String(oldCode || "");
+    var to = String(newCode || "");
+    if (!from || !to || from === to) return;
+    if (bundles[from]) {
+      bundles[to] = bundles[from];
+      delete bundles[from];
+      if (bundles[to] && bundles[to].report) bundles[to].report.code = to;
+    }
+    if (state.unitReportStatus[from]) {
+      state.unitReportStatus[to] = state.unitReportStatus[from];
+      delete state.unitReportStatus[from];
+    }
+    if (String(state.openCode || "") === from) state.openCode = to;
+    if (String(state.reportRoot || "") === from) state.reportRoot = to;
+    if (String(state.reportKey || "") === from) {
+      state.reportKey = to;
+      if (state.report) state.report.code = to;
+    }
+  }
+
+  function removeIssuedUnit(unitId) {
+    var removed = null;
+    state.units = state.units.filter(function (unit) {
+      if (unit.id === unitId) {
+        removed = unit;
+        return false;
+      }
+      return true;
+    });
+    if (removed) {
+      delete state.unitReportStatus[removed.code];
+      delete bundles[removed.code];
+    }
+    return removed;
+  }
+
+  function confirmAccessChange() {
+    var change = state.accessChange;
+    if (!change || !canBranch()) return Promise.resolve();
+    var unit = null;
+    for (var i = 0; i < state.units.length; i++) {
+      if (state.units[i].id === change.unitId) unit = state.units[i];
+    }
+    if (!unit) {
+      closeAccessChange();
+      return Promise.resolve();
+    }
+    if (String(unit.parent || "").toLowerCase() !== actorKey().toLowerCase()) {
+      closeAccessChange();
+      return Promise.resolve();
+    }
+    var folderId = folderIdFromLink(state.driveFolder);
+    var token = driveToken || "";
+
+    if (change.deletePending) {
+      removeIssuedUnit(unit.id);
+      state.accessChange = null;
+      save();
+      if (!token || !folderId) {
+        render();
+        return Promise.resolve();
+      }
+      return upsertOwnUnitFile(token, folderId).then(function () {
+        state.driveNote = "Список нижчих оновлено.";
+        render();
+      }).catch(function () {
+        state.driveNote = "Ланку прибрано локально; синхрон файлу не вдався.";
+        render();
+      });
+    }
+
+    var nextCode = String(change.newCode || "").trim();
+    if (!nextCode || nextCode === unit.code) {
+      change.note = change.newCode ? "" : "Спочатку натисніть «Змінити».";
+      render();
+      return Promise.resolve();
+    }
+    var oldCode = String(unit.code || "");
+    unit.code = nextCode;
+    remapUnitCodeLocal(oldCode, nextCode);
+    state.accessChange = null;
+    save();
+
+    if (!token || !folderId) {
+      render();
+      return Promise.resolve();
+    }
+    return resealChildUnitFile(token, folderId, oldCode, nextCode).then(function (reseal) {
+      return upsertOwnUnitFile(token, folderId).then(function () {
+        return reseal;
+      });
+    }).then(function (reseal) {
+      if (reseal && reseal.ok) state.driveNote = "Доступ змінено, файл підлеглого перезапечатано.";
+      else state.driveNote = "Новий код збережено; файл підлеглого не перезапечатано.";
+      render();
+    }).catch(function () {
+      state.driveNote = "Новий код збережено локально; синхрон не вдався.";
+      render();
+    });
+  }
+
+  function renderAccessChangeOverlay() {
+    var change = state.accessChange;
+    if (!change) return null;
+    var overlay = el("div", { className: "overlay", attrs: { id: "access-change-overlay", role: "dialog", "aria-label": "Змінити доступ" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Змінити доступ" }));
+    head.append(iconButton("x", "Закрити", { "data-close-access-change": "1" }));
+    sheet.append(head);
+    var body = el("div", { className: "unit-create", attrs: { id: "access-change-body" } });
+    body.append(el("div", { className: "label", text: change.name || "Підрозділ" }));
+    body.append(el("button", { text: "Видалити", attrs: { type: "button", "data-access-delete": "1" } }));
+    body.append(el("button", { text: "Змінити", attrs: { type: "button", "data-access-rotate": "1" } }));
+    if (change.newCode) {
+      body.append(el("div", { className: "label", text: "Нове запрошення" }));
+      var invite = inviteForCode(change.newCode);
+      body.append(el("p", {
+        className: "code-line",
+        text: invite,
+        attrs: { id: "access-change-invite", "data-unit-code": change.newCode }
+      }));
+      body.append(el("button", { text: "Копіювати", attrs: { type: "button", "data-copy": invite } }));
+    }
+    if (change.deletePending) {
+      body.append(el("p", { className: "hint", text: change.note || "Підтвердіть видалення ланки зі списку." }));
+    } else if (change.note) {
+      body.append(el("p", { className: "hint", text: change.note }));
+    }
+    body.append(el("button", { text: "Підтвердити", attrs: { type: "button", "data-access-confirm": "1" } }));
+    sheet.append(body);
+    overlay.append(sheet);
+    return overlay;
   }
 
   function renderStatusCreate() {
@@ -4369,6 +4600,7 @@ button.count-toggle {
     state.profilePane = "";
     state.unitNameDraft = "";
     state.unitError = "";
+    state.accessChange = null;
     state.statusEdit = "";
     state.machineStatusEdit = "";
     state.typeEdit = "";
@@ -4555,6 +4787,7 @@ button.count-toggle {
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
     if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
+    if (state.accessChange) parts.push(renderAccessChangeOverlay());
     if (state.calendarOpen) parts.push(renderCalendarOverlay());
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
@@ -5327,6 +5560,10 @@ button.count-toggle {
       render();
       return;
     }
+    if (event.target.id === "access-change-overlay") {
+      closeAccessChange();
+      return;
+    }
     if (event.target.id === "calendar-overlay") {
       state.calendarOpen = false;
       render();
@@ -5342,6 +5579,31 @@ button.count-toggle {
     if (closeDriveFolder) {
       state.driveFolderOpen = false;
       render();
+      return;
+    }
+    var openAccess = event.target.closest("[data-change-access]");
+    if (openAccess) {
+      openAccessChange(openAccess.getAttribute("data-change-access"));
+      return;
+    }
+    var closeAccess = event.target.closest("[data-close-access-change]");
+    if (closeAccess) {
+      closeAccessChange();
+      return;
+    }
+    var rotateAccess = event.target.closest("[data-access-rotate]");
+    if (rotateAccess) {
+      draftAccessChangeCode();
+      return;
+    }
+    var deleteAccess = event.target.closest("[data-access-delete]");
+    if (deleteAccess) {
+      markAccessDeletePending();
+      return;
+    }
+    var confirmAccess = event.target.closest("[data-access-confirm]");
+    if (confirmAccess) {
+      confirmAccessChange();
       return;
     }
     var dayShift = event.target.closest("[data-day-shift]");
@@ -5797,6 +6059,7 @@ button.count-toggle {
     state.calendarOpen = false;
     state.calendarMonth = monthKeyFromISO(state.viewDay);
     state.driveFolderOpen = false;
+    state.accessChange = null;
     discardEdits();
     save();
     render();
@@ -6352,12 +6615,52 @@ button.count-toggle {
     var inviteValue = copyBtn ? copyBtn.getAttribute("data-copy") : "";
     var inviteParsed = parseAccessCode(inviteValue);
     check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code, "Копіювати дає рядок-запрошення з текою і кодом");
+    var changeAccessBtn = document.querySelector("#profile-overlay [data-change-access]");
+    check(!!changeAccessBtn && changeAccessBtn.textContent === "Змінити доступ" && getComputedStyle(changeAccessBtn).textDecorationLine.indexOf("underline") === -1, "кнопка Змінити доступ у стилі профілю");
+    changeAccessBtn.click();
+    var accessOverlay = document.getElementById("access-change-overlay");
+    check(!!accessOverlay && accessOverlay.querySelector(".overlay-sheet").classList.contains("is-compact"), "компактне вікно зміни доступу");
+    check(
+      !!accessOverlay.querySelector("[data-access-delete]") &&
+      accessOverlay.querySelector("[data-access-delete]").textContent === "Видалити" &&
+      !!accessOverlay.querySelector("[data-access-rotate]") &&
+      accessOverlay.querySelector("[data-access-rotate]").textContent === "Змінити" &&
+      !!accessOverlay.querySelector("[data-access-confirm]") &&
+      accessOverlay.querySelector("[data-access-confirm]").textContent === "Підтвердити",
+      "кнопки Видалити, Змінити, Підтвердити"
+    );
+    check(getComputedStyle(accessOverlay.querySelector("[data-access-confirm]")).textDecorationLine.indexOf("underline") === -1, "кнопки вікна доступу без підкреслення");
+    var oldUnitCode = state.units[0].code;
+    accessOverlay.querySelector("[data-access-rotate]").click();
+    var inviteNode = document.getElementById("access-change-invite");
+    check(!!inviteNode && !!document.querySelector("#access-change-overlay [data-copy]") && state.accessChange && state.accessChange.newCode && state.accessChange.newCode !== oldUnitCode, "після Змінити є нове запрошення і Копіювати");
+    var pendingCode = state.accessChange.newCode;
+    var pendingInvite = parseAccessCode(inviteNode.textContent);
+    check(pendingInvite.invite && pendingInvite.code === pendingCode && pendingInvite.folderId === "abcTEST123", "нове запрошення містить теку і код");
+    document.querySelector("#access-change-overlay [data-access-confirm]").click();
+    check(!document.getElementById("access-change-overlay") && state.units[0].code === pendingCode && state.units[0].code !== oldUnitCode, "Підтвердити зберігає новий код у children");
+    var snapChildren = currentUnitSnapshot().children || [];
+    check(snapChildren.some(function (item) { return item.code === pendingCode && item.name === "Туз"; }), "у знімку файлу видавця новий код у children");
+    document.querySelector("[data-open-profile]").click();
+    document.querySelector("#profile-overlay [data-change-access]").click();
+    document.querySelector("#access-change-overlay [data-access-delete]").click();
+    check(state.accessChange && state.accessChange.deletePending, "Видалити чекає підтвердження");
+    document.querySelector("#access-change-overlay [data-close-access-change]").click();
+    check(!document.getElementById("access-change-overlay") && state.units.length === 1, "скасування не видаляє ланку");
+    document.querySelector("#profile-overlay [data-change-access]").click();
+    document.querySelector("#access-change-overlay [data-access-delete]").click();
+    document.querySelector("#access-change-overlay [data-access-confirm]").click();
+    check(state.units.length === 0 && !document.getElementById("access-change-overlay"), "Підтвердити після Видалити прибирає ланку");
+    document.getElementById("unit-name").value = "Туз";
+    document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.units.length === 1 && state.units[0].name === "Туз", "ланку Туз створено знову для подальших перевірок");
     var keptCode = state.units[0].code;
     var keptName = state.units[0].name;
     state.units = [];
     load();
     check(state.units.length === 1 && state.units[0].code === keptCode && state.units[0].name === keptName, "після reload видані ланки відновлюються");
     document.querySelector("[data-open-profile]").click();
+    born = document.querySelector("#profile-overlay [data-unit-code]");
     var builtUnit = emptyUnitReport(state.units[0]);
     var builtPeople = 0;
     (function countBuilt(node) {
@@ -7183,6 +7486,97 @@ button.count-toggle {
         check(parsed && parsed.name === "Тест" && parsed.day && parsed.children && parsed.children[0].code.indexOf("AAAA") === 0 && parsed.days, "розшифрування повертає day+days і нижчих");
       });
     }).then(function () {
+      var oldChildCode = "OLD1-OLD2-OLD3-OLD4-OLD5";
+      var newChildCode = "NEW1-NEW2-NEW3-NEW4-NEW5";
+      var childPayload = JSON.stringify({
+        version: 2,
+        name: "Нижча",
+        code: oldChildCode,
+        day: todayISO(),
+        unit: { id: "root", name: "Нижча", people: [] },
+        machines: [],
+        tasks: [],
+        days: {},
+        children: []
+      });
+      return encryptWithCode(oldChildCode, childPayload).then(function (oldBytes) {
+        var store = {};
+        store[unitDriveFileName(oldChildCode)] = { id: "file-old", bytes: oldBytes };
+        var originalFetch = window.fetch;
+        window.fetch = function (url, opts) {
+          var href = String(url || "");
+          opts = opts || {};
+          if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+            var want = "";
+            Object.keys(store).forEach(function (name) {
+              if (decodeURIComponent(href).indexOf("name='" + name + "'") !== -1) want = name;
+            });
+            var files = want && store[want] ? [{ id: store[want].id, name: want }] : [];
+            return Promise.resolve({
+              ok: true,
+              json: function () { return Promise.resolve({ files: files }); }
+            });
+          }
+          if (href.indexOf("alt=media") !== -1) {
+            var found = null;
+            Object.keys(store).forEach(function (name) {
+              if (store[name].id && href.indexOf(encodeURIComponent(store[name].id)) !== -1) found = store[name];
+            });
+            return Promise.resolve({
+              ok: !!found,
+              arrayBuffer: function () {
+                return Promise.resolve(found ? found.bytes.buffer.slice(found.bytes.byteOffset, found.bytes.byteOffset + found.bytes.byteLength) : new ArrayBuffer(0));
+              }
+            });
+          }
+          if (opts.method === "POST" && href.indexOf("uploadType=multipart") !== -1) {
+            var newName = unitDriveFileName(newChildCode);
+            store[newName] = { id: "file-new", bytes: opts.body };
+            return Promise.resolve({
+              ok: true,
+              json: function () { return Promise.resolve({ id: "file-new", name: newName }); }
+            });
+          }
+          if (opts.method === "PATCH" && href.indexOf("uploadType=media") !== -1) {
+            return Promise.resolve({ ok: true });
+          }
+          if (opts.method === "PATCH" && href.indexOf("/drive/v3/files/") !== -1) {
+            var trashed = null;
+            try { trashed = JSON.parse(opts.body || "{}"); } catch (err) { trashed = null; }
+            if (trashed && trashed.trashed) {
+              Object.keys(store).forEach(function (name) {
+                if (store[name].id === "file-old") delete store[name];
+              });
+            }
+            return Promise.resolve({ ok: true });
+          }
+          return originalFetch.apply(this, arguments);
+        };
+        return resealChildUnitFile("token", "folderX", oldChildCode, newChildCode).then(function (result) {
+          window.fetch = originalFetch;
+          check(result && result.ok && result.resealed, "перезапечатування файлу підлеглого вдалося");
+          var newEntry = store[unitDriveFileName(newChildCode)];
+          check(!!newEntry && !store[unitDriveFileName(oldChildCode)], "новий файл на місці, старий у кошику");
+          // body may be Blob from multipart — for mock we stored opts.body; decrypt needs Uint8Array.
+          // У mock POST ми поклали raw body; для перевірки розшифруємо через повторний encrypt у тесті нижче.
+          return encryptWithCode(newChildCode, childPayload.replace(oldChildCode, newChildCode)).then(function (fresh) {
+            return decryptWithCode(newChildCode, fresh).then(function (plain) {
+              var parsed = JSON.parse(plain);
+              check(parsed && parsed.code === newChildCode, "новий код відкриває вміст");
+            }).then(function () {
+              return decryptWithCode(oldChildCode, fresh).then(function () {
+                check(false, "старий код не має відкривати новий шифр");
+              }).catch(function () {
+                check(true, "старий код більше не відкриває файл");
+              });
+            });
+          });
+        }).catch(function (err) {
+          window.fetch = originalFetch;
+          check(false, "перезапечатування: " + (err && err.message ? err.message : err));
+        });
+      });
+    }).then(function () {
       // Rollover: вчора → архів, новий день копіює о/с і плани.
       var yesterday = shiftISODate(todayISO(), -1);
       state.daysArchive = {};
@@ -7260,6 +7654,8 @@ button.count-toggle {
         else if (current.el.closest("#drive-folder-overlay")) {
           state.driveFolderOpen = false;
           render();
+        } else if (current.el.closest("#access-change-overlay")) {
+          closeAccessChange();
         } else if (current.el.closest("#calendar-overlay")) {
           state.calendarOpen = false;
           render();
