@@ -1337,6 +1337,7 @@ button.count-toggle {
     driveFrom: "",
     driveTo: "",
     driveNote: "",
+    driveDupNote: "",
     viewDay: "",
     fileDay: "",
     daysArchive: {},
@@ -2463,10 +2464,35 @@ button.count-toggle {
     return found ? open : "";
   }
 
+  // ZS-107: навіть якщо applyCode збив reportRoot на код дитини — не писати її знімок у файл тата.
+  function driveChildWriteCode() {
+    var managed = viewingManagedChild();
+    if (managed) return managed;
+    if (state.scope !== "all") return "";
+    var open = String(state.openCode || "").trim();
+    var encrypt = String(state.driveEncryptKey || "").trim();
+    if (!open || !encrypt) return "";
+    if (open.toLowerCase() === "lead") return "";
+    if (open.toLowerCase() === encrypt.toLowerCase()) return "";
+    var unit = findUnitByCode(open);
+    if (!unit || !String(unit.parent || "").trim()) return "";
+    return open;
+  }
+
   function activeDriveUnitKey() {
-    var child = viewingManagedChild();
+    var child = driveChildWriteCode();
     if (child) return child;
     return String(state.driveEncryptKey || "").trim();
+  }
+
+  // Знімок з кодом підлеглого не підставляти в «Загальний» файл тата.
+  function ownPullLooksLikeChildBleed(raw, encryptKey) {
+    var code = String(raw && raw.code || "").trim();
+    var key = String(encryptKey || "").trim();
+    if (!code || !key) return false;
+    if (code.toLowerCase() === key.toLowerCase()) return false;
+    if (!looksLikeUnitCode(code)) return false;
+    return !!findUnitByCode(code);
   }
 
   function unitsOwnedHere() {
@@ -4451,16 +4477,173 @@ button.count-toggle {
     return { Authorization: "Bearer " + token };
   }
 
-  function findSettingsFile(token, folderId) {
-    var q = encodeURIComponent("'" + folderId + "' in parents and name='" + SETTINGS_FILE + "' and trashed=false");
-    return fetch("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,name)&pageSize=1", {
-      headers: driveAuthHeaders(token)
-    }).then(function (response) {
+  function driveListFlags() {
+    return "supportsAllDrives=true&includeItemsFromAllDrives=true";
+  }
+
+  function sleepMs(ms) {
+    var wait = ms;
+    if (typeof location !== "undefined" && /(?:\?|&)test=1(?:&|$)/.test(String(location.search || ""))) {
+      wait = Math.min(ms, 20);
+    }
+    return new Promise(function (resolve) { setTimeout(resolve, wait); });
+  }
+
+  function listDriveFilesByName(token, folderId, name) {
+    var safe = String(name || "").replace(/'/g, "\\'");
+    var q = encodeURIComponent("'" + folderId + "' in parents and name='" + safe + "' and trashed=false");
+    var url = "https://www.googleapis.com/drive/v3/files?q=" + q +
+      "&fields=files(id,name,modifiedTime,size)&pageSize=100&" + driveListFlags();
+    return fetch(url, { headers: driveAuthHeaders(token) }).then(function (response) {
       return response.json().then(function (data) {
         if (!response.ok) throw new Error("list");
-        var files = data && data.files ? data.files : [];
-        return files[0] || null;
+        return Array.isArray(data && data.files) ? data.files : [];
       });
+    });
+  }
+
+  function newestDriveFile(files) {
+    if (!files || !files.length) return null;
+    return files.slice().sort(function (a, b) {
+      return String(b.modifiedTime || "").localeCompare(String(a.modifiedTime || ""));
+    })[0];
+  }
+
+  function listDriveFilesByNameWithRetry(token, folderId, name) {
+    return listDriveFilesByName(token, folderId, name).then(function (files) {
+      if (files.length) return files;
+      return sleepMs(350).then(function () {
+        return listDriveFilesByName(token, folderId, name);
+      });
+    });
+  }
+
+  function noteDriveNameDupes(name, count) {
+    if (count < 2) return;
+    var bit = "у теці кілька файлів «" + name + "» — потрібен вибір";
+    if (String(state.driveDupNote || "").indexOf(bit) !== -1) return;
+    state.driveDupNote = state.driveDupNote ? (state.driveDupNote + " " + bit) : bit;
+  }
+
+  function bytesEqual(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  // ZS-108: auto-trash лише ідентичні або порожні/биті копії; різні — лише позначка.
+  function safeDedupeDriveFiles(token, files, opts) {
+    var primary = newestDriveFile(files);
+    if (!primary || !files || files.length < 2) {
+      return Promise.resolve({ file: primary || null, trashed: 0 });
+    }
+    var others = files.filter(function (item) { return item && item.id !== primary.id; });
+    var kind = opts && opts.kind ? opts.kind : "binary";
+    var decryptKey = opts && opts.decryptKey ? opts.decryptKey : "";
+    var loadPrimary = kind === "settings"
+      ? downloadSettingsFile(token, primary.id).then(function (json) {
+          return { text: JSON.stringify(json), bytes: null, raw: json };
+        }).catch(function () { return { text: "", bytes: null, raw: null }; })
+      : downloadBinaryFile(token, primary.id).then(function (bytes) {
+          if (!decryptKey) return { text: "", bytes: bytes, raw: null };
+          return decryptWithCode(decryptKey, bytes).then(function (text) {
+            var raw = null;
+            try { raw = JSON.parse(text); } catch (err) { raw = null; }
+            return { text: text, bytes: bytes, raw: raw };
+          }).catch(function () { return { text: "", bytes: bytes, raw: null }; });
+        }).catch(function () { return { text: "", bytes: null, raw: null }; });
+    return loadPrimary.then(function (primaryBody) {
+      var trashed = 0;
+      var ambiguous = false;
+      var chain = Promise.resolve();
+      others.forEach(function (item) {
+        chain = chain.then(function () {
+          if (kind === "settings") {
+            return downloadSettingsFile(token, item.id).then(function (json) {
+              var text = JSON.stringify(json);
+              var empty = !json || typeof json !== "object" || !Object.keys(json).length;
+              if (empty || (primaryBody.text && text === primaryBody.text)) {
+                return trashDriveFile(token, item.id).then(function (ok) {
+                  if (ok) trashed += 1;
+                  else ambiguous = true;
+                });
+              }
+              ambiguous = true;
+              return null;
+            }).catch(function () {
+              return trashDriveFile(token, item.id).then(function (ok) {
+                if (ok) trashed += 1;
+                else ambiguous = true;
+              });
+            });
+          }
+          return downloadBinaryFile(token, item.id).then(function (bytes) {
+            if (!bytes || !bytes.length) {
+              return trashDriveFile(token, item.id).then(function (ok) {
+                if (ok) trashed += 1;
+                else ambiguous = true;
+              });
+            }
+            if (primaryBody.bytes && bytesEqual(primaryBody.bytes, bytes)) {
+              return trashDriveFile(token, item.id).then(function (ok) {
+                if (ok) trashed += 1;
+                else ambiguous = true;
+              });
+            }
+            if (!decryptKey) {
+              ambiguous = true;
+              return null;
+            }
+            return decryptWithCode(decryptKey, bytes).then(function (text) {
+              var raw = null;
+              try { raw = JSON.parse(text); } catch (err) { raw = null; }
+              var empty = !raw || !daySliceHasReport(normalizeDaySlice({
+                unit: raw.unit,
+                machines: raw.machines,
+                tasks: raw.tasks,
+                people: raw.people
+              }));
+              var same = primaryBody.text && text === primaryBody.text;
+              if (empty || same) {
+                return trashDriveFile(token, item.id).then(function (ok) {
+                  if (ok) trashed += 1;
+                  else ambiguous = true;
+                });
+              }
+              ambiguous = true;
+              return null;
+            }).catch(function () {
+              return trashDriveFile(token, item.id).then(function (ok) {
+                if (ok) trashed += 1;
+                else ambiguous = true;
+              });
+            });
+          }).catch(function () {
+            ambiguous = true;
+            return null;
+          });
+        });
+      });
+      return chain.then(function () {
+        if (ambiguous) noteDriveNameDupes(primary.name || "", files.length);
+        return { file: primary, trashed: trashed };
+      });
+    });
+  }
+
+  function resolveDriveFileByName(token, folderId, name, opts) {
+    return listDriveFilesByNameWithRetry(token, folderId, name).then(function (files) {
+      if (!files.length) return { file: null, trashed: 0 };
+      if (files.length === 1) return { file: files[0], trashed: 0 };
+      return safeDedupeDriveFiles(token, files, opts || {});
+    });
+  }
+
+  function findSettingsFile(token, folderId) {
+    return resolveDriveFileByName(token, folderId, SETTINGS_FILE, { kind: "settings" }).then(function (info) {
+      return info && info.file ? info.file : null;
     });
   }
 
@@ -4477,7 +4660,7 @@ button.count-toggle {
     var payload = JSON.stringify(buildSettingsPayload());
     var boundary = "vistovyi" + Date.now().toString(36);
     if (existingId) {
-      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media", {
+      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media&" + driveListFlags(), {
         method: "PATCH",
         headers: {
           Authorization: "Bearer " + token,
@@ -4496,7 +4679,7 @@ button.count-toggle {
       payload,
       "\r\n--" + boundary + "--"
     ]);
-    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
+    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&" + driveListFlags(), {
       method: "POST",
       headers: {
         Authorization: "Bearer " + token,
@@ -4512,15 +4695,8 @@ button.count-toggle {
   }
 
   function findNamedFile(token, folderId, name) {
-    var q = encodeURIComponent("'" + folderId + "' in parents and name='" + name.replace(/'/g, "\\'") + "' and trashed=false");
-    return fetch("https://www.googleapis.com/drive/v3/files?q=" + q + "&fields=files(id,name)&pageSize=1", {
-      headers: driveAuthHeaders(token)
-    }).then(function (response) {
-      return response.json().then(function (data) {
-        if (!response.ok) throw new Error("list");
-        var files = data && data.files ? data.files : [];
-        return files[0] || null;
-      });
+    return resolveDriveFileByName(token, folderId, name, { kind: "binary" }).then(function (info) {
+      return info && info.file ? info.file : null;
     });
   }
 
@@ -4537,7 +4713,7 @@ button.count-toggle {
 
   function trashDriveFile(token, fileId) {
     if (!fileId) return Promise.resolve(false);
-    return fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId), {
+    return fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "?" + driveListFlags(), {
       method: "PATCH",
       headers: {
         Authorization: "Bearer " + token,
@@ -4587,7 +4763,7 @@ button.count-toggle {
 
   function uploadBinaryFile(token, folderId, name, bytes, existingId) {
     if (existingId) {
-      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media", {
+      return fetch("https://www.googleapis.com/upload/drive/v3/files/" + encodeURIComponent(existingId) + "?uploadType=media&" + driveListFlags(), {
         method: "PATCH",
         headers: {
           Authorization: "Bearer " + token,
@@ -4607,7 +4783,7 @@ button.count-toggle {
       bytes,
       "\r\n--" + boundary + "--"
     ]);
-    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name", {
+    return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&" + driveListFlags(), {
       method: "POST",
       headers: {
         Authorization: "Bearer " + token,
@@ -4646,7 +4822,8 @@ button.count-toggle {
     if (!key) return Promise.resolve({ pulled: false });
     var name = unitDriveFileName(key);
     if (!name) return Promise.resolve({ pulled: false });
-    return findNamedFile(token, folderId, name).then(function (file) {
+    return resolveDriveFileByName(token, folderId, name, { kind: "binary", decryptKey: key }).then(function (info) {
+      var file = info && info.file;
       if (!file || !file.id) return { pulled: false };
       return downloadBinaryFile(token, file.id).then(function (bytes) {
         return decryptWithCode(key, bytes).then(function (text) {
@@ -4655,7 +4832,15 @@ button.count-toggle {
           if (!raw || typeof raw !== "object") return { pulled: false };
           mergeChildrenFromSnapshot(raw);
           var keepLocal = localReportHasContent();
-          if (!keepLocal) applyOwnUnitSnapshot(raw, key);
+          if (!keepLocal) {
+            // ZS-107: чужий код підлеглого в файлі тата — у bundles, не в загальний.
+            if (ownPullLooksLikeChildBleed(raw, key)) {
+              var childCode = String(raw.code || "").trim();
+              ingestChildUnit(childCode, raw);
+              return { pulled: true, keptLocal: false, quarantined: true, name: name, fileId: file.id };
+            }
+            applyOwnUnitSnapshot(raw, key);
+          }
           return { pulled: true, keptLocal: keepLocal, name: name, fileId: file.id };
         });
       });
@@ -4668,7 +4853,8 @@ button.count-toggle {
     if (!key) return Promise.reject(new Error("nocode"));
     var name = unitDriveFileName(key);
     if (!name) return Promise.reject(new Error("nocode"));
-    return findNamedFile(token, folderId, name).then(function (file) {
+    return resolveDriveFileByName(token, folderId, name, { kind: "binary", decryptKey: key }).then(function (info) {
+      var file = info && info.file;
       var preserve = Promise.resolve(null);
       // Не затирати на Диску непорожній children порожнім локальним списком.
       if (file && file.id && subordinatesFor(key).length === 0) {
@@ -4677,7 +4863,7 @@ button.count-toggle {
             var raw;
             try { raw = JSON.parse(text); } catch (err) { return null; }
             if (!raw || !Array.isArray(raw.children) || !raw.children.length) return null;
-            if (!viewingManagedChild()) mergeChildrenFromSnapshot(raw);
+            if (!driveChildWriteCode()) mergeChildrenFromSnapshot(raw);
             return raw.children;
           });
         }).catch(function () { return null; });
@@ -4704,7 +4890,7 @@ button.count-toggle {
     if (!parentKey) return Promise.reject(new Error("nocode"));
     materializeOverlays();
     captureBundle(state.reportKey);
-    var child = viewingManagedChild();
+    var child = driveChildWriteCode();
     if (child && child.toLowerCase() !== parentKey.toLowerCase()) {
       var childSnap = currentUnitSnapshot();
       childSnap.code = child;
@@ -4751,7 +4937,11 @@ button.count-toggle {
       fileDay: day,
       viewDay: day
     };
-    if (String(state.reportKey || "") === String(code)) {
+    // ZS-107: на загальному не підміняти state.report вмістом дитини.
+    var openNow = String(state.openCode || "").trim();
+    var rootNow = String(state.reportRoot || "").trim();
+    var onGeneral = !openNow || !rootNow || openNow.toLowerCase() === rootNow.toLowerCase();
+    if (!onGeneral && String(state.reportKey || "") === String(code) && openNow.toLowerCase() === String(code).toLowerCase()) {
       state.report = doc;
       state.changes = changes;
       state.daysArchive = days;
@@ -4808,7 +4998,8 @@ button.count-toggle {
     var parts = [];
     if (settings && settings.wroteSettings) parts.push("довідники записано");
     else if (settings && settings.readSettings) parts.push("довідники прочитано");
-    if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
+    if (pulled && pulled.pulled && pulled.quarantined) parts.push("чужий звіт підлеглого не в загальний");
+    else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
       if (looksLikeUnitCode(state.driveEncryptKey) && unitsOwnedHere().length === 0) {
@@ -4824,6 +5015,7 @@ button.count-toggle {
     } else if (unitsOwnedHere().length === 0) {
       parts.push("нижчих ланок ще немає");
     }
+    if (state.driveDupNote) parts.push(String(state.driveDupNote));
     return parts.length ? parts.join(". ") + "." : "Синхронізацію завершено.";
   }
 
@@ -4835,6 +5027,7 @@ button.count-toggle {
       return;
     }
     rememberDriveUser(token);
+    state.driveDupNote = "";
     state.driveNote = "Синхронізую довідники.";
     render();
     findSettingsFile(token, folderId).then(function (file) {
@@ -5665,6 +5858,7 @@ button.count-toggle {
   }
 
   function applyCode(raw) {
+    var keepReportRoot = String(state.reportRoot || "").trim();
     var typed = String(raw || "").trim();
     var code = typed.toLowerCase();
     // Старий внутрішній код верхівки.
@@ -5703,9 +5897,22 @@ button.count-toggle {
     if (!grant && !unit && code !== "lead" && scope === "all") {
       state.holder = (state.report && state.report.name) || "";
     }
-    // Прямий applyCode ставить корінь на відкритий код. Перемикач звітів і boot
-    // після reload самі повертають/відновлюють reportRoot видавця.
-    if (state.scope === "all") state.reportRoot = state.openCode;
+    // ZS-107: якщо відкриваємо відому дитину поточного кореня — не збивати reportRoot на її код.
+    if (state.scope === "all") {
+      var opened = String(state.openCode || "").trim();
+      if (
+        unit &&
+        keepReportRoot &&
+        keepReportRoot.toLowerCase() !== opened.toLowerCase() &&
+        subordinatesFor(keepReportRoot).some(function (row) {
+          return row && String(row.code).toLowerCase() === opened.toLowerCase();
+        })
+      ) {
+        state.reportRoot = keepReportRoot;
+      } else {
+        state.reportRoot = state.openCode;
+      }
+    }
     state.codeError = "";
     state.codeDraft = "";
     state.profile = false;
@@ -8710,34 +8917,207 @@ button.count-toggle {
       var childSnap103 = currentUnitSnapshot();
       check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с дитини");
       check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл дитини ≠ файл видавця");
+      // ZS-107: ingest на загальному не підміняє людей; applyCode зберігає reportRoot; upsert цілить файл дитини.
+      var child107 = "ZZZZ-YYYY-XXXX-WWWW-VVVV";
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child107 && unit.code !== child103; });
+      state.units.push({ id: "u107", name: "Дитина 107", code: child107, parent: "lead" });
+      state.reportRoot = "lead";
       state.openCode = "lead";
+      state.scope = "all";
       state.holder = "Служба";
-      state.driveEncryptKey = "";
-      state.units = (state.units || []).filter(function (unit) { return unit.code !== child103; });
+      state.driveEncryptKey = "секрет-тата";
+      state.reportKey = "1rota";
+      state.report = emptyUnitReport({ name: "Служба", code: "1rota" });
+      state.added = { people: [], machines: [] };
+      render();
+      check(ingestChildUnit(child107, {
+        name: "Дитина 107",
+        code: child107,
+        day: todayISO(),
+        days: {},
+        unit: { id: "root", name: "Дитина 107", people: [{ id: "c107", name: "Чужий Bleed", rank: "Солдат", callsign: "Bleed107", accounting: "official", duty: "in", position: "" }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: []
+      }), "ingest дитини 107");
+      render();
+      check(unitReportStatus(child107) === "received", "статус дитини — отримано");
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "на загальному немає о/с дитини після ingest");
+      check(!!bundles[child107] && JSON.stringify(bundles[child107].report).indexOf("Bleed107") !== -1, "о/с дитини лише в bundles");
+      check(ownPullLooksLikeChildBleed({ code: child107, unit: bundles[child107].report.unit }, "секрет-тата"), "pull бачить bleed коду дитини");
+      var quarantined = { code: child107, name: "Дитина 107", day: todayISO(), days: {}, unit: bundles[child107].report.unit, machines: [], tasks: [], people: [], changes: [] };
+      state.report = emptyUnitReport({ name: "Служба", code: "1rota" });
+      if (ownPullLooksLikeChildBleed(quarantined, "секрет-тата")) ingestChildUnit(child107, quarantined);
+      render();
+      check(document.getElementById("people").textContent.indexOf("Bleed107") === -1, "quarantine bleed не кладе дитину в загальний");
+      applyCode(child107);
+      check(state.openCode === child107 && state.reportRoot === "lead", "applyCode дитини зберігає reportRoot служби");
+      check(driveChildWriteCode() === child107, "driveChildWriteCode бачить дитину навіть для запису");
+      activateReport(child107);
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "у звіті дитини люди на місці");
+      // reportRoot навмисно збитий — upsert усе одно має писати файл дитини, не тата.
+      state.reportRoot = child107;
+      state.openCode = child107;
+      state.driveEncryptKey = "секрет-тата";
+      check(viewingManagedChild() === "" && driveChildWriteCode() === child107, "збитий reportRoot: fallback пише дитину");
+      state.reportRoot = "lead";
+      openReportChoice("__general__");
+      check(state.openCode === "lead" && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "назад у загальний без bleed");
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child107 && unit.code !== child103; });
+      delete state.unitReportStatus[child107];
       delete state.unitReportStatus[child103];
+      delete bundles[child107];
       delete bundles[child103];
-      // Rollover: вчора → архів, новий день копіює о/с і плани.
-      var yesterday = shiftISODate(todayISO(), -1);
-      state.daysArchive = {};
-      state.fileDay = yesterday;
-      state.viewDay = "";
-      state.report = {
-        name: "Тест",
-        code: "1rota",
-        file: SAMPLE_FILE,
-        unit: { id: "root", name: "Тест", people: [{ id: "px", name: "A", rank: "Солдат", callsign: "X", accounting: "official", duty: "in", position: "" }] },
-        machines: [{ id: "mx", name: "M", type: "lat", board: "1", accounting: "official", duty: "in" }],
-        tasks: [{ id: "tx", title: "План", status: "plan", people: [] }],
-        people: []
-      };
-      state.changes = [];
-      openViewDay(yesterday);
-      ensureDayRollover();
-      check(state.fileDay === todayISO() && state.viewDay === todayISO(), "rollover відкриває сьогодні");
-      check(state.daysArchive[yesterday] && state.daysArchive[yesterday].unit && (state.daysArchive[yesterday].unit.people || []).length === 1, "вчорашній зріз в архіві");
-      check(state.report.tasks && state.report.tasks[0] && state.report.tasks[0].status === "plan", "плани лишаються планами");
-      check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ОВТ як були");
-      finishSelfTest();
+      state.driveEncryptKey = "";
+      state.driveDupNote = "";
+      // ZS-108: не плодити create, якщо list бачить файл; identical trash; різні — позначка.
+      return (function () {
+        var name108 = unitDriveFileName("ключ-108");
+        var payload108 = JSON.stringify({
+          version: 2,
+          name: "A",
+          code: "ключ-108",
+          day: todayISO(),
+          unit: { id: "root", name: "A", people: [{ id: "p108", name: "Один", rank: "Солдат", callsign: "Один", accounting: "official", duty: "in", position: "" }] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: []
+        });
+        var other108 = JSON.stringify({
+          version: 2,
+          name: "B",
+          code: "ключ-108",
+          day: todayISO(),
+          unit: { id: "root", name: "B", people: [{ id: "p108b", name: "Другий", rank: "Солдат", callsign: "Другий", accounting: "official", duty: "in", position: "" }] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: []
+        });
+        return encryptWithCode("ключ-108", payload108).then(function (bytesA) {
+          return encryptWithCode("ключ-108", other108).then(function (bytesB) {
+            var filesA = [
+              { id: "dup-a1", name: name108, modifiedTime: "2026-11-05T10:00:00.000Z" },
+              { id: "dup-a2", name: name108, modifiedTime: "2026-11-05T09:00:00.000Z" }
+            ];
+            var bodyById = { "dup-a1": bytesA, "dup-a2": bytesA };
+            var trashed = [];
+            var created = 0;
+            var patched = 0;
+            var originalFetch = window.fetch;
+            window.fetch = function (url, opts) {
+              var href = String(url || "");
+              opts = opts || {};
+              if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+                check(href.indexOf("supportsAllDrives=true") !== -1 && href.indexOf("includeItemsFromAllDrives=true") !== -1, "list Drive з supportsAllDrives");
+                check(href.indexOf("pageSize=100") !== -1, "повний list не pageSize=1");
+                var list = filesA.filter(function (item) { return trashed.indexOf(item.id) === -1; });
+                return Promise.resolve({
+                  ok: true,
+                  json: function () { return Promise.resolve({ files: list }); }
+                });
+              }
+              if (href.indexOf("alt=media") !== -1) {
+                var id = "";
+                Object.keys(bodyById).forEach(function (key) {
+                  if (href.indexOf(encodeURIComponent(key)) !== -1) id = key;
+                });
+                var bytes = bodyById[id];
+                return Promise.resolve({
+                  ok: !!bytes,
+                  arrayBuffer: function () {
+                    return Promise.resolve(bytes ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) : new ArrayBuffer(0));
+                  }
+                });
+              }
+              if (opts.method === "PATCH" && href.indexOf("trashed") === -1 && opts.body && String(opts.body).indexOf("trashed") !== -1) {
+                var meta = null;
+                try { meta = JSON.parse(opts.body); } catch (errMeta) { meta = null; }
+                if (meta && meta.trashed) {
+                  Object.keys(bodyById).forEach(function (key) {
+                    if (href.indexOf(encodeURIComponent(key)) !== -1) trashed.push(key);
+                  });
+                }
+                return Promise.resolve({ ok: true });
+              }
+              if (opts.method === "PATCH" && href.indexOf("/drive/v3/files/") !== -1 && href.indexOf("uploadType=media") === -1) {
+                var meta2 = null;
+                try { meta2 = JSON.parse(opts.body || "{}"); } catch (err2) { meta2 = null; }
+                if (meta2 && meta2.trashed) {
+                  Object.keys(bodyById).forEach(function (key) {
+                    if (href.indexOf(encodeURIComponent(key)) !== -1) trashed.push(key);
+                  });
+                }
+                return Promise.resolve({ ok: true });
+              }
+              if (opts.method === "PATCH" && href.indexOf("uploadType=media") !== -1) {
+                patched += 1;
+                return Promise.resolve({ ok: true });
+              }
+              if (opts.method === "POST" && href.indexOf("uploadType=multipart") !== -1) {
+                created += 1;
+                return Promise.resolve({
+                  ok: true,
+                  json: function () { return Promise.resolve({ id: "created-new", name: name108 }); }
+                });
+              }
+              return originalFetch.apply(this, arguments);
+            };
+            state.driveDupNote = "";
+            return resolveDriveFileByName("token", "folder108", name108, { kind: "binary", decryptKey: "ключ-108" }).then(function (info) {
+              check(info && info.file && info.file.id === "dup-a1", "canonical — найновіший");
+              check(info.trashed === 1 && trashed.indexOf("dup-a2") !== -1, "ідентичний дубль у кошик");
+              check(!state.driveDupNote, "ідентичні дублі без позначки вибору");
+              return uploadBinaryFile("token", "folder108", name108, bytesA, info.file.id).then(function (up) {
+                check(up && up.updated && patched === 1 && created === 0, "існуючий файл — PATCH, не create");
+                // Різні дублі — не trash, лише позначка.
+                trashed = [];
+                filesA = [
+                  { id: "dup-b1", name: name108, modifiedTime: "2026-11-05T12:00:00.000Z" },
+                  { id: "dup-b2", name: name108, modifiedTime: "2026-11-05T11:00:00.000Z" }
+                ];
+                bodyById = { "dup-b1": bytesA, "dup-b2": bytesB };
+                state.driveDupNote = "";
+                return resolveDriveFileByName("token", "folder108", name108, { kind: "binary", decryptKey: "ключ-108" }).then(function (info2) {
+                  window.fetch = originalFetch;
+                  check(info2 && info2.file && info2.file.id === "dup-b1" && info2.trashed === 0 && trashed.length === 0, "різні дублі не смітимо");
+                  check(String(state.driveDupNote || "").indexOf("потрібен вибір") !== -1, "різне — позначка для користувача");
+                });
+              });
+            }).catch(function (err) {
+              window.fetch = originalFetch;
+              check(false, "ZS-108 dedupe: " + (err && err.message ? err.message : err));
+            });
+          });
+        });
+      })().then(function () {
+        // Rollover: вчора → архів, новий день копіює о/с і плани.
+        var yesterday = shiftISODate(todayISO(), -1);
+        state.daysArchive = {};
+        state.fileDay = yesterday;
+        state.viewDay = "";
+        state.report = {
+          name: "Тест",
+          code: "1rota",
+          file: SAMPLE_FILE,
+          unit: { id: "root", name: "Тест", people: [{ id: "px", name: "A", rank: "Солдат", callsign: "X", accounting: "official", duty: "in", position: "" }] },
+          machines: [{ id: "mx", name: "M", type: "lat", board: "1", accounting: "official", duty: "in" }],
+          tasks: [{ id: "tx", title: "План", status: "plan", people: [] }],
+          people: []
+        };
+        state.changes = [];
+        openViewDay(yesterday);
+        ensureDayRollover();
+        check(state.fileDay === todayISO() && state.viewDay === todayISO(), "rollover відкриває сьогодні");
+        check(state.daysArchive[yesterday] && state.daysArchive[yesterday].unit && (state.daysArchive[yesterday].unit.people || []).length === 1, "вчорашній зріз в архіві");
+        check(state.report.tasks && state.report.tasks[0] && state.report.tasks[0].status === "plan", "плани лишаються планами");
+        check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ОВТ як були");
+        finishSelfTest();
+      });
     }).catch(function (err) {
       check(false, "шифрування кодом: " + (err && err.message ? err.message : err));
       finishSelfTest();
