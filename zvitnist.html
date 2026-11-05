@@ -1261,6 +1261,7 @@ button.count-toggle {
     driveLinked: false,
     driveFolder: "",
     driveEncryptKey: "",
+    driveGoogleEmail: "",
     driveFolderOpen: false,
     accessChange: null,
     settingsFolderAdmin: false,
@@ -1582,15 +1583,149 @@ button.count-toggle {
     return JSON.parse(JSON.stringify(value));
   }
 
-  function daySliceFromState() {
-    var report = state.report || sampleReportDocument();
+  function placeFromUnitInTree(root, value) {
+    var raw = String(value || "").trim();
+    if (!raw || !root) return "";
+    var lower = raw.toLowerCase();
+    var found = "";
+    function walk(node, trail) {
+      var next = trail.concat([node]);
+      var path = next.map(function (item) { return item.name; }).join(" · ");
+      if (node.name === raw || path === raw || String(node.name || "").toLowerCase() === lower || path.toLowerCase() === lower) {
+        found = node.id;
+      }
+      (node.children || []).forEach(function (child) { walk(child, next); });
+    }
+    walk(root, []);
+    return found;
+  }
+
+  function bakedPersonFields(item) {
+    var edit = personEdit(item.id);
+    var dutyMapNow = dutyMap();
+    var duty = Object.prototype.hasOwnProperty.call(edit, "duty")
+      ? (edit.duty && dutyMapNow[edit.duty] ? edit.duty : (item.duty || "in"))
+      : (dutyMapNow[item.duty] ? item.duty : (item.duty || "in"));
+    var accounting = edit.accounting && ACCOUNTING[edit.accounting]
+      ? edit.accounting
+      : (ACCOUNTING[item.accounting] ? item.accounting : "official");
     return {
-      unit: cloneData(report.unit || { id: "root", name: "", people: [] }),
-      machines: cloneData(Array.isArray(report.machines) ? report.machines : []),
+      id: item.id,
+      name: edit.name != null ? edit.name : (item.name || ""),
+      rank: edit.rank != null ? edit.rank : (item.rank || ""),
+      callsign: edit.callsign != null ? edit.callsign : (item.callsign || ""),
+      accounting: accounting,
+      duty: duty,
+      position: Object.prototype.hasOwnProperty.call(state.positions, item.id)
+        ? String(state.positions[item.id] || "")
+        : String(item.position || "")
+    };
+  }
+
+  function bakedMachineFields(item) {
+    var edit = machineEdit(item.id);
+    var map = machineDutyMap();
+    var duty = Object.prototype.hasOwnProperty.call(edit, "duty")
+      ? (edit.duty && map[edit.duty] ? edit.duty : (item.duty || "in"))
+      : (map[item.duty] ? item.duty : (item.duty || "in"));
+    var accounting = edit.accounting && ACCOUNTING[edit.accounting]
+      ? edit.accounting
+      : (ACCOUNTING[item.accounting] ? item.accounting : "official");
+    var typeId = item.type;
+    if (edit.type != null) typeId = resolveMachineTypeId(edit.type);
+    return {
+      id: item.id,
+      type: typeId,
+      name: edit.name != null ? edit.name : (item.name || ""),
+      board: edit.board != null ? edit.board : (item.board || ""),
+      accounting: accounting,
+      duty: duty,
+      mileage: Object.prototype.hasOwnProperty.call(edit, "mileage") ? edit.mileage : (item.mileage == null ? null : item.mileage),
+      hours: Object.prototype.hasOwnProperty.call(edit, "hours") ? edit.hours : (item.hours == null ? null : item.hours),
+      service: Object.prototype.hasOwnProperty.call(edit, "service") ? edit.service : String(item.service || "")
+    };
+  }
+
+  // Знімок дня з накладками added/edits (без зміни живого state).
+  function buildBakedDayParts() {
+    var report = state.report || sampleReportDocument();
+    var unit = cloneData(report.unit || { id: "root", name: "", people: [] });
+    var nodes = {};
+    var collected = [];
+    function strip(node) {
+      nodes[node.id] = node;
+      (node.people || []).forEach(function (item) {
+        collected.push({ item: item, place: node.id });
+      });
+      node.people = Array.isArray(node.people) ? [] : node.people;
+      (node.children || []).forEach(strip);
+    }
+    strip(unit);
+    function putPerson(item, placeHint, editUnit) {
+      if (!item || !item.id || state.removed.people[item.id]) return;
+      var place = placeHint || unit.id;
+      if (editUnit != null) {
+        var moved = placeFromUnitInTree(unit, editUnit);
+        if (moved) place = moved;
+      }
+      if (!nodes[place]) place = unit.id;
+      if (!nodes[place].people) nodes[place].people = [];
+      nodes[place].people.push(bakedPersonFields(item));
+    }
+    collected.forEach(function (entry) {
+      var edit = personEdit(entry.item.id);
+      putPerson(entry.item, entry.place, edit.unit);
+    });
+    (state.added.people || []).forEach(function (item) {
+      var edit = personEdit(item.id);
+      putPerson(item, item.place || unit.id, edit.unit);
+    });
+    var machines = [];
+    (Array.isArray(report.machines) ? report.machines : []).forEach(function (item) {
+      if (!item || !item.id || state.removed.machines[item.id]) return;
+      machines.push(bakedMachineFields(item));
+    });
+    (state.added.machines || []).forEach(function (item) {
+      if (!item || !item.id || state.removed.machines[item.id]) return;
+      machines.push(bakedMachineFields(item));
+    });
+    return {
+      unit: unit,
+      machines: machines,
       tasks: cloneData(Array.isArray(report.tasks) ? report.tasks : []),
       people: cloneData(Array.isArray(report.people) ? report.people : []),
       changes: cloneData(Array.isArray(state.changes) ? state.changes : [])
     };
+  }
+
+  function materializeOverlays() {
+    if (!state.report) return false;
+    var hasAdded = (state.added.people || []).some(function (item) { return item && !state.removed.people[item.id]; })
+      || (state.added.machines || []).some(function (item) { return item && !state.removed.machines[item.id]; });
+    var hasEdits = Object.keys(state.edits.people || {}).length > 0 || Object.keys(state.edits.machines || {}).length > 0;
+    var hasPos = Object.keys(state.positions || {}).length > 0;
+    if (!hasAdded && !hasEdits && !hasPos) return false;
+    var baked = buildBakedDayParts();
+    state.report = {
+      name: state.report.name,
+      code: state.report.code,
+      file: state.report.file,
+      unit: baked.unit,
+      machines: baked.machines,
+      tasks: baked.tasks,
+      people: baked.people
+    };
+    state.added = {
+      people: (state.added.people || []).filter(function (item) { return item && state.removed.people[item.id]; }),
+      machines: (state.added.machines || []).filter(function (item) { return item && state.removed.machines[item.id]; })
+    };
+    state.edits = { people: {}, machines: {} };
+    state.positions = {};
+    return true;
+  }
+
+  function daySliceFromState() {
+    return buildBakedDayParts();
   }
 
   function normalizeDaySlice(raw) {
@@ -2631,6 +2766,7 @@ button.count-toggle {
       if (!data || typeof data !== "object") return;
       if (typeof data.driveFolder === "string") state.driveFolder = data.driveFolder.slice(0, 240);
       if (typeof data.driveEncryptKey === "string") state.driveEncryptKey = data.driveEncryptKey.slice(0, 500);
+      if (typeof data.driveGoogleEmail === "string") state.driveGoogleEmail = data.driveGoogleEmail.slice(0, 120);
       if (Array.isArray(data.units)) {
         var nextUnits = [];
         data.units.forEach(function (item) {
@@ -2678,6 +2814,7 @@ button.count-toggle {
       localStorage.setItem(DRIVE_KEY, JSON.stringify({
         driveFolder: String(state.driveFolder || "").slice(0, 240),
         driveEncryptKey: String(state.driveEncryptKey || "").slice(0, 500),
+        driveGoogleEmail: String(state.driveGoogleEmail || "").slice(0, 120),
         units: state.units.map(function (unit) {
           return {
             id: String(unit.id || "").slice(0, 40),
@@ -3788,10 +3925,41 @@ button.count-toggle {
   }
 
   var driveToken = "";
+  var driveTokenExpiresAt = 0;
+  var driveTokenClient = null;
   var DRIVE_CLIENT = "829017169642-16n6qc0kenbv225obpbouiqhf9ii3juu.apps.googleusercontent.com";
   // drive.file — запис файлів додатка; drive.readonly — читання спільної теки за id (чужі файли).
   // Повний auth/drive не беремо: для sync за folder id з запрошення цього достатньо.
   var DRIVE_OAUTH_SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly";
+
+  function rememberDriveToken(response) {
+    driveToken = response && response.access_token ? String(response.access_token) : "";
+    var life = Number(response && response.expires_in) || 3600;
+    driveTokenExpiresAt = driveToken ? (Date.now() + Math.max(60, life - 60) * 1000) : 0;
+  }
+
+  function clearDriveToken() {
+    driveToken = "";
+    driveTokenExpiresAt = 0;
+  }
+
+  function driveTokenValid() {
+    return !!(driveToken && Date.now() < driveTokenExpiresAt);
+  }
+
+  function rememberDriveUser(token) {
+    return fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
+      headers: driveAuthHeaders(token)
+    }).then(function (response) {
+      if (!response.ok) return;
+      return response.json().then(function (data) {
+        var email = data && data.user && data.user.emailAddress;
+        if (!email) return;
+        state.driveGoogleEmail = String(email).slice(0, 120);
+        saveDrivePrefs();
+      });
+    }).catch(function () {});
+  }
 
   function driveFolderId(link) {
     var match = String(link || "").match(/\/folders\/([a-zA-Z0-9_-]+)/);
@@ -4096,11 +4264,54 @@ button.count-toggle {
     });
   }
 
+  function localReportHasContent() {
+    if (daySliceHasReport(daySliceFromState())) return true;
+    if ((state.added.people || []).some(function (item) { return item && !state.removed.people[item.id]; })) return true;
+    if ((state.added.machines || []).some(function (item) { return item && !state.removed.machines[item.id]; })) return true;
+    return false;
+  }
+
+  function applyOwnUnitSnapshot(raw, key) {
+    if (!raw || typeof raw !== "object") return false;
+    var doc = applyUnitSnapshot(raw, key);
+    if (!doc) return false;
+    state.report = doc;
+    state.reportKey = key;
+    loadDaysFromSnapshot(raw);
+    mergeChildrenFromSnapshot(raw);
+    if (raw.name) state.holder = String(raw.name).slice(0, 80);
+    return true;
+  }
+
+  function pullOwnUnitFile(token, folderId) {
+    var key = String(state.driveEncryptKey || "").trim();
+    if (!key) return Promise.resolve({ pulled: false });
+    var name = unitDriveFileName(key);
+    if (!name) return Promise.resolve({ pulled: false });
+    return findNamedFile(token, folderId, name).then(function (file) {
+      if (!file || !file.id) return { pulled: false };
+      return downloadBinaryFile(token, file.id).then(function (bytes) {
+        return decryptWithCode(key, bytes).then(function (text) {
+          var raw;
+          try { raw = JSON.parse(text); } catch (err) { return { pulled: false }; }
+          if (!raw || typeof raw !== "object") return { pulled: false };
+          mergeChildrenFromSnapshot(raw);
+          var keepLocal = localReportHasContent();
+          if (!keepLocal) applyOwnUnitSnapshot(raw, key);
+          return { pulled: true, keptLocal: keepLocal, name: name, fileId: file.id };
+        });
+      });
+    }).catch(function () {
+      return { pulled: false };
+    });
+  }
+
   function upsertOwnUnitFile(token, folderId) {
     var key = String(state.driveEncryptKey || "").trim();
     if (!key) return Promise.reject(new Error("nocode"));
     var name = unitDriveFileName(key);
     if (!name) return Promise.reject(new Error("nocode"));
+    materializeOverlays();
     var payload = JSON.stringify(currentUnitSnapshot());
     return encryptWithCode(key, payload).then(function (bytes) {
       return findNamedFile(token, folderId, name).then(function (file) {
@@ -4189,10 +4400,11 @@ button.count-toggle {
     });
   }
 
-  function driveSyncSummary(settings, own, children) {
+  function driveSyncSummary(settings, own, children, pulled) {
     var parts = [];
     if (settings && settings.wroteSettings) parts.push("довідники записано");
     else if (settings && settings.readSettings) parts.push("довідники прочитано");
+    if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) parts.push("свій файл записано");
     var received = children && children.received ? children.received : 0;
@@ -4212,6 +4424,7 @@ button.count-toggle {
       render();
       return;
     }
+    rememberDriveUser(token);
     state.driveNote = "Синхронізую довідники.";
     render();
     findSettingsFile(token, folderId).then(function (file) {
@@ -4235,23 +4448,29 @@ button.count-toggle {
         return { wroteSettings: false, readSettings: false };
       });
     }).then(function (settingsResult) {
+      state.driveNote = "Читаю свій файл підрозділу.";
+      render();
+      return pullOwnUnitFile(token, folderId).then(function (pulled) {
+        return { settings: settingsResult || {}, pulled: pulled || { pulled: false } };
+      });
+    }).then(function (bundle) {
       state.driveNote = "Пишу файл підрозділу.";
       render();
       return upsertOwnUnitFile(token, folderId).then(function (own) {
-        return { settings: settingsResult || {}, own: own };
+        return { settings: bundle.settings, pulled: bundle.pulled, own: own };
       });
     }).then(function (bundle) {
       state.driveNote = "Читаю звіти нижчих ланок.";
       render();
       return syncChildUnits(token, folderId).then(function (children) {
-        return { settings: bundle.settings, own: bundle.own, children: children };
+        return { settings: bundle.settings, pulled: bundle.pulled, own: bundle.own, children: children };
       });
     }).then(function (bundle) {
       if (bundle.own && bundle.own.name) {
         state.driveQueue.push({ name: bundle.own.name, folder: folderId, at: new Date().toISOString() });
       }
       state.driveLinked = true;
-      state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children);
+      state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children, bundle.pulled);
       save();
       render();
     }).catch(function (err) {
@@ -4261,37 +4480,50 @@ button.count-toggle {
     });
   }
 
-  function sendReport(clientId, folderId) {
+  function requestDriveAccessToken(clientId, opts, done) {
+    var forceConsent = !!(opts && opts.forceConsent);
+    loadGoogle(function () {
+      if (!driveTokenClient) {
+        driveTokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: DRIVE_OAUTH_SCOPE,
+          callback: function () {}
+        });
+      }
+      driveTokenClient.callback = function (response) {
+        if (!response || response.error || !response.access_token) {
+          state.driveNote = "Вхід не підтверджено.";
+          render();
+          return;
+        }
+        rememberDriveToken(response);
+        done(driveToken);
+      };
+      var req = { prompt: forceConsent ? "consent" : "" };
+      if (state.driveGoogleEmail) req.hint = state.driveGoogleEmail;
+      driveTokenClient.requestAccessToken(req);
+    });
+  }
+
+  function sendReport(clientId, folderId, opts) {
     if (location.protocol === "file:") {
       state.driveNote = "Google не відкриває вхід з файлу на диску. Сторінку треба відкрити за адресою http або https.";
       render();
       return;
     }
+    var forceConsent = !!(opts && opts.forceConsent);
     function upload(token) {
       runDriveSync(token, folderId);
     }
-    if (driveToken) {
+    if (!forceConsent && driveTokenValid()) {
       upload(driveToken);
       return;
     }
-    loadGoogle(function () {
-      google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: DRIVE_OAUTH_SCOPE,
-        callback: function (response) {
-          if (!response || response.error || !response.access_token) {
-            state.driveNote = "Вхід не підтверджено.";
-            render();
-            return;
-          }
-          driveToken = response.access_token;
-          upload(driveToken);
-        }
-      }).requestAccessToken({ prompt: "consent" });
-    });
+    if (forceConsent) clearDriveToken();
+    requestDriveAccessToken(clientId, { forceConsent: forceConsent }, upload);
   }
 
-  function startDriveSync() {
+  function startDriveSync(opts) {
     state.driveClient = DRIVE_CLIENT;
     var folderId = driveFolderId(state.driveFolder);
     if (!folderId) {
@@ -4299,9 +4531,17 @@ button.count-toggle {
       render();
       return;
     }
-    state.driveNote = "Відкриваю вікно Google.";
+    var forceConsent = !!(opts && opts.forceConsent);
+    if (forceConsent || !driveTokenValid()) state.driveNote = "Відкриваю вікно Google.";
+    else state.driveNote = "Синхронізую.";
     render();
-    sendReport(DRIVE_CLIENT, folderId);
+    sendReport(DRIVE_CLIENT, folderId, { forceConsent: forceConsent });
+  }
+
+  function changeDriveAccount() {
+    state.driveGoogleEmail = "";
+    saveDrivePrefs();
+    startDriveSync({ forceConsent: true });
   }
 
   function renderDriveFolderOverlay() {
@@ -4330,6 +4570,13 @@ button.count-toggle {
       attrs: { type: "button", "data-open-drive-folder": "1" }
     }));
     form.append(el("button", { text: "Зберегти", attrs: { type: "submit" } }));
+    form.append(el("button", {
+      text: "Змінити акаунт",
+      attrs: { type: "button", "data-change-drive-account": "1" }
+    }));
+    if (state.driveGoogleEmail) {
+      form.append(el("p", { className: "hint", text: "Google: " + state.driveGoogleEmail }));
+    }
     section.append(form);
     state.driveQueue.forEach(function (item) {
       var row = el("div", { className: "unit-code" });
@@ -5726,6 +5973,11 @@ button.count-toggle {
       render();
       return;
     }
+    var changeDriveAcc = event.target.closest("[data-change-drive-account]");
+    if (changeDriveAcc) {
+      changeDriveAccount();
+      return;
+    }
     var closeDriveFolder = event.target.closest("[data-close-drive-folder]");
     if (closeDriveFolder) {
       state.driveFolderOpen = false;
@@ -6240,7 +6492,10 @@ button.count-toggle {
     state.calendarOpen = false;
     state.calendarMonth = monthKeyFromISO(state.viewDay);
     state.driveFolderOpen = false;
+    state.driveGoogleEmail = "";
     state.accessChange = null;
+    clearDriveToken();
+    driveTokenClient = null;
     discardEdits();
     save();
     render();
@@ -6460,12 +6715,21 @@ button.count-toggle {
     check(pageSource.indexOf("toString(36) + " + '".bin"') === -1 && pageSource.indexOf("function " + "putReport") === -1, "немає заглушки випадкового .bin");
     state.driveNote = "";
     var seenDriveScope = "";
+    var seenDrivePrompt = null;
+    var seenDriveHint = null;
+    clearDriveToken();
+    driveTokenClient = null;
     window.google = {
       accounts: {
         oauth2: {
           initTokenClient: function (cfg) {
             seenDriveScope = cfg && cfg.scope ? String(cfg.scope) : "";
-            return { requestAccessToken: function () {} };
+            return {
+              requestAccessToken: function (req) {
+                seenDrivePrompt = req && Object.prototype.hasOwnProperty.call(req, "prompt") ? req.prompt : null;
+                seenDriveHint = req && req.hint ? String(req.hint) : "";
+              }
+            };
           }
         }
       }
@@ -6479,6 +6743,21 @@ button.count-toggle {
       seenDriveScope === DRIVE_OAUTH_SCOPE,
       "OAuth scope — drive.file + drive.readonly, без повного auth/drive"
     );
+    check(seenDrivePrompt === "", "звичайний sync просить тихий prompt без consent");
+    check(!!document.querySelector("#drive-form [data-change-drive-account]") && document.querySelector("#drive-form [data-change-drive-account]").textContent === "Змінити акаунт", "кнопка Змінити акаунт");
+    state.driveGoogleEmail = "lead@example.com";
+    seenDrivePrompt = null;
+    seenDriveHint = null;
+    document.querySelector("#drive-form [data-change-drive-account]").click();
+    check(seenDrivePrompt === "consent" && state.driveGoogleEmail === "", "Змінити акаунт чистить email і просить consent");
+    state.driveGoogleEmail = "lead@example.com";
+    save();
+    clearDriveToken();
+    driveTokenClient = null;
+    seenDrivePrompt = null;
+    seenDriveHint = null;
+    startDriveSync();
+    check(seenDrivePrompt === "" && seenDriveHint === "lead@example.com", "повторний sync передає hint email і тихий prompt");
     state.driveFolder = "";
     state.driveEncryptKey = "";
     state.units = [];
@@ -6500,6 +6779,7 @@ button.count-toggle {
     applyCode("lead");
     state.driveFolder = "";
     state.driveEncryptKey = "";
+    state.driveGoogleEmail = "";
     state.driveNote = "";
     state.units = [];
     state.unitReportStatus = {};
@@ -6561,6 +6841,10 @@ button.count-toggle {
     document.querySelector("#card-overlay [data-save-card='draft']").click();
     check(state.added.people.length === 1 && state.added.people[0].place === "root" && document.getElementById("people").textContent.indexOf("Старт") !== -1, "з нуля людина на root");
     check(document.querySelector("#people .frac").getAttribute("data-plus") === "1" && document.querySelector("#people .frac").getAttribute("data-total") === "1", "дріб з нуля 1/1");
+    var bakedSnap = currentUnitSnapshot();
+    check(bakedSnap && countPeopleInUnit(bakedSnap.unit) === 1 && JSON.stringify(bakedSnap.unit).indexOf("Старт") !== -1, "знімок для Диска містить нову людину з added");
+    materializeOverlays();
+    check(state.added.people.length === 0 && countPeopleInUnit(state.report.unit) === 1 && document.getElementById("people").textContent.indexOf("Старт") !== -1, "запікання переносить людину в unit і чистить added");
     document.querySelector("[data-open-calendar]").click();
     var filledToday = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
     check(filledToday && filledToday.classList.contains("has-report"), "день із внесеним о/с темніший");
