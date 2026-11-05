@@ -1146,8 +1146,7 @@ button.count-toggle {
   var CACHE_KEY = "zvitnist.cache.v1";
 
   var CODES = {
-    lead: "all",
-    "1rota": "all"
+    lead: "all"
   };
 
   var SCOPE_LABEL = {
@@ -1352,7 +1351,7 @@ button.count-toggle {
     profile: false,
     profilePane: "",
     report: null,
-    reportKey: "1rota",
+    reportKey: "lead",
     sampleReport: null,
     reportSource: "",
     fileNote: false,
@@ -1388,7 +1387,7 @@ button.count-toggle {
   };
 
   var bundles = {};
-  var SAMPLE_FILE = "zvit-1rota.json";
+  var SAMPLE_FILE = "zvit-lead.json";
 
   var pendingScroll = null;
   var peopleById = new Map();
@@ -2116,7 +2115,7 @@ button.count-toggle {
       days[key] = packed.archive[key];
     });
     // children у знімку — від власника файлу (drive), навіть якщо зараз відкритий підлеглий.
-    // Запис файлу дитини підставляє своїх children окремо в upsertOwnUnitFile.
+    // Запис файлу підлеглої ланки (unit) підставляє своїх children окремо в upsertOwnUnitFile.
     var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
       var code = String(unit.code || "");
@@ -2143,7 +2142,7 @@ button.count-toggle {
   function bundleKeyForDriveKey(driveKey) {
     var key = String(driveKey || "").trim();
     if (!key) return "";
-    if (key.toLowerCase() === "lead" || key.toLowerCase() === "sluzhba") return "1rota";
+    if (key.toLowerCase() === "lead" || key.toLowerCase() === "sluzhba" || key.toLowerCase() === "1rota") return "lead";
     var unit = findUnitByCode(key);
     if (unit) return unit.code;
     var root = String(state.reportRoot || "").trim();
@@ -2617,7 +2616,7 @@ button.count-toggle {
     return "lead";
   }
 
-  // Відкритий підлеглий видавця (reportRoot) — можна правити як дитина і писати її файл.
+  // Відкритий підлеглий видавця (reportRoot) — можна правити як unit і писати її файл.
   function viewingManagedChild() {
     if (state.scope !== "all") return "";
     var open = String(state.openCode || "").trim();
@@ -2631,7 +2630,7 @@ button.count-toggle {
     return found ? open : "";
   }
 
-  // ZS-107: навіть якщо applyCode збив reportRoot на код дитини — не писати її знімок у файл тата.
+  // ZS-107: навіть якщо applyCode збив reportRoot на код unit — не писати її знімок у файл lead.
   function driveChildWriteCode() {
     var managed = viewingManagedChild();
     if (managed) return managed;
@@ -2652,7 +2651,7 @@ button.count-toggle {
     return String(state.driveEncryptKey || "").trim();
   }
 
-  // Знімок з кодом підлеглого не підставляти в «Загальний» файл тата.
+  // Знімок з кодом підлеглого не підставляти в «Загальний» файл lead.
   function ownPullLooksLikeChildBleed(raw, encryptKey) {
     var code = String(raw && raw.code || "").trim();
     var key = String(encryptKey || "").trim();
@@ -2956,15 +2955,18 @@ button.count-toggle {
 
   function reportFileName(code) {
     var raw = String(code || "");
-    if (raw.toLowerCase() === "1rota") return SAMPLE_FILE;
+    var lower = raw.toLowerCase();
+    // ZS-118: legacy 1rota → lead file name; демо zvit-1rota.json більше не ціль.
+    if (lower === "1rota" || lower === "sluzhba") raw = "lead";
     var safe = raw.replace(/[^A-Za-z0-9-]/g, "");
+    if (!safe) safe = "lead";
     return "zvit-" + safe + ".json";
   }
 
   function sampleReportDocument() {
     return {
       name: "",
-      code: "1rota",
+      code: "lead",
       file: SAMPLE_FILE,
       unit: { id: "root", name: "", people: [] },
       machines: [],
@@ -3006,7 +3008,7 @@ button.count-toggle {
     state.sampleReport = sampleReportDocument();
     state.reportSource = "empty";
     state.report = state.sampleReport;
-    state.reportKey = "1rota";
+    state.reportKey = "lead";
     state.daysArchive = {};
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
@@ -3018,12 +3020,25 @@ button.count-toggle {
 
   function reportKey(code) {
     var lower = String(code || "").toLowerCase();
-    if (lower === "sluzhba") lower = "lead";
-    if (lower === "lead" || lower === "1rota") return "1rota";
+    if (lower === "sluzhba" || lower === "1rota") lower = "lead";
+    if (lower === "lead") return "lead";
     var grant = findAccessGrant(code);
-    if (grant && grant.unitKey) return grant.unitKey;
+    if (grant && grant.unitKey) {
+      var gk = String(grant.unitKey || "").toLowerCase();
+      if (gk === "1rota" || gk === "sluzhba") return "lead";
+      return grant.unitKey;
+    }
     var unit = findUnitByCode(code);
-    return unit ? unit.code : "1rota";
+    return unit ? unit.code : "lead";
+  }
+
+  // ZS-118: старий канон bundles/reportKey "1rota" → "lead".
+  function migrateLegacyRotaKeys() {
+    if (bundles && bundles["1rota"]) {
+      if (!bundles["lead"]) bundles["lead"] = bundles["1rota"];
+      delete bundles["1rota"];
+    }
+    if (String(state.reportKey || "") === "1rota") state.reportKey = "lead";
   }
 
   function captureBundle(key) {
@@ -3113,6 +3128,10 @@ button.count-toggle {
         viewDay: src.viewDay || src.fileDay || todayISO()
       };
     });
+    if (typeof data.reportKey === "string" && data.reportKey) {
+      state.reportKey = data.reportKey.slice(0, 80);
+    }
+    migrateLegacyRotaKeys();
     if (data.unitReportStatus && typeof data.unitReportStatus === "object") {
       state.unitReportStatus = data.unitReportStatus;
     }
@@ -3120,12 +3139,13 @@ button.count-toggle {
       state.reportRoot = data.reportRoot.slice(0, 80);
     }
     var want = state.reportKey || data.reportKey || "";
+    if (want === "1rota") want = "lead";
     if (!want || !bundles[want]) {
-      want = keys.filter(function (key) { return !!bundles[key]; })[0] || "";
+      want = (bundles["lead"] ? "lead" : "") || keys.filter(function (key) { return !!bundles[key]; })[0] || "";
     }
     var saved = want ? bundles[want] : null;
     if (!saved) return false;
-    state.reportKey = want;
+    state.reportKey = want === "1rota" ? "lead" : want;
     state.edits = saved.edits;
     state.removed = saved.removed;
     state.added = saved.added;
@@ -3191,7 +3211,7 @@ button.count-toggle {
     state.daysArchive = {};
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
-    if (key === "1rota") {
+    if (key === "lead") {
       state.report = state.sampleReport || sampleReportDocument();
       return;
     }
@@ -5143,11 +5163,11 @@ button.count-toggle {
     return false;
   }
 
-  // ZS-109: пароль тата — лише для файлу/шифру; у bundles завжди логічний ключ (1rota / код ланки).
+  // ZS-109: пароль lead — лише для файлу/шифру; у bundles завжди логічний ключ (lead / код ланки).
   function canonicalOwnBundleKey(encryptKey) {
     var encrypt = String(encryptKey || state.driveEncryptKey || "").trim();
     if (!encrypt) return String(state.reportKey || "").trim();
-    return bundleKeyForDriveKey(encrypt) || reportKey(encrypt) || "1rota";
+    return bundleKeyForDriveKey(encrypt) || reportKey(encrypt) || "lead";
   }
 
   function normalizeOwnReportKey() {
@@ -5195,7 +5215,7 @@ button.count-toggle {
           mergeChildrenFromSnapshot(raw);
           var keepLocal = localReportHasContent();
           if (!keepLocal) {
-            // ZS-107: чужий код підлеглого в файлі тата — у bundles, не в загальний.
+            // ZS-107: чужий код підлеглого в файлі lead — у bundles, не в загальний.
             if (ownPullLooksLikeChildBleed(raw, key)) {
               var childCode = String(raw.code || "").trim();
               ingestChildUnit(childCode, raw);
@@ -5323,7 +5343,7 @@ button.count-toggle {
       fileDay: day,
       viewDay: day
     };
-    // ZS-107: на загальному не підміняти state.report вмістом дитини.
+    // ZS-107: на загальному не підміняти state.report вмістом unit.
     var openNow = String(state.openCode || "").trim();
     var rootNow = String(state.reportRoot || "").trim();
     var onGeneral = !openNow || !rootNow || openNow.toLowerCase() === rootNow.toLowerCase();
@@ -6268,8 +6288,8 @@ button.count-toggle {
     var keepReportRoot = String(state.reportRoot || "").trim();
     var typed = String(raw || "").trim();
     var code = typed.toLowerCase();
-    // Старий внутрішній код верхівки.
-    if (code === "sluzhba") code = "lead";
+    // Старі внутрішні коди верхівки → lead (ZS-118: 1rota більше не окремий режим).
+    if (code === "sluzhba" || code === "1rota") code = "lead";
     state.codeDraft = typed;
     if (!code) {
       state.codeError = "Впишіть код.";
@@ -6304,7 +6324,7 @@ button.count-toggle {
     if (!grant && !unit && code !== "lead" && scope === "all") {
       state.holder = (state.report && state.report.name) || "";
     }
-    // ZS-107: якщо відкриваємо відому дитину поточного кореня — не збивати reportRoot на її код.
+    // ZS-107: якщо відкриваємо відому unit поточного кореня — не збивати reportRoot на її код.
     if (state.scope === "all") {
       var opened = String(state.openCode || "").trim();
       if (
@@ -6896,7 +6916,7 @@ button.count-toggle {
     state.accessGrants.push({
       id: "g" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
       code: generateUnitCode(),
-      unitKey: state.reportKey || actorKey() || "1rota",
+      unitKey: state.reportKey || actorKey() || "lead",
       forWhom: who,
       personIds: people.slice(0, 200),
       machineIds: machines.slice(0, 200),
@@ -7588,7 +7608,7 @@ button.count-toggle {
     state.settingsFolderAdminHash = "";
     bundles = {};
     state.report = state.sampleReport;
-    state.reportKey = "1rota";
+    state.reportKey = "lead";
     state.fileNote = false;
     state.profile = false;
     state.profilePane = "";
@@ -7762,7 +7782,31 @@ button.count-toggle {
     var gearFrac = document.querySelector("#equipment .frac");
     check(peopleFrac && peopleFrac.getAttribute("data-plus") === "0" && peopleFrac.getAttribute("data-total") === "0", "на старті 0/0 людей");
     check(gearFrac && gearFrac.getAttribute("data-plus") === "0" && gearFrac.getAttribute("data-total") === "0", "на старті 0/0 техніки");
-    check(state.reportSource === "empty" && state.sampleReport && state.sampleReport.code === "1rota" && state.sampleReport.machines.length === 0 && state.sampleReport.tasks.length === 0, "стартовий звіт порожній");
+    check(state.reportSource === "empty" && state.sampleReport && state.sampleReport.code === "lead" && state.sampleReport.machines.length === 0 && state.sampleReport.tasks.length === 0, "стартовий звіт порожній");
+    check(state.reportKey === "lead" && !Object.prototype.hasOwnProperty.call(CODES, "1rota"), "канон reportKey=lead, немає CODES.1rota");
+    check(reportKey("1rota") === "lead" && reportKey("sluzhba") === "lead" && reportKey("lead") === "lead", "reportKey alias 1rota/sluzhba → lead");
+    check(document.getElementById("app").textContent.indexOf("1 рота") === -1, "на старті немає напису 1 рота");
+    // ZS-118: міграція старого bundles["1rota"] → "lead".
+    var savedBundles = bundles;
+    var savedReportKey = state.reportKey;
+    bundles = {
+      "1rota": {
+        edits: { people: {}, machines: {} },
+        removed: { people: {}, machines: {} },
+        added: { people: [], machines: [] },
+        positions: {},
+        changes: [],
+        report: { name: "legacy", code: "1rota", unit: { id: "root", name: "", people: [{ id: "mig1", name: "Мігрант", rank: "Солдат", callsign: "Міг", accounting: "official", duty: "in", position: "" }] }, machines: [], tasks: [], people: [] },
+        daysArchive: {},
+        fileDay: todayISO(),
+        viewDay: todayISO()
+      }
+    };
+    state.reportKey = "1rota";
+    migrateLegacyRotaKeys();
+    check(!!bundles["lead"] && !bundles["1rota"] && state.reportKey === "lead" && JSON.stringify(bundles["lead"].report || {}).indexOf("Мігрант") !== -1, "міграція bundles 1rota → lead");
+    bundles = savedBundles;
+    state.reportKey = savedReportKey;
     check(JSON.stringify(DATA).indexOf("Бондар") === -1 && JSON.stringify(DATA).indexOf("1 рота") === -1 && JSON.stringify(DATA).indexOf("Степ") === -1, "у DATA немає демо-імен");
     check(document.getElementById("people").textContent.indexOf("Бондар") === -1 && document.getElementById("equipment").textContent.indexOf("Степ") === -1 && document.getElementById("tasks").textContent.indexOf("Огляд рубежу") === -1, "на екрані немає демо-вмісту");
     var pageScript = "";
@@ -8022,12 +8066,12 @@ button.count-toggle {
     state.removed = { people: {}, machines: {} };
     state.positions = {};
     state.daysArchive = {};
-    state.report = emptyUnitReport({ name: "", code: "1rota" });
-    state.reportKey = "1rota";
+    state.report = emptyUnitReport({ name: "", code: "lead" });
+    state.reportKey = "lead";
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
     check(countPeopleInUnit(state.report.unit) === 0 && state.added.people.length === 0, "фейковий reload очистив о/с");
-    check(!!applyOwnUnitSnapshot(pulledSnap, "1rota"), "підстановка знімка як після pull свого файлу");
+    check(!!applyOwnUnitSnapshot(pulledSnap, "lead"), "підстановка знімка як після pull свого файлу");
     render();
     check(countPeopleInUnit(state.report.unit) === 1 && document.getElementById("people").textContent.indexOf("Старт") !== -1, "після фейкового reload+pull людина знову видима");
     // ZS-101: заповнений день не тече в сусідній при відкритті стрілкою.
@@ -8058,12 +8102,12 @@ button.count-toggle {
     // Fixture лише для UI self-test після перевірки порожнього старту; у прод-старті його немає.
     function installTestFixture() {
       var fixture = {
-        name: "1 рота",
-        code: "1rota",
+        name: "Служба",
+        code: "lead",
         file: SAMPLE_FILE,
         unit: {
           id: "rota",
-          name: "1 рота",
+          name: "Служба",
           children: [
             {
               id: "v1",
@@ -8164,7 +8208,7 @@ button.count-toggle {
       state.sampleReport = fixture;
       state.report = fixture;
       state.reportSource = "fixture";
-      state.reportKey = "1rota";
+      state.reportKey = "lead";
       bundles = {};
       freshOverlays();
       refreshPeopleIndex();
@@ -8176,20 +8220,20 @@ button.count-toggle {
     check(peopleFrac && peopleFrac.getAttribute("data-plus") === "14" && peopleFrac.getAttribute("data-total") === "18", "fixture 14/18");
     check(gearFrac && gearFrac.getAttribute("data-plus") === "7" && gearFrac.getAttribute("data-total") === "8", "fixture 7/8");
     useCode("1rota");
-    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
+    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "legacy 1rota відкриває ті самі блоки");
     check(!document.getElementById("wide-access") && !document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
-    check(state.openCode === "1rota" && state.scope === "all", "після дотику 1rota вибрано");
-    check(state.openCode !== "lead", "служба не лишається вибраною");
-    check(!document.getElementById("status-create"), "рота не додає статус");
-    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "після 1rota рядок дати без порожніх змін");
-    checkWorkWidth("підрозділ");
+    check(state.openCode === "lead" && state.scope === "all" && state.holder === "Служба", "1rota alias → lead / Служба");
+    check(!document.getElementById("status-create"), "lead на звіті не додає статус");
+    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "після lead рядок дати без порожніх змін");
+    check(document.getElementById("app").textContent.indexOf("1 рота") === -1, "після alias немає напису 1 рота");
+    checkWorkWidth("lead");
     useCode("lyudy");
-    check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1 && state.openCode === "1rota", "старий код lyudy скасовано");
-    useCode("1rota");
-    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
-    check(state.openCode === "1rota", "після дотику 1rota вибрано");
-    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "після 1rota знову рядок дати");
-    check(peopleFrac.getAttribute("aria-label").indexOf("1 рота") !== -1, "дріб роти");
+    check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1 && state.openCode === "lead", "старий код lyudy скасовано");
+    useCode("lead");
+    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває lead");
+    check(state.openCode === "lead", "після дотику lead вибрано");
+    check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1, "після lead знову рядок дати");
+    check(peopleFrac.getAttribute("aria-label").indexOf("Служба") !== -1, "дріб служби");
     check(text("people-title") === "Особовий склад", "назва блоку людей");
     check(text("equipment-title") === "ОВТ", "назва блоку техніки");
     check(!text("people").includes("Усі: з обліку"), "без пояснення дробу людей");
@@ -8230,12 +8274,12 @@ button.count-toggle {
     profileBtn.click();
     check(document.getElementById("profile-overlay") && !document.getElementById("main").contains(document.getElementById("profile-overlay")), "профіль окремо від звіту");
     check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("wide-access").textContent.indexOf("Штат") !== -1 && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "рота у профілі має штат/доступ, створює ланку і бачить архів");
+    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("wide-access").textContent.indexOf("Штат") !== -1 && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "без ключа lead у профілі має штат/доступ, створює ланку і бачить архів");
     document.querySelector("[data-profile-pane='people']").click();
-    check(!document.getElementById("status-name"), "рота не відкриває форму статусу");
+    check(!document.getElementById("status-name"), "без ключа lead не відкриває форму статусу");
     document.querySelector("[data-profile-pane='types']").click();
-    check(!document.getElementById("type-name") && !document.getElementById("type-list"), "рота не відкриває форму типів");
-    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-edit-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.getElementById("status-list") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]"), "рота без правки довідників");
+    check(!document.getElementById("type-name") && !document.getElementById("type-list"), "без ключа lead не відкриває форму типів");
+    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-edit-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.getElementById("status-list") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]"), "без ключа lead без правки довідників");
     document.querySelector("[data-close-profile]").click();
     check(!document.getElementById("profile-overlay") && state.units.length === 0, "закриття не створює підрозділ");
     state.driveEncryptKey = "тест-адмін-ключ";
@@ -8283,7 +8327,7 @@ button.count-toggle {
     var inviteParsed = parseAccessCode(inviteValue);
     check(born && born.textContent === inviteValue && inviteValue.indexOf("vs1.") === -1 && inviteValue.indexOf(state.units[0].code) === -1, "на екрані одразу довге запрошення без префікса, не короткий код");
     check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code && inviteParsed.name === "Туз", "Копіювати дає запрошення з текою, кодом і назвою");
-    // ZS-114: ingest дитини з «Підрозділ» не затирає назву видавця.
+    // ZS-114: ingest unit з «Підрозділ» не затирає назву видавця.
     var keptTuz = state.units[0].name;
     check(keptTuz === "Туз", "перед ingest назва Туз");
     ingestChildUnit(state.units[0].code, {
@@ -8371,8 +8415,8 @@ button.count-toggle {
     check(writeReportProof(builtUnit).indexOf("Бондар") === -1, "підтвердження порожнього файлу");
     check(!localStorage.getItem("zvitnist.lead.v1"), "звіт не лежить у пам’яті браузера");
     document.querySelector("[data-close-profile]").click();
-    useCode("1rota");
-    check(!document.getElementById("main").textContent.includes("Новий підрозділ"), "звіт роти без нового підрозділу");
+    useCode("lead");
+    check(!document.getElementById("main").textContent.includes("Новий підрозділ"), "звіт lead без нового підрозділу");
     toggle("unit:v1");
     check(document.getElementById("panel-unit-v1") && document.getElementById("panel-unit-v1").classList.contains("reveal") && motionOn(document.getElementById("panel-unit-v1")), "рядок розкривається плавно");
     check(text("people").includes("1 відділення") && text("people").includes("2 відділення"), "нижча ланка взводу");
@@ -8385,7 +8429,7 @@ button.count-toggle {
     check(!!bondar && bondar.querySelector(".call") && bondar.querySelector(".call").textContent === "Клен", "позивний окремим рядком");
     check(bondar && bondar.textContent.indexOf("командир відділення сержант Бондар А.П.") !== -1, "посада звання і ПІП-скорочення");
     check(bondar && bondar.textContent.indexOf("Бондар Андрій Петрович") === -1, "повне ПІП не дублюється коли увімкнено скорочення");
-    check(bondar && bondar.textContent.indexOf("1 відділення 1 взвод 1 рота · офіційний облік") !== -1, "підрозділ і облік через крапку");
+    check(bondar && bondar.textContent.indexOf("1 відділення 1 взвод Служба · офіційний облік") !== -1, "підрозділ і облік через крапку");
     check(bondar && bondar.textContent.indexOf("відділення ·") === -1 && bondar.textContent.indexOf("взвод ·") === -1, "без крапок між ланками");
     toggle("person:p4");
     var personCard = text("panel-person-p4");
@@ -8643,7 +8687,7 @@ button.count-toggle {
     check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1, "старий код zavdannya скасовано");
     applyCode("немає");
     check(document.getElementById("app").textContent.includes("Такого коду"), "чужий код не відкриває");
-    applyCode("1rota");
+    applyCode("lead");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "код підрозділу повертає три блоки");
     var peopleFracEnd = document.querySelector("#people .frac");
     var gearFracEnd = document.querySelector("#equipment .frac");
@@ -8664,12 +8708,12 @@ button.count-toggle {
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     chooseRank("rank-p4", "Майор");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
-    var serviceLine = "1 рота. Звання. Було: Капітан. Стало: Майор.";
+    var serviceLine = "Служба. Звання. Було: Капітан. Стало: Майор.";
     check(state.changes.length === journalBefore + 1, "галочка додає один запис");
     document.querySelector("[data-open-changes]").click();
     check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceLine) !== -1, "запис видно у вікні журналу");
     document.querySelector("[data-close-changes]").click();
-    check(state.changes.some(function (item) { return item.who === "1 рота" && item.before === "Капітан" && item.after === "Майор"; }), "запис у звіті роти");
+    check(state.changes.some(function (item) { return item.who === "Служба" && item.before === "Капітан" && item.after === "Майор"; }), "запис у звіті служби");
     check(!localStorage.getItem("zvitnist.lead.v1"), "журнал не в пам’яті браузера");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     var dutyPick = document.getElementById("duty-p4");
@@ -8776,7 +8820,7 @@ button.count-toggle {
     var childInvite = inviteForCode(childUnit.code);
     check(childUnit && childUnit.parent === state.units[0].code && childUnit.name === "Вал" && childShown && childShown.getAttribute("data-unit-code") === childUnit.code && childShown.textContent === childInvite, "підрозділ створив ланку нижче з довгим запрошенням");
     var childDoc = emptyUnitReport(childUnit);
-    check(childDoc.file === reportFileName(childUnit.code) && childDoc.file !== SAMPLE_FILE && childDoc.machines.length === 0 && childDoc.tasks.length === 0 && JSON.stringify(childDoc).indexOf("Бондар") === -1 && JSON.stringify(childDoc).indexOf("Степ") === -1, "нижча ланка порожня, не зразок 1 роти");
+    check(childDoc.file === reportFileName(childUnit.code) && childDoc.file !== SAMPLE_FILE && childDoc.machines.length === 0 && childDoc.tasks.length === 0 && JSON.stringify(childDoc).indexOf("Бондар") === -1 && JSON.stringify(childDoc).indexOf("Степ") === -1, "нижча ланка порожня, не зразок lead");
     document.querySelector("[data-close-profile]").click();
     applyCode(childUnit.code);
     check(state.scope === "all" && document.querySelector("#people .frac").getAttribute("data-total") === "0" && document.querySelector("#equipment .frac").getAttribute("data-total") === "0" && document.getElementById("people").textContent.indexOf("Бондар") === -1, "код нижчої ланки відкриває порожній звіт");
@@ -8794,7 +8838,7 @@ button.count-toggle {
     childSwitch.querySelector("[data-pick-toggle]").click();
     check(!!document.querySelector("#report-switch [data-open-unit='" + childUnit.code + "']") && childSwitch.textContent.indexOf(childUnit.name) !== -1, "підлегла ланка в списку");
     childSwitch.querySelector("[data-pick-toggle]").click();
-    applyCode("1rota");
+    applyCode("lead");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && document.querySelector("#people .frac").getAttribute("data-total") === "18", "вищий код як і раніше бачить розділ");
     applyCode(state.units[0].code);
     applyCode("lead");
@@ -8844,7 +8888,7 @@ button.count-toggle {
     statusCount.querySelector("[data-pick-value='minus']").click();
     document.getElementById("status-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.customDuties.some(function (item) { return item.label === "Наряд" && item.plus === false; }), "служба створила мінус-статус");
-    applyCode("1rota");
+    applyCode("lead");
     check(!document.getElementById("status-create") && !document.getElementById("profile-overlay"), "після роти форми статусу немає");
     toggle("unit:v1");
     toggle("unit:s1");
@@ -8863,7 +8907,7 @@ button.count-toggle {
     var serviceWho = "Служба. Звання. Було: Майор. Стало: Генерал.";
     document.querySelector("[data-open-changes]").click();
     check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceWho) !== -1, "запис служби називає службу");
-    check(document.getElementById("changes-overlay").textContent.indexOf("1 рота. Звання. Було: Підполковник.") === -1, "цей запис не від роти");
+    check(document.getElementById("changes-overlay").textContent.indexOf("Служба. Звання. Було: Підполковник.") === -1, "цей запис не від служби в оверлеї чужого");
     document.querySelector("[data-close-changes]").click();
     check(state.changes.some(function (item) { return item.who === "Служба" && item.after === "Генерал"; }), "запис служби у звіті");
     check(!localStorage.getItem("zvitnist.lead.v1") || localStorage.getItem("zvitnist.lead.v1").indexOf("Бондар") === -1, "люди звіту не в пам’яті браузера");
@@ -9136,7 +9180,7 @@ button.count-toggle {
     state.driveEncryptKey = "";
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
-    applyCode("1rota");
+    applyCode("lead");
     document.querySelector("[data-open-profile]").click();
     document.querySelector("[data-profile-pane='people']").click();
     document.querySelector("[data-profile-pane='gear']").click();
@@ -9157,7 +9201,7 @@ button.count-toggle {
     check(!settingsPayload.reports && !settingsPayload.keys && !settingsPayload.people && !settingsPayload.units && !JSON.stringify(settingsPayload).includes("Бондар"), "settings без звітів, підрозділів і персональних даних");
     rememberSettingsAdmin(settingsPayload);
     check(state.settingsFolderAdmin && state.settingsFolderAdminHash === settingsPayload.folderAdminKeyHash, "після запису settings пам’ятає адміна");
-    applyCode("1rota");
+    applyCode("lead");
     state.driveEncryptKey = "чужий-ключ";
     check(!canWriteDriveSettings() && !canEditCatalogs(), "чужий ключ не пише settings і не править довідники");
     state.driveEncryptKey = "секрет-адміна";
@@ -9311,32 +9355,32 @@ button.count-toggle {
       try { localStorage.removeItem(CACHE_KEY); } catch (errCache) {}
       var childCacheCode = "CHILD99CACHE";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== childCacheCode; });
-      state.units.push({ id: "u99cache", name: "Дитина кеш", code: childCacheCode, parent: "lead" });
+      state.units.push({ id: "u99cache", name: "Ланка кеш", code: childCacheCode, parent: "lead" });
       check(ingestChildUnit(childCacheCode, {
-        name: "Дитина кеш",
+        name: "Ланка кеш",
         code: childCacheCode,
         day: todayISO(),
         days: {},
         unit: {
           id: "root",
-          name: "Дитина кеш",
+          name: "Ланка кеш",
           people: [{ id: "c99", name: "Кешований Тест", rank: "Солдат", callsign: "Кеш", accounting: "official", duty: "in", position: "" }]
         },
         machines: [],
         tasks: [],
         people: [],
         changes: []
-      }), "ingest дитини для кешу");
-      check(!!bundles[childCacheCode] && countPeopleInUnit(bundles[childCacheCode].report.unit) === 1, "дитина в bundles після ingest");
+      }), "ingest unit для кешу");
+      check(!!bundles[childCacheCode] && countPeopleInUnit(bundles[childCacheCode].report.unit) === 1, "unit в bundles після ingest");
       check(saveReportCache() && !!localStorage.getItem(CACHE_KEY), "знімки записані в zvitnist.cache.v1");
       bundles = {};
-      state.report = emptyUnitReport({ name: "", code: "1rota" });
-      state.reportKey = "1rota";
+      state.report = emptyUnitReport({ name: "", code: "lead" });
+      state.reportKey = "lead";
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       check(!bundles[childCacheCode], "після «reload» bundles порожні");
       check(applyReportCache(loadReportCache()) && !!bundles[childCacheCode], "applyReportCache відновлює bundles");
-      check(countPeopleInUnit(bundles[childCacheCode].report.unit) === 1 && JSON.stringify(bundles[childCacheCode].report).indexOf("Кеш") !== -1, "о/с дитини з локального кешу");
+      check(countPeopleInUnit(bundles[childCacheCode].report.unit) === 1 && JSON.stringify(bundles[childCacheCode].report).indexOf("Кеш") !== -1, "о/с unit з локального кешу");
       var onlineBefore = navigator.onLine;
       try {
         Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return false; } });
@@ -9358,8 +9402,8 @@ button.count-toggle {
       state.driveNote = "";
       // ZS-105: save() сам пише локальний кеш без Drive sync.
       try { localStorage.removeItem(CACHE_KEY); } catch (err105a) {}
-      state.reportKey = "1rota";
-      state.report = emptyUnitReport({ name: "Авто", code: "1rota" });
+      state.reportKey = "lead";
+      state.report = emptyUnitReport({ name: "Авто", code: "lead" });
       state.added = {
         people: [{ id: "np105", name: "Авто Збереженко", surname: "Збереженко", givenName: "Авто", patronymic: "", rank: "Солдат", callsign: "Автокеш", accounting: "official", duty: "in", position: "", place: "root" }],
         machines: []
@@ -9369,37 +9413,37 @@ button.count-toggle {
       check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Автокеш") !== -1, "save() пише звіт у zvitnist.cache.v1");
       bundles = {};
       state.added = { people: [], machines: [] };
-      state.report = emptyUnitReport({ name: "", code: "1rota" });
-      check(applyReportCache(loadReportCache()) && ((state.added.people || []).some(function (item) { return item && item.callsign === "Автокеш"; }) || JSON.stringify(state.report || {}).indexOf("Автокеш") !== -1 || JSON.stringify(bundles["1rota"] || {}).indexOf("Автокеш") !== -1), "після reload з кешу правка на місці");
+      state.report = emptyUnitReport({ name: "", code: "lead" });
+      check(applyReportCache(loadReportCache()) && ((state.added.people || []).some(function (item) { return item && item.callsign === "Автокеш"; }) || JSON.stringify(state.report || {}).indexOf("Автокеш") !== -1 || JSON.stringify(bundles["lead"] || {}).indexOf("Автокеш") !== -1), "після reload з кешу правка на місці");
       try { localStorage.removeItem(CACHE_KEY); } catch (err105b) {}
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
-      // ZS-103: видавець відкрив дитину — знімок/ключ для Диска = код дитини.
+      // ZS-103: видавець відкрив unit — знімок/ключ для Диска = код unit.
       var child103 = "CHILD103EDIT";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child103; });
-      state.units.push({ id: "u103", name: "Дитина 103", code: child103, parent: "lead" });
+      state.units.push({ id: "u103", name: "Ланка 103", code: child103, parent: "lead" });
       state.reportRoot = "lead";
       state.openCode = child103;
       state.scope = "all";
-      state.holder = "Дитина 103";
+      state.holder = "Ланка 103";
       state.driveEncryptKey = "секрет-видавця";
       ingestChildUnit(child103, {
-        name: "Дитина 103",
+        name: "Ланка 103",
         code: child103,
         day: todayISO(),
         days: {},
-        unit: { id: "root", name: "Дитина 103", people: [{ id: "c103", name: "Дитячий Тест", rank: "Солдат", callsign: "Лис", accounting: "official", duty: "in", position: "" }] },
+        unit: { id: "root", name: "Ланка 103", people: [{ id: "c103", name: "Ланковий Тест", rank: "Солдат", callsign: "Лис", accounting: "official", duty: "in", position: "" }] },
         machines: [],
         tasks: [],
         people: [],
         changes: []
       });
       activateReport(child103);
-      check(viewingManagedChild() === child103, "viewingManagedChild бачить відкриту дитину видавця");
-      check(activeDriveUnitKey() === child103, "activeDriveUnitKey = код дитини");
+      check(viewingManagedChild() === child103, "viewingManagedChild бачить відкриту unit видавця");
+      check(activeDriveUnitKey() === child103, "activeDriveUnitKey = код unit");
       var childSnap103 = currentUnitSnapshot();
-      check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с дитини");
-      check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл дитини ≠ файл видавця");
+      check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с unit");
+      check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл unit ≠ файл видавця");
       check(sanitizeDriveSlug("1 Рота") === "1-rota" || sanitizeDriveSlug("1 Рота").indexOf("rota") !== -1, "sanitize дає зрозумілий slug");
       state.units = (state.units || []).filter(function (unit) { return unit.code !== "ROTA-TEST-NAME-CODE-AAAA"; });
       state.units.push({ id: "u112", name: "1 Рота", code: "ROTA-TEST-NAME-CODE-AAAA", parent: "lead" });
@@ -9487,112 +9531,112 @@ button.count-toggle {
           });
         });
       })().then(function () {
-      // ZS-107: ingest на загальному не підміняє людей; applyCode зберігає reportRoot; upsert цілить файл дитини.
+      // ZS-107: ingest на загальному не підміняє людей; applyCode зберігає reportRoot; upsert цілить файл unit.
       var child107 = "ZZZZ-YYYY-XXXX-WWWW-VVVV";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child107 && unit.code !== child103; });
-      state.units.push({ id: "u107", name: "Дитина 107", code: child107, parent: "lead" });
+      state.units.push({ id: "u107", name: "Ланка 107", code: child107, parent: "lead" });
       state.reportRoot = "lead";
       state.openCode = "lead";
       state.scope = "all";
       state.holder = "Служба";
-      state.driveEncryptKey = "секрет-тата";
-      state.reportKey = "1rota";
-      state.report = emptyUnitReport({ name: "Служба", code: "1rota" });
+      state.driveEncryptKey = "секрет-lead";
+      state.reportKey = "lead";
+      state.report = emptyUnitReport({ name: "Служба", code: "lead" });
       state.added = { people: [], machines: [] };
       render();
       check(ingestChildUnit(child107, {
-        name: "Дитина 107",
+        name: "Ланка 107",
         code: child107,
         day: todayISO(),
         days: {},
-        unit: { id: "root", name: "Дитина 107", people: [{ id: "c107", name: "Чужий Bleed", rank: "Солдат", callsign: "Bleed107", accounting: "official", duty: "in", position: "" }] },
+        unit: { id: "root", name: "Ланка 107", people: [{ id: "c107", name: "Чужий Bleed", rank: "Солдат", callsign: "Bleed107", accounting: "official", duty: "in", position: "" }] },
         machines: [],
         tasks: [],
         people: [],
         changes: []
-      }), "ingest дитини 107");
+      }), "ingest unit 107");
       render();
-      check(unitReportStatus(child107) === "received", "статус дитини — отримано");
-      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "на загальному немає о/с дитини після ingest");
-      check(!!bundles[child107] && JSON.stringify(bundles[child107].report).indexOf("Bleed107") !== -1, "о/с дитини лише в bundles");
-      check(ownPullLooksLikeChildBleed({ code: child107, unit: bundles[child107].report.unit }, "секрет-тата"), "pull бачить bleed коду дитини");
-      var quarantined = { code: child107, name: "Дитина 107", day: todayISO(), days: {}, unit: bundles[child107].report.unit, machines: [], tasks: [], people: [], changes: [] };
-      state.report = emptyUnitReport({ name: "Служба", code: "1rota" });
-      if (ownPullLooksLikeChildBleed(quarantined, "секрет-тата")) ingestChildUnit(child107, quarantined);
+      check(unitReportStatus(child107) === "received", "статус unit — отримано");
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "на загальному немає о/с unit після ingest");
+      check(!!bundles[child107] && JSON.stringify(bundles[child107].report).indexOf("Bleed107") !== -1, "о/с unit лише в bundles");
+      check(ownPullLooksLikeChildBleed({ code: child107, unit: bundles[child107].report.unit }, "секрет-lead"), "pull бачить bleed коду unit");
+      var quarantined = { code: child107, name: "Ланка 107", day: todayISO(), days: {}, unit: bundles[child107].report.unit, machines: [], tasks: [], people: [], changes: [] };
+      state.report = emptyUnitReport({ name: "Служба", code: "lead" });
+      if (ownPullLooksLikeChildBleed(quarantined, "секрет-lead")) ingestChildUnit(child107, quarantined);
       render();
-      check(document.getElementById("people").textContent.indexOf("Bleed107") === -1, "quarantine bleed не кладе дитину в загальний");
+      check(document.getElementById("people").textContent.indexOf("Bleed107") === -1, "quarantine bleed не кладе unit в загальний");
       applyCode(child107);
-      check(state.openCode === child107 && state.reportRoot === "lead", "applyCode дитини зберігає reportRoot служби");
-      check(driveChildWriteCode() === child107, "driveChildWriteCode бачить дитину навіть для запису");
+      check(state.openCode === child107 && state.reportRoot === "lead", "applyCode unit зберігає reportRoot служби");
+      check(driveChildWriteCode() === child107, "driveChildWriteCode бачить unit навіть для запису");
       activateReport(child107);
-      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "у звіті дитини люди на місці");
-      // reportRoot навмисно збитий — upsert усе одно має писати файл дитини, не тата.
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Bleed107") !== -1, "у звіті unit люди на місці");
+      // reportRoot навмисно збитий — upsert усе одно має писати файл unit, не lead.
       state.reportRoot = child107;
       state.openCode = child107;
-      state.driveEncryptKey = "секрет-тата";
-      check(viewingManagedChild() === "" && driveChildWriteCode() === child107, "збитий reportRoot: fallback пише дитину");
+      state.driveEncryptKey = "секрет-lead";
+      check(viewingManagedChild() === "" && driveChildWriteCode() === child107, "збитий reportRoot: fallback пише unit");
       state.reportRoot = "lead";
       openReportChoice("__general__");
       check(state.openCode === "lead" && document.getElementById("people").textContent.indexOf("Bleed107") === -1, "назад у загальний без bleed");
-      // ZS-109: pull/upsert тата не ставить пароль як reportKey; батько пишеться з bundles["1rota"].
+      // ZS-109: pull/upsert lead не ставить пароль як reportKey; загальний пишеться з bundles["lead"].
       var child109 = "AAAA-BBBB-CCCC-DDDD-109A";
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109;
       });
-      state.units.push({ id: "u109", name: "Дитина 109", code: child109, parent: "lead" });
+      state.units.push({ id: "u109", name: "Ланка 109", code: child109, parent: "lead" });
       state.reportRoot = "lead";
       state.openCode = "lead";
       state.scope = "all";
       state.holder = "Служба";
-      state.driveEncryptKey = "секрет-тата-109";
-      state.reportKey = "1rota";
+      state.driveEncryptKey = "секрет-lead-109";
+      state.reportKey = "lead";
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       state.removed = { people: {}, machines: {} };
       state.report = {
         name: "Служба",
-        code: "1rota",
+        code: "lead",
         file: SAMPLE_FILE,
         unit: {
           id: "root",
           name: "Служба",
-          people: [{ id: "p109", name: "Тато Збереженко", surname: "Збереженко", givenName: "Тато", patronymic: "", rank: "Солдат", callsign: "Papa109", accounting: "official", duty: "in", position: "" }]
+          people: [{ id: "p109", name: "Lead Збереженко", surname: "Збереженко", givenName: "Lead", patronymic: "", rank: "Солдат", callsign: "Lead109", accounting: "official", duty: "in", position: "" }]
         },
         machines: [],
         tasks: [],
         people: []
       };
-      captureBundle("1rota");
-      var papaSnap109 = currentUnitSnapshot();
-      check(!!applyOwnUnitSnapshot(papaSnap109, "секрет-тата-109"), "fake pull тата з паролем як encrypt key");
-      check(state.reportKey === "1rota", "після pull reportKey лишається 1rota, не пароль");
-      check(!bundles["секрет-тата-109"], "пароль не стає ключем bundles");
-      check(countPeopleInUnit(state.report.unit) === 1 && JSON.stringify(state.report.unit).indexOf("Papa109") !== -1, "о/с тата після pull на місці");
-      // Збитий старий стан: reportKey = пароль — normalize повертає на 1rota.
-      state.reportKey = "секрет-тата-109";
-      bundles["секрет-тата-109"] = bundles["1rota"];
-      check(normalizeOwnReportKey() === "1rota" && state.reportKey === "1rota" && !bundles["секрет-тата-109"], "normalizeOwnReportKey знімає пароль з reportKey");
-      captureBundle("1rota");
+      captureBundle("lead");
+      var leadSnap109 = currentUnitSnapshot();
+      check(!!applyOwnUnitSnapshot(leadSnap109, "секрет-lead-109"), "fake pull lead з паролем як encrypt key");
+      check(state.reportKey === "lead", "після pull reportKey лишається lead, не пароль");
+      check(!bundles["секрет-lead-109"], "пароль не стає ключем bundles");
+      check(countPeopleInUnit(state.report.unit) === 1 && JSON.stringify(state.report.unit).indexOf("Lead109") !== -1, "о/с lead після pull на місці");
+      // Збитий старий стан: reportKey = пароль — normalize повертає на lead.
+      state.reportKey = "секрет-lead-109";
+      bundles["секрет-lead-109"] = bundles["lead"];
+      check(normalizeOwnReportKey() === "lead" && state.reportKey === "lead" && !bundles["секрет-lead-109"], "normalizeOwnReportKey знімає пароль з reportKey");
+      captureBundle("lead");
       state.openCode = child109;
       state.reportRoot = "lead";
-      state.driveEncryptKey = "секрет-тата-109";
+      state.driveEncryptKey = "секрет-lead-109";
       ingestChildUnit(child109, {
-        name: "Дитина 109",
+        name: "Ланка 109",
         code: child109,
         day: todayISO(),
         days: {},
-        unit: { id: "root", name: "Дитина 109", people: [] },
+        unit: { id: "root", name: "Ланка 109", people: [] },
         machines: [],
         tasks: [],
         people: [],
         changes: []
       });
       activateReport(child109);
-      check(driveChildWriteCode() === child109, "відкрита дитина 109 для запису");
-      var parentSnap109 = snapshotFromStoredBundle(canonicalOwnBundleKey("секрет-тата-109"));
-      check(parentSnap109 && JSON.stringify(parentSnap109.unit || {}).indexOf("Papa109") !== -1, "знімок батька з 1rota має о/с тата");
+      check(driveChildWriteCode() === child109, "відкрита unit 109 для запису");
+      var parentSnap109 = snapshotFromStoredBundle(canonicalOwnBundleKey("секрет-lead-109"));
+      check(parentSnap109 && JSON.stringify(parentSnap109.unit || {}).indexOf("Lead109") !== -1, "знімок lead має о/с lead");
       openReportChoice("__general__");
-      check(state.openCode === "lead" && state.reportKey === "1rota" && document.getElementById("people").textContent.indexOf("Papa109") !== -1, "назад у загальний — звіт тата збережений");
+      check(state.openCode === "lead" && state.reportKey === "lead" && document.getElementById("people").textContent.indexOf("Lead109") !== -1, "назад у загальний — звіт lead збережений");
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109;
       });
@@ -9735,7 +9779,7 @@ button.count-toggle {
         state.viewDay = "";
         state.report = {
           name: "Тест",
-          code: "1rota",
+          code: "lead",
           file: SAMPLE_FILE,
           unit: { id: "root", name: "Тест", people: [{ id: "px", name: "A", rank: "Солдат", callsign: "X", accounting: "official", duty: "in", position: "" }] },
           machines: [{ id: "mx", name: "M", type: "lat", board: "1", accounting: "official", duty: "in" }],
@@ -9835,6 +9879,7 @@ button.count-toggle {
     installSample();
     indexPeople(viewUnit());
     load();
+    migrateLegacyRotaKeys();
     root.addEventListener("click", onClick);
     root.addEventListener("keydown", function (event) {
       if (event.key !== "Enter" && event.key !== " ") return;
