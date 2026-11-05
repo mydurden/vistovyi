@@ -6506,7 +6506,7 @@ button.count-toggle {
     var drop = findPerson(dupe.dropId);
     var keepLabel = keep ? (personCallsign(keep) || personName(keep) || dupe.keepId) : dupe.keepId;
     var dropLabel = drop ? (personCallsign(drop) || personName(drop) || dupe.dropId) : dupe.dropId;
-    var overlay = el("div", { className: "overlay", attrs: { id: "merge-dupe-overlay", role: "dialog", "aria-label": "Схожі картки після sync" } });
+    var overlay = el("div", { className: "overlay", attrs: { id: "merge-dupe-overlay", role: "dialog", "aria-label": "Схожі картки після синхронізації" } });
     var sheet = el("div", { className: "overlay-sheet is-compact" });
     sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
     var head = el("div", { className: "card-head" });
@@ -6514,7 +6514,7 @@ button.count-toggle {
     sheet.append(head);
     sheet.append(el("p", {
       className: "hint",
-      text: "Після sync знайдено дві картки з однаковим ПІБ («" + (dupe.label || "без імені") + "»). Що зробити?"
+      text: "Після синхронізації знайдено дві картки зі схожими даними («" + (dupe.label || "без імені") + "»). Що зробити?"
     }));
     sheet.append(el("p", { className: "hint", text: "1: " + keepLabel }));
     sheet.append(el("p", { className: "hint", text: "2: " + dropLabel }));
