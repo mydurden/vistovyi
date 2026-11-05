@@ -6843,8 +6843,43 @@ button.count-toggle {
     check(document.querySelector("#people .frac").getAttribute("data-plus") === "1" && document.querySelector("#people .frac").getAttribute("data-total") === "1", "дріб з нуля 1/1");
     var bakedSnap = currentUnitSnapshot();
     check(bakedSnap && countPeopleInUnit(bakedSnap.unit) === 1 && JSON.stringify(bakedSnap.unit).indexOf("Старт") !== -1, "знімок для Диска містить нову людину з added");
+    // Поки людина ще в added — зміна дати не повинна її з’їсти (зріз дня пече накладки).
+    var keepDay = state.viewDay;
+    var nextDay = shiftISODate(keepDay, 1);
+    document.querySelector("[data-day-shift='1']").click();
+    check(state.viewDay === nextDay, "зі створеною людиною стрілка вперед працює");
+    document.querySelector("[data-day-shift='-1']").click();
+    check(state.viewDay === keepDay, "стрілка назад повертає день зі знімком");
+    render();
+    check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Старт") !== -1 && (state.added.people.some(function (item) { return item && item.callsign === "Старт"; }) || countPeopleInUnit(state.report.unit) >= 1), "після зміни дати людина з added не зникає");
     materializeOverlays();
+    render();
     check(state.added.people.length === 0 && countPeopleInUnit(state.report.unit) === 1 && document.getElementById("people").textContent.indexOf("Старт") !== -1, "запікання переносить людину в unit і чистить added");
+    // Фейковий reload: локальні накладки порожні, підставляємо знімок як після pull свого vu-*.bin.
+    var pulledSnap = currentUnitSnapshot();
+    check(pulledSnap && countPeopleInUnit(pulledSnap.unit) === 1, "знімок після bake готовий до «Диска»");
+    state.added = { people: [], machines: [] };
+    state.edits = { people: {}, machines: {} };
+    state.removed = { people: {}, machines: {} };
+    state.positions = {};
+    state.daysArchive = {};
+    state.report = emptyUnitReport({ name: "", code: "1rota" });
+    state.reportKey = "1rota";
+    state.fileDay = todayISO();
+    state.viewDay = state.fileDay;
+    check(countPeopleInUnit(state.report.unit) === 0 && state.added.people.length === 0, "фейковий reload очистив о/с");
+    check(!!applyOwnUnitSnapshot(pulledSnap, "1rota"), "підстановка знімка як після pull свого файлу");
+    render();
+    check(countPeopleInUnit(state.report.unit) === 1 && document.getElementById("people").textContent.indexOf("Старт") !== -1, "після фейкового reload+pull людина знову видима");
+    // Логіка токена (без живого Google).
+    clearDriveToken();
+    check(!driveTokenValid(), "порожній токен невалідний");
+    rememberDriveToken({ access_token: "tok-test", expires_in: 3600 });
+    check(driveTokenValid() && driveToken === "tok-test", "свіжий токен валідний");
+    driveTokenExpiresAt = Date.now() - 5;
+    check(!driveTokenValid(), "прострочений токен невалідний");
+    clearDriveToken();
+    check(!driveTokenValid() && !driveToken, "clearDriveToken скидає токен");
     document.querySelector("[data-open-calendar]").click();
     var filledToday = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
     check(filledToday && filledToday.classList.contains("has-report"), "день із внесеним о/с темніший");
