@@ -959,6 +959,25 @@ button.count-toggle {
   font-size: 0.95rem;
 }
 
+.changes-open {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.changes-open > span:first-child {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
 .change-list { list-style: none; margin: 8px 0 0; padding: 0; }
 .change-list li {
   padding: 8px 0;
@@ -1084,6 +1103,7 @@ button.count-toggle {
   var KEY = "zvitnist.lead.v1";
   var LEGACY_KEY = "zvitnist.sluzhba.v1";
   var DRIVE_KEY = "zvitnist.drive.v1";
+  var CACHE_KEY = "zvitnist.cache.v1";
 
   var CODES = {
     lead: "all",
@@ -1165,8 +1185,51 @@ button.count-toggle {
   var WEEKDAYS = ["неділя", "понеділок", "вівторок", "середа", "четвер", "п’ятниця", "субота"];
   var WEEKDAY_SHORT = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"];
 
+  function splitLegacyName(full) {
+    var parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+    return {
+      surname: parts[0] || "",
+      givenName: parts[1] || "",
+      patronymic: parts.slice(2).join(" ")
+    };
+  }
+
+  function joinPersonName(parts) {
+    return [parts && parts.surname, parts && parts.givenName, parts && parts.patronymic]
+      .map(function (part) { return String(part || "").trim(); })
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function personInitial(part) {
+    var text = String(part || "").trim();
+    if (!text) return "";
+    return text.charAt(0).toLocaleUpperCase("uk") + ".";
+  }
+
+  function personPipShort(item) {
+    var parts = personNameParts(item);
+    var surname = String(parts.surname || "").trim();
+    var initials = personInitial(parts.givenName) + personInitial(parts.patronymic);
+    if (surname && initials) return surname + " " + initials;
+    if (surname) return surname;
+    return initials || joinPersonName(parts);
+  }
+
   function person(id, name, rank, callsign, accounting, duty, position) {
-    return { id: id, name: name, rank: rank, callsign: callsign, accounting: accounting, duty: duty, position: position };
+    var parts = splitLegacyName(name);
+    return {
+      id: id,
+      name: name,
+      surname: parts.surname,
+      givenName: parts.givenName,
+      patronymic: parts.patronymic,
+      rank: rank,
+      callsign: callsign,
+      accounting: accounting,
+      duty: duty,
+      position: position
+    };
   }
 
   // Порожній стартовий звіт: без зашитих людей, техніки, завдань і назви підрозділу.
@@ -1183,6 +1246,9 @@ button.count-toggle {
       status: true,
       callsign: true,
       name: true,
+      surname: false,
+      givenName: false,
+      patronymic: false,
       rank: true,
       position: true,
       accounting: true,
@@ -1275,7 +1341,8 @@ button.count-toggle {
     fileDay: "",
     daysArchive: {},
     calendarOpen: false,
-    calendarMonth: ""
+    calendarMonth: "",
+    changesOpen: false
   };
 
   var bundles = {};
@@ -1609,9 +1676,13 @@ button.count-toggle {
     var accounting = edit.accounting && ACCOUNTING[edit.accounting]
       ? edit.accounting
       : (ACCOUNTING[item.accounting] ? item.accounting : "official");
+    var parts = personNameParts(item);
     return {
       id: item.id,
-      name: edit.name != null ? edit.name : (item.name || ""),
+      surname: parts.surname,
+      givenName: parts.givenName,
+      patronymic: parts.patronymic,
+      name: joinPersonName(parts),
       rank: edit.rank != null ? edit.rank : (item.rank || ""),
       callsign: edit.callsign != null ? edit.callsign : (item.callsign || ""),
       accounting: accounting,
@@ -1838,11 +1909,20 @@ button.count-toggle {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) target = todayISO();
     if (state.viewDay === target && state.report) return;
     stashViewDay();
-    ensureDaySliceIn(state.daysArchive, target);
-    var slice = state.daysArchive[target];
-    delete state.daysArchive[target];
-    applyDaySliceToState(slice);
-    state.viewDay = target;
+    // Навігація по датах: без rollover чужого дня. Порожня дата = порожній зріз.
+    // Автокопію вчора→сьогодні лишає лише ensureDayRollover через ensureDaySliceIn.
+    if (state.daysArchive[target]) {
+      var slice = state.daysArchive[target];
+      delete state.daysArchive[target];
+      applyDaySliceToState(slice);
+      state.viewDay = target;
+    } else if (!state.viewDay) {
+      // Перше прив’язування дати до вже зібраного звіту (rollover/тест) — не затирати.
+      state.viewDay = target;
+    } else {
+      applyDaySliceToState(null);
+      state.viewDay = target;
+    }
     if (!state.fileDay || target > state.fileDay) state.fileDay = target;
   }
 
@@ -1904,6 +1984,9 @@ button.count-toggle {
       if (key === packed.liveKey) return;
       days[key] = packed.archive[key];
     });
+    // children у знімку — від власника файлу (drive), навіть якщо зараз відкритий підлеглий.
+    // Запис файлу дитини підставляє своїх children окремо в upsertOwnUnitFile.
+    var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
       return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
     }).filter(function (item) { return !!item.code; });
@@ -1911,7 +1994,7 @@ button.count-toggle {
     return {
       version: 2,
       name: String(report.name || state.holder || "").slice(0, 80),
-      code: String(state.driveEncryptKey || "").trim(),
+      code: unitKey,
       day: packed.liveKey,
       unit: live.unit,
       machines: live.machines,
@@ -1920,6 +2003,54 @@ button.count-toggle {
       changes: live.changes || [],
       days: days,
       children: children
+    };
+  }
+
+  function bundleKeyForDriveKey(driveKey) {
+    var key = String(driveKey || "").trim();
+    if (!key) return "";
+    if (key.toLowerCase() === "lead" || key.toLowerCase() === "sluzhba") return "1rota";
+    var unit = findUnitByCode(key);
+    if (unit) return unit.code;
+    var root = String(state.reportRoot || "").trim();
+    if (root) return reportKey(root);
+    return reportKey(key);
+  }
+
+  function snapshotFromStoredBundle(unitKey) {
+    var b = bundles[unitKey];
+    if (!b || !b.report) return null;
+    var day = b.fileDay || b.viewDay || todayISO();
+    var live = null;
+    if (b.daysArchive && b.daysArchive[day]) live = normalizeDaySlice(b.daysArchive[day]);
+    else {
+      live = normalizeDaySlice({
+        unit: b.report.unit,
+        machines: b.report.machines,
+        tasks: b.report.tasks,
+        people: b.report.people,
+        changes: b.changes
+      });
+    }
+    var days = {};
+    Object.keys(b.daysArchive || {}).forEach(function (key) {
+      if (key === day) return;
+      days[key] = normalizeDaySlice(b.daysArchive[key]);
+    });
+    return {
+      version: 2,
+      name: String(b.report.name || "").slice(0, 80),
+      code: String(unitKey || "").trim(),
+      day: day,
+      unit: live.unit,
+      machines: live.machines,
+      tasks: live.tasks,
+      people: live.people,
+      changes: live.changes || [],
+      days: days,
+      children: subordinatesFor(unitKey).map(function (unit) {
+        return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+      }).filter(function (item) { return !!item.code; })
     };
   }
 
@@ -2130,9 +2261,27 @@ button.count-toggle {
     return state.edits.people[id] || {};
   }
 
-  function personName(item) {
+  function personNameParts(item) {
+    if (!item) return { surname: "", givenName: "", patronymic: "" };
     var edit = personEdit(item.id);
-    return edit.name != null ? edit.name : item.name;
+    var hasParts = edit.surname != null || edit.givenName != null || edit.patronymic != null
+      || item.surname != null || item.givenName != null || item.patronymic != null;
+    if (hasParts) {
+      return {
+        surname: edit.surname != null ? edit.surname : String(item.surname || ""),
+        givenName: edit.givenName != null ? edit.givenName : String(item.givenName || ""),
+        patronymic: edit.patronymic != null ? edit.patronymic : String(item.patronymic || "")
+      };
+    }
+    return splitLegacyName(edit.name != null ? edit.name : (item.name || ""));
+  }
+
+  function personName(item) {
+    return joinPersonName(personNameParts(item));
+  }
+
+  function personNamePart(item, field) {
+    return personNameParts(item)[field] || "";
   }
 
   function personRank(item) {
@@ -2294,6 +2443,26 @@ button.count-toggle {
     if (root) return root;
     if (String(state.openCode || "").toLowerCase() === "lead") return "lead";
     return "lead";
+  }
+
+  // Відкритий підлеглий видавця (reportRoot) — можна правити як дитина і писати її файл.
+  function viewingManagedChild() {
+    if (state.scope !== "all") return "";
+    var open = String(state.openCode || "").trim();
+    var root = String(state.reportRoot || "").trim();
+    if (!open || !root) return "";
+    if (open.toLowerCase() === root.toLowerCase()) return "";
+    if (open.toLowerCase() === "lead") return "";
+    var found = subordinatesFor(root).some(function (row) {
+      return row && String(row.code).toLowerCase() === open.toLowerCase();
+    });
+    return found ? open : "";
+  }
+
+  function activeDriveUnitKey() {
+    var child = viewingManagedChild();
+    if (child) return child;
+    return String(state.driveEncryptKey || "").trim();
   }
 
   function unitsOwnedHere() {
@@ -2646,6 +2815,7 @@ button.count-toggle {
     state.viewDay = state.fileDay;
     state.calendarOpen = false;
     state.calendarMonth = monthKeyFromISO(state.viewDay);
+    state.changesOpen = false;
     bundles = {};
   }
 
@@ -2673,6 +2843,124 @@ button.count-toggle {
       fileDay: state.fileDay || todayISO(),
       viewDay: state.viewDay || state.fileDay || todayISO()
     };
+  }
+
+  function buildReportCachePayload() {
+    captureBundle(state.reportKey);
+    var out = {};
+    Object.keys(bundles).forEach(function (key) {
+      var row = bundles[key];
+      if (!row || !row.report) return;
+      out[key] = {
+        edits: cloneData(row.edits || { people: {}, machines: {} }),
+        removed: cloneData(row.removed || { people: {}, machines: {} }),
+        added: cloneData(row.added || { people: [], machines: [] }),
+        positions: cloneData(row.positions || {}),
+        changes: cloneData(row.changes || []),
+        report: cloneData(row.report),
+        daysArchive: cloneData(row.daysArchive || {}),
+        fileDay: row.fileDay || todayISO(),
+        viewDay: row.viewDay || row.fileDay || todayISO()
+      };
+    });
+    return {
+      v: 1,
+      at: new Date().toISOString(),
+      reportKey: state.reportKey || "",
+      openCode: state.openCode || "",
+      reportRoot: state.reportRoot || "",
+      unitReportStatus: cloneData(state.unitReportStatus || {}),
+      bundles: out
+    };
+  }
+
+  function saveReportCache() {
+    try {
+      if (typeof localStorage === "undefined") return false;
+      localStorage.setItem(CACHE_KEY, JSON.stringify(buildReportCachePayload()));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function loadReportCache() {
+    try {
+      if (typeof localStorage === "undefined") return null;
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || !data.bundles || typeof data.bundles !== "object") return null;
+      return data;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function applyReportCache(data) {
+    if (!data || !data.bundles || typeof data.bundles !== "object") return false;
+    var keys = Object.keys(data.bundles);
+    if (!keys.length) return false;
+    keys.forEach(function (key) {
+      var src = data.bundles[key];
+      if (!src || !src.report) return;
+      bundles[key] = {
+        edits: src.edits || { people: {}, machines: {} },
+        removed: src.removed || { people: {}, machines: {} },
+        added: src.added || { people: [], machines: [] },
+        positions: src.positions || {},
+        changes: Array.isArray(src.changes) ? src.changes : [],
+        report: src.report,
+        daysArchive: src.daysArchive || {},
+        fileDay: src.fileDay || todayISO(),
+        viewDay: src.viewDay || src.fileDay || todayISO()
+      };
+    });
+    if (data.unitReportStatus && typeof data.unitReportStatus === "object") {
+      state.unitReportStatus = data.unitReportStatus;
+    }
+    if (typeof data.reportRoot === "string" && data.reportRoot) {
+      state.reportRoot = data.reportRoot.slice(0, 80);
+    }
+    var want = state.reportKey || data.reportKey || "";
+    if (!want || !bundles[want]) {
+      want = keys.filter(function (key) { return !!bundles[key]; })[0] || "";
+    }
+    var saved = want ? bundles[want] : null;
+    if (!saved) return false;
+    state.reportKey = want;
+    state.edits = saved.edits;
+    state.removed = saved.removed;
+    state.added = saved.added;
+    state.positions = saved.positions;
+    state.changes = saved.changes;
+    state.report = saved.report;
+    state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
+    state.fileDay = saved.fileDay || todayISO();
+    state.viewDay = saved.viewDay || state.fileDay;
+    ensureDayRollover();
+    indexPeople(viewUnit());
+    return true;
+  }
+
+  function restoreFromReportCache(note) {
+    if (!applyReportCache(loadReportCache())) return false;
+    state.driveNote = note || "З локального збереження.";
+    render();
+    return true;
+  }
+
+  // Однакова для всіх ланок: спочатку мережа (Drive), інакше локальний знімок.
+  function refreshFromNetworkOrCache() {
+    var folderId = driveFolderId(state.driveFolder);
+    var key = String(state.driveEncryptKey || "").trim();
+    if (!folderId || !key) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      restoreFromReportCache();
+      return;
+    }
+    state.refreshFallback = true;
+    startDriveSync();
   }
 
   function freshOverlays() {
@@ -2913,9 +3201,20 @@ button.count-toggle {
         if (!item || typeof item.id !== "string" || !item.id) return;
         if (typeof item.callsign !== "string" || !item.callsign.trim()) return;
         if (!DUTY[item.duty] || !ACCOUNTING[item.accounting]) return;
+        var nameParts = {
+          surname: String(item.surname || "").slice(0, 80),
+          givenName: String(item.givenName || "").slice(0, 80),
+          patronymic: String(item.patronymic || "").slice(0, 80)
+        };
+        if (!nameParts.surname && !nameParts.givenName && !nameParts.patronymic) {
+          nameParts = splitLegacyName(item.name || item.callsign || "");
+        }
         people.push({
           id: item.id.slice(0, 40),
-          name: String(item.name || item.callsign).slice(0, 80),
+          surname: nameParts.surname,
+          givenName: nameParts.givenName,
+          patronymic: nameParts.patronymic,
+          name: joinPersonName(nameParts) || String(item.name || item.callsign).slice(0, 80),
           rank: String(item.rank || "").slice(0, 80),
           callsign: item.callsign.trim().slice(0, 80),
           accounting: item.accounting,
@@ -2971,6 +3270,8 @@ button.count-toggle {
       }
     } catch (err) {}
     saveDrivePrefs();
+    // ZS-105: кожна зміна лишається локально (офлайн); хмара — лише на sync.
+    saveReportCache();
   }
 
   function loadDutyOverrides(raw) {
@@ -3112,6 +3413,9 @@ button.count-toggle {
       ["status", "Стан"],
       ["callsign", "Позивний"],
       ["name", "ПІП"],
+      ["surname", "Прізвище"],
+      ["givenName", "Ім’я"],
+      ["patronymic", "По батькові"],
       ["rank", "Звання"],
       ["position", "Посада або умовна посада"],
       ["accounting", "Облік"],
@@ -3151,8 +3455,20 @@ button.count-toggle {
       if (rank) line2.push(lowerUa(rank));
     }
     if (fields.name) {
-      var fullName = String(personName(item) || "").trim();
-      if (fullName) line2.push(fullName);
+      var pipShort = String(personPipShort(item) || "").trim();
+      if (pipShort) line2.push(pipShort);
+    }
+    if (fields.surname) {
+      var surnameShown = String(personNamePart(item, "surname") || "").trim();
+      if (surnameShown) line2.push(surnameShown);
+    }
+    if (fields.givenName) {
+      var givenShown = String(personNamePart(item, "givenName") || "").trim();
+      if (givenShown) line2.push(givenShown);
+    }
+    if (fields.patronymic) {
+      var patronymShown = String(personNamePart(item, "patronymic") || "").trim();
+      if (patronymShown) line2.push(patronymShown);
     }
     if (line2.length) main.append(el("span", { className: "pname", text: line2.join(" ") }));
     var line3 = [];
@@ -3455,11 +3771,21 @@ button.count-toggle {
     var card = el("article", { className: "card" + (editable ? " is-editing" : ""), attrs: { id: panelDomId("person:" + item.id) } });
     card.append(cardHead("Картка військовослужбовця", "person", item.id, draftMode));
     if (!draftMode && state.confirm && state.confirm.kind === "person" && state.confirm.id === item.id) card.append(renderConfirmBox());
-    var name = draftMode ? (item.name || "") : pendingValue("person", item.id, "name", personName(item));
+    var parts = draftMode
+      ? { surname: item.surname || "", givenName: item.givenName || "", patronymic: item.patronymic || "" }
+      : personNameParts(item);
+    if (draftMode && !parts.surname && !parts.givenName && !parts.patronymic && item.name) {
+      parts = splitLegacyName(item.name);
+    }
+    var surname = draftMode ? (parts.surname || "") : pendingValue("person", item.id, "surname", parts.surname);
+    var givenName = draftMode ? (parts.givenName || "") : pendingValue("person", item.id, "givenName", parts.givenName);
+    var patronymic = draftMode ? (parts.patronymic || "") : pendingValue("person", item.id, "patronymic", parts.patronymic);
     var rank = draftMode ? (item.rank || "") : pendingValue("person", item.id, "rank", personRank(item));
     var unit = draftMode ? (item.unit || "") : pendingValue("person", item.id, "unit", personUnit(item));
     var call = draftMode ? (item.callsign || "") : pendingValue("person", item.id, "callsign", personCallsign(item));
-    card.append(fieldEditor("ПІП", lockControl(textInput("pip-" + item.id, name, draftMode ? { "data-draft-field": "name" } : editAttrs("person", item.id, "name")), editable)));
+    card.append(fieldEditor("Прізвище", lockControl(textInput("surname-" + item.id, surname, draftMode ? { "data-draft-field": "surname" } : editAttrs("person", item.id, "surname")), editable)));
+    card.append(fieldEditor("Ім’я", lockControl(textInput("given-" + item.id, givenName, draftMode ? { "data-draft-field": "givenName" } : editAttrs("person", item.id, "givenName")), editable)));
+    card.append(fieldEditor("По батькові", lockControl(textInput("patronym-" + item.id, patronymic, draftMode ? { "data-draft-field": "patronymic" } : editAttrs("person", item.id, "patronymic")), editable)));
     card.append(fieldEditor("Звання", lockControl(rankPick("rank-" + item.id, rank, draftMode ? { "data-draft-field": "rank" } : editAttrs("person", item.id, "rank")), editable)));
     card.append(fieldEditor("Підрозділ", lockControl(textInput("unitp-" + item.id, unit, draftMode ? { "data-draft-field": "unit" } : editAttrs("person", item.id, "unit")), editable)));
     card.append(fieldEditor("Позивний", lockControl(textInput("call-" + item.id, call, draftMode ? { "data-draft-field": "callsign" } : editAttrs("person", item.id, "callsign")), editable)));
@@ -3802,7 +4128,10 @@ button.count-toggle {
       { scopes: ["people", "equipment"], term: "Офіційний облік", text: "Записані в штаті підрозділу." },
       { scopes: ["people", "equipment"], term: "Не в офіційному обліку", text: "Є в підрозділі, але в штат не записані." },
       { scopes: ["people", "equipment"], term: "Приданий", text: "Військовослужбовець або машина з іншого підрозділу, тимчасово тут." },
-      { scopes: ["people"], term: "ПІП", text: "Прізвище, ім’я та по батькові." },
+      { scopes: ["people"], term: "ПІП", text: "У списку — прізвище і ініціали імені та по батькові, наприклад Крамаренко Д.С. У картці поля окремі." },
+      { scopes: ["people"], term: "Прізвище", text: "Окреме поле картки. Можна показувати в списку окремо від ПІП." },
+      { scopes: ["people"], term: "Ім’я", text: "Окреме поле картки. У ПІП береться перша літера." },
+      { scopes: ["people"], term: "По батькові", text: "Окреме поле картки. У ПІП береться перша літера." },
       { scopes: ["people"], term: "Умовна посада", text: "Як військовослужбовець сам називає свою роботу. Її вписують у картці, окремо не питають." },
       { scopes: ["people", "equipment"], term: "Шестерня", text: "Позначка, якою обирають, які поля видно." },
       { scopes: ["equipment"], term: "ОВТ", text: "Озброєння та військова техніка." },
@@ -4330,40 +4659,66 @@ button.count-toggle {
     });
   }
 
-  function upsertOwnUnitFile(token, folderId) {
-    var key = String(state.driveEncryptKey || "").trim();
+  function upsertKeyedUnitFile(token, folderId, key, snap) {
     if (!key) return Promise.reject(new Error("nocode"));
     var name = unitDriveFileName(key);
     if (!name) return Promise.reject(new Error("nocode"));
-    materializeOverlays();
     return findNamedFile(token, folderId, name).then(function (file) {
       var preserve = Promise.resolve(null);
       // Не затирати на Диску непорожній children порожнім локальним списком.
-      if (file && file.id && unitsOwnedHere().length === 0) {
+      if (file && file.id && subordinatesFor(key).length === 0) {
         preserve = downloadBinaryFile(token, file.id).then(function (bytes) {
           return decryptWithCode(key, bytes).then(function (text) {
             var raw;
             try { raw = JSON.parse(text); } catch (err) { return null; }
             if (!raw || !Array.isArray(raw.children) || !raw.children.length) return null;
-            mergeChildrenFromSnapshot(raw);
+            if (!viewingManagedChild()) mergeChildrenFromSnapshot(raw);
             return raw.children;
           });
         }).catch(function () { return null; });
       }
       return preserve.then(function (remoteChildren) {
-        var snap = currentUnitSnapshot();
-        if ((!snap.children || !snap.children.length) && remoteChildren && remoteChildren.length) {
-          snap.children = remoteChildren.map(function (item) {
+        var payload = snap ? cloneData(snap) : currentUnitSnapshot();
+        payload.code = key;
+        if ((!payload.children || !payload.children.length) && remoteChildren && remoteChildren.length) {
+          payload.children = remoteChildren.map(function (item) {
             return { name: String(item && item.name || "").slice(0, 80), code: String(item && item.code || "") };
           }).filter(function (item) { return !!item.code; });
         }
-        return encryptWithCode(key, JSON.stringify(snap)).then(function (bytes) {
+        return encryptWithCode(key, JSON.stringify(payload)).then(function (bytes) {
           return uploadBinaryFile(token, folderId, name, bytes, file && file.id).then(function (result) {
-            return { ok: true, name: name, updated: !!(result && result.updated) };
+            return { ok: true, name: name, key: key, updated: !!(result && result.updated) };
           });
         });
       });
     });
+  }
+
+  function upsertOwnUnitFile(token, folderId) {
+    var parentKey = String(state.driveEncryptKey || "").trim();
+    if (!parentKey) return Promise.reject(new Error("nocode"));
+    materializeOverlays();
+    captureBundle(state.reportKey);
+    var child = viewingManagedChild();
+    if (child && child.toLowerCase() !== parentKey.toLowerCase()) {
+      var childSnap = currentUnitSnapshot();
+      childSnap.code = child;
+      childSnap.children = subordinatesFor(child).map(function (unit) {
+        return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+      }).filter(function (item) { return !!item.code; });
+      return upsertKeyedUnitFile(token, folderId, child, childSnap).then(function (childResult) {
+        var parentBundleKey = bundleKeyForDriveKey(parentKey);
+        var parentSnap = snapshotFromStoredBundle(parentBundleKey);
+        if (!parentSnap) {
+          return childResult;
+        }
+        parentSnap.code = parentKey;
+        return upsertKeyedUnitFile(token, folderId, parentKey, parentSnap).then(function () {
+          return childResult;
+        });
+      });
+    }
+    return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
 
   function ingestChildUnit(code, rawJson) {
@@ -4521,9 +4876,15 @@ button.count-toggle {
       }
       state.driveLinked = true;
       state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children, bundle.pulled);
+      state.refreshFallback = false;
       save();
+      saveReportCache();
       render();
     }).catch(function (err) {
+      if (state.refreshFallback) {
+        state.refreshFallback = false;
+        if (restoreFromReportCache()) return;
+      }
       if (err && err.message === "nocode") state.driveNote = "Впишіть код доступу.";
       else state.driveNote = "Мережа не відповіла або файл не розшифрувався.";
       render();
@@ -4578,6 +4939,10 @@ button.count-toggle {
     var folderId = driveFolderId(state.driveFolder);
     if (!folderId) {
       state.driveNote = "";
+      if (state.refreshFallback) {
+        state.refreshFallback = false;
+        if (restoreFromReportCache()) return;
+      }
       render();
       return;
     }
@@ -5221,6 +5586,7 @@ button.count-toggle {
     if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
     if (state.accessChange) parts.push(renderAccessChangeOverlay());
     if (state.calendarOpen) parts.push(renderCalendarOverlay());
+    if (state.changesOpen) parts.push(renderChangesOverlay());
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
     if (pendingScroll) {
@@ -5351,6 +5717,7 @@ button.count-toggle {
     state.machineStatusListOpen = false;
     state.confirm = null;
     state.draft = null;
+    state.changesOpen = false;
     discardEdits();
     state.open.clear();
     save();
@@ -5446,6 +5813,9 @@ button.count-toggle {
     return {
       kind: "person",
       id: "draft",
+      surname: "",
+      givenName: "",
+      patronymic: "",
       name: "",
       rank: "",
       callsign: "",
@@ -5573,9 +5943,20 @@ button.count-toggle {
     if (draft.kind === "person") {
       var place = placeFromUnit(draft.unit) || defaultPersonPlace();
       var personId = newId("np");
+      var draftParts = {
+        surname: draft.surname || "",
+        givenName: draft.givenName || "",
+        patronymic: draft.patronymic || ""
+      };
+      if (!draftParts.surname && !draftParts.givenName && !draftParts.patronymic && draft.name) {
+        draftParts = splitLegacyName(draft.name);
+      }
       state.added.people.push({
         id: personId,
-        name: draft.name || "",
+        surname: draftParts.surname,
+        givenName: draftParts.givenName,
+        patronymic: draftParts.patronymic,
+        name: joinPersonName(draftParts),
         rank: draft.rank || "",
         callsign: draft.callsign || "",
         accounting: draft.accounting || "official",
@@ -5621,6 +6002,9 @@ button.count-toggle {
 
   var FIELD_LABEL = {
     name: "ПІП",
+    surname: "Прізвище",
+    givenName: "Ім’я",
+    patronymic: "По батькові",
     rank: "Звання",
     unit: "Підрозділ",
     callsign: "Позивний",
@@ -5652,6 +6036,9 @@ button.count-toggle {
       var personItem = findPerson(id);
       if (!personItem) return "";
       if (fieldName === "name") return personName(personItem);
+      if (fieldName === "surname" || fieldName === "givenName" || fieldName === "patronymic") {
+        return personNamePart(personItem, fieldName);
+      }
       if (fieldName === "rank") return personRank(personItem);
       if (fieldName === "unit") return personUnit(personItem);
       if (fieldName === "callsign") return personCallsign(personItem);
@@ -5747,13 +6134,36 @@ button.count-toggle {
     if (state.scope !== "all") return null;
     if (!state.changes.length) return null;
     var section = el("section", { className: "block", attrs: { id: "changes", "aria-labelledby": "changes-title" } });
-    section.append(el("h2", { text: "Що змінено", attrs: { id: "changes-title" } }));
+    var btn = el("button", {
+      className: "changes-open",
+      attrs: {
+        type: "button",
+        id: "changes-title",
+        "data-open-changes": "1",
+        "aria-label": "Що змінено, відкрити журнал"
+      }
+    });
+    btn.append(el("span", { text: "Що змінено" }));
+    btn.append(el("span", { className: "meta", text: String(state.changes.length) }));
+    section.append(btn);
+    return section;
+  }
+
+  function renderChangesOverlay() {
+    var overlay = el("div", { className: "overlay", attrs: { id: "changes-overlay", role: "dialog", "aria-label": "Що змінено" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Що змінено" }));
+    head.append(iconButton("x", "Закрити", { "data-close-changes": "1" }));
+    sheet.append(head);
     var list = el("ul", { className: "change-list" });
     state.changes.forEach(function (item) {
       list.append(el("li", { text: item.who + ". " + item.field + ". Було: " + item.before + ". Стало: " + item.after + "." }));
     });
-    section.append(list);
-    return section;
+    sheet.append(list);
+    overlay.append(sheet);
+    return overlay;
   }
 
   function rememberPending(node) {
@@ -5933,6 +6343,22 @@ button.count-toggle {
     } else {
       bucket[id][fieldName] = String(rawControl(node) || "").slice(0, 80);
     }
+    if (kind === "person" && (fieldName === "surname" || fieldName === "givenName" || fieldName === "patronymic" || fieldName === "name")) {
+      var named = findPerson(id) || addedPerson(id);
+      if (named) {
+        var synced = personNameParts(named);
+        bucket[id].surname = synced.surname;
+        bucket[id].givenName = synced.givenName;
+        bucket[id].patronymic = synced.patronymic;
+        bucket[id].name = joinPersonName(synced);
+        if (addedPerson(id)) {
+          named.surname = synced.surname;
+          named.givenName = synced.givenName;
+          named.patronymic = synced.patronymic;
+          named.name = bucket[id].name;
+        }
+      }
+    }
     if (kind === "person" && fieldName === "unit") {
       var personItem = addedPerson(id);
       var place = personItem ? placeFromUnit(bucket[id].unit) : "";
@@ -6078,6 +6504,18 @@ button.count-toggle {
     var closeCalendar = event.target.closest("[data-close-calendar]");
     if (closeCalendar) {
       state.calendarOpen = false;
+      render();
+      return;
+    }
+    var openChanges = event.target.closest("[data-open-changes]");
+    if (openChanges) {
+      state.changesOpen = true;
+      render();
+      return;
+    }
+    var closeChanges = event.target.closest("[data-close-changes]");
+    if (closeChanges) {
+      state.changesOpen = false;
       render();
       return;
     }
@@ -6924,6 +7362,18 @@ button.count-toggle {
     check(!!applyOwnUnitSnapshot(pulledSnap, "1rota"), "підстановка знімка як після pull свого файлу");
     render();
     check(countPeopleInUnit(state.report.unit) === 1 && document.getElementById("people").textContent.indexOf("Старт") !== -1, "після фейкового reload+pull людина знову видима");
+    // ZS-101: заповнений день не тече в сусідній при відкритті стрілкою.
+    var filledDay = state.viewDay;
+    var emptyNeighbor = shiftISODate(filledDay, 1);
+    document.querySelector("[data-day-shift='1']").click();
+    check(state.viewDay === emptyNeighbor, "зі заповненого дня стрілка відкриває сусіда");
+    check(countPeopleInUnit(state.report.unit) === 0 && document.getElementById("people").textContent.indexOf("Старт") === -1, "сусідній день без чужого о/с");
+    document.querySelector("[data-open-calendar]").click();
+    var neighborCell = document.querySelector("#calendar-overlay [data-pick-day='" + emptyNeighbor + "']");
+    check(neighborCell && !neighborCell.classList.contains("has-report"), "порожнє відкриття не фарбує день як заповнений");
+    document.querySelector("[data-close-calendar]").click();
+    document.querySelector("[data-day-shift='-1']").click();
+    check(state.viewDay === filledDay && document.getElementById("people").textContent.indexOf("Старт") !== -1, "назад — свій день зі своїм о/с");
     // Логіка токена (без живого Google).
     clearDriveToken();
     check(!driveTokenValid(), "порожній токен невалідний");
@@ -7235,12 +7685,14 @@ button.count-toggle {
     check(!text("people").includes("Романюк"), "чуже відділення не змішане");
     var bondar = document.querySelector("[data-toggle='person:p1']");
     check(!!bondar && bondar.querySelector(".call") && bondar.querySelector(".call").textContent === "Клен", "позивний окремим рядком");
-    check(bondar && bondar.textContent.indexOf("командир відділення сержант Бондар Андрій Петрович") !== -1, "посада звання піп малими, ім’я як є");
+    check(bondar && bondar.textContent.indexOf("командир відділення сержант Бондар А.П.") !== -1, "посада звання і ПІП-скорочення");
+    check(bondar && bondar.textContent.indexOf("Бондар Андрій Петрович") === -1, "повне ПІП не дублюється коли увімкнено скорочення");
     check(bondar && bondar.textContent.indexOf("1 відділення 1 взвод 1 рота · офіційний облік") !== -1, "підрозділ і облік через крапку");
     check(bondar && bondar.textContent.indexOf("відділення ·") === -1 && bondar.textContent.indexOf("взвод ·") === -1, "без крапок між ланками");
     toggle("person:p4");
     var personCard = text("panel-person-p4");
-    check(personCard.includes("ПІП") && personCard.includes("Звання") && personCard.includes("Підрозділ") && personCard.includes("Позивний") && personCard.includes("Посада"), "поля картки");
+    check(personCard.includes("Прізвище") && personCard.includes("Ім’я") && personCard.includes("По батькові") && personCard.includes("Звання") && personCard.includes("Підрозділ") && personCard.includes("Позивний") && personCard.includes("Посада"), "поля картки");
+    check(document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор" && document.getElementById("patronym-p4").value === "Васильович", "картка розкладає ПІП на три поля");
     var rank = document.getElementById("rank-p4");
     var rankNext = document.getElementById("unitp-p4");
     var rankCard = document.getElementById("panel-person-p4");
@@ -7258,7 +7710,7 @@ button.count-toggle {
     check(rankNext.offsetTop === rankTop && rankCard.scrollHeight === rankH && document.documentElement.scrollHeight === rankPage && rankList && (layerPos(rankList) === "fixed" || layerPos(rankList) === "absolute"), "список звання поверх, без зсуву поля");
     rank.querySelector("[data-pick-value='Капітан']").click();
     check(!rank.classList.contains("is-open") && rank.getAttribute("data-value") === "Солдат", "до олівця вибір не змінює звання");
-    check(document.getElementById("pip-p4").tagName === "INPUT" && document.getElementById("unitp-p4").tagName === "INPUT" && document.getElementById("call-p4").tagName === "INPUT" && document.getElementById("post-p4").tagName === "INPUT", "інші поля картки без змін");
+    check(document.getElementById("surname-p4").tagName === "INPUT" && document.getElementById("given-p4").tagName === "INPUT" && document.getElementById("patronym-p4").tagName === "INPUT" && document.getElementById("unitp-p4").tagName === "INPUT" && document.getElementById("call-p4").tagName === "INPUT" && document.getElementById("post-p4").tagName === "INPUT", "інші поля картки без змін");
     check(rank.classList.contains("is-locked"), "до олівця поле закрите");
     var accountPick = document.getElementById("account-p4");
     var accountCard = document.getElementById("panel-person-p4");
@@ -7285,53 +7737,58 @@ button.count-toggle {
       return color === "rgb(255, 255, 255)";
     }
     var paperPaint = "rgb(251, 248, 243)";
-    var pipNode = document.getElementById("pip-p4");
+    var pipNode = document.getElementById("surname-p4");
     var callNode = document.getElementById("call-p4");
     var personPanel = document.getElementById("panel-person-p4");
     check(paint(document.getElementById("people")) === paperPaint, "блок списку #fbf8f3");
-    check(paint(pipNode) === paperPaint && paint(callNode) === paperPaint && paint(rank.querySelector(".pick-current")) === paperPaint, "до правки піп, позивний і звання #fbf8f3");
+    check(paint(pipNode) === paperPaint && paint(callNode) === paperPaint && paint(rank.querySelector(".pick-current")) === paperPaint, "до правки прізвище, позивний і звання #fbf8f3");
     check(paint(pipNode) !== "rgb(231, 225, 214)" && !brightYellow(paint(pipNode)), "поле не #e7e1d6 і не яскраво-жовте");
     check(whitePaint(paint(personPanel)), "до правки картка біла");
     check(paint(personPanel.querySelector(".tool-pencil")) !== paperPaint && paint(document.querySelector("#people [data-add='person']")) !== paperPaint && paint(document.querySelector("#people [data-toggle='gear:people']")) !== paperPaint, "іконки без паперу");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
-    pipNode = document.getElementById("pip-p4");
+    pipNode = document.getElementById("surname-p4");
     callNode = document.getElementById("call-p4");
     personPanel = document.getElementById("panel-person-p4");
     check(whitePaint(paint(pipNode)) && whitePaint(paint(callNode)) && whitePaint(paint(document.getElementById("rank-p4").querySelector(".pick-current"))), "після початку правки поля білі");
     check(paint(personPanel) === paperPaint && paint(personPanel) !== "rgb(231, 225, 214)", "після початку правки картка #fbf8f3");
     var pipTry = pipNode;
-    pipTry.value = "Чужий запис";
+    pipTry.value = "Чужий";
     pipTry.dispatchEvent(new Event("input", { bubbles: true }));
     toggle("person:p4");
-    check(!state.edits.people.p4 || state.edits.people.p4.name !== "Чужий запис", "закриття без галочки не пише");
+    check(!state.edits.people.p4 || state.edits.people.p4.surname !== "Чужий", "закриття без галочки не пише");
     toggle("person:p4");
-    check(document.getElementById("pip-p4").value === "Мельник Ігор Васильович", "поле повернулось");
+    check(document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор", "поля повернулись");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     chooseRank("rank-p4", "Капітан");
     var post = document.getElementById("post-p4");
     post.value = "Водій групи";
     post.dispatchEvent(new Event("input", { bubbles: true }));
-    var pip = document.getElementById("pip-p4");
-    pip.value = "Тест ПІП";
+    var pip = document.getElementById("surname-p4");
+    pip.value = "Тестов";
     pip.dispatchEvent(new Event("input", { bubbles: true }));
     check(!state.edits.people.p4 || state.edits.people.p4.rank !== "Капітан", "до галочки звання не записане");
     check(!state.positions.p4, "до галочки посада не записана");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     check(state.edits.people.p4 && state.edits.people.p4.rank === "Капітан", "звання зберігається");
-    check(document.getElementById("day-nav") && text("changes-title") === "Що змінено", "після запису дата лишається і з’являється що змінено");
+    check(document.getElementById("day-nav") && document.getElementById("changes-title") && document.getElementById("changes-title").textContent.indexOf("Що змінено") !== -1, "після запису дата лишається і з’являється що змінено");
     check(document.getElementById("day-nav").offsetTop < document.getElementById("changes").offsetTop && document.getElementById("changes").offsetTop < document.getElementById("tasks").offsetTop, "дата над змінами над завданнями");
-    check(document.getElementById("changes").textContent.indexOf("Було:") !== -1 && document.getElementById("changes").textContent.indexOf("Стало:") !== -1, "запис було і стало над завданнями");
+    check(document.getElementById("changes").textContent.indexOf("Було:") === -1 && !document.getElementById("changes-overlay"), "на звіті журнал згорнутий без повного логу");
+    document.querySelector("[data-open-changes]").click();
+    check(!!document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf("Було:") !== -1 && document.getElementById("changes-overlay").textContent.indexOf("Стало:") !== -1, "клік відкриває оверлей з повним логом");
+    document.querySelector("[data-close-changes]").click();
+    check(!document.getElementById("changes-overlay"), "закриття ховає журнал змін");
     check(!localStorage.getItem("zvitnist.lead.v1"), "звання не в пам’яті браузера");
     check(state.positions.p4 === "Водій групи", "посада зберігається");
-    check(state.edits.people.p4 && state.edits.people.p4.name === "Тест ПІП", "піп змінюється");
+    check(state.edits.people.p4 && state.edits.people.p4.surname === "Тестов" && state.edits.people.p4.name === "Тестов Ігор Васильович", "прізвище змінюється і збирає name");
     check(!!document.querySelector("#panel-person-p4 [data-remove='person:p4']"), "створювач видаляє картку");
     check(!!document.querySelector("#people [data-add='person']") && !!document.querySelector("#equipment [data-add='machine']"), "плюс біля шестерень");
     check(!document.getElementById("add-person-form") && !document.getElementById("add-machine-form") && !document.getElementById("add-person-name") && !document.getElementById("add-machine-name"), "немає коротких полів додавання");
     check(document.getElementById("app").textContent.indexOf("Додати військовослужбовця") === -1 && document.getElementById("app").textContent.indexOf("Додати машину") === -1, "немає старих кнопок додавання");
-    ["Коротке ім’я для зв’язку", "Впишіть самі. Окремо посаду ніхто не питає.", "Прізвище, ім’я та по батькові.", "Входить у верхнє число", "У штаті підрозділу."].forEach(function (caption) {
+    ["Коротке ім’я для зв’язку", "Впишіть самі. Окремо посаду ніхто не питає.", "Входить у верхнє число", "У штаті підрозділу."].forEach(function (caption) {
       check(personCard.indexOf(caption) === -1, "картка людини без підпису: " + caption);
     });
     toggle("gear:people");
+    check(!!document.querySelector("[data-gear='people'][data-field='surname']") && !!document.querySelector("[data-gear='people'][data-field='givenName']") && !!document.querySelector("[data-gear='people'][data-field='patronymic']"), "шестерня має окремі поля імені");
     check(text("panel-gear-people").indexOf("Можна лишити") === -1 && text("panel-gear-people").toLowerCase().indexOf("коротке ім’я для зв’язку") === -1, "шестерня без пояснень");
     var nameBox = document.querySelector("[data-gear='people'][data-field='name']");
     nameBox.checked = false;
@@ -7455,14 +7912,14 @@ button.count-toggle {
     document.querySelector("[data-toggle='person:p4']") && document.querySelector("[data-toggle='person:p4']").click();
     if (document.querySelector("#panel-person-p4 [data-edit-card='person:p4']")) {
       document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
-      var pipNarrow = document.getElementById("pip-p4");
+      var pipNarrow = document.getElementById("surname-p4");
       if (pipNarrow) {
-        pipNarrow.value = "Інше ПІП";
+        pipNarrow.value = "Інше";
         pipNarrow.dispatchEvent(new Event("input", { bubbles: true }));
         var changesAtNarrow = state.changes.length;
         document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
-        check(state.edits.people.p4 && state.edits.people.p4.name === "Інше ПІП", "грант може правити картку");
-        check(state.changes.length === changesAtNarrow && !state.changes.some(function (item) { return item.after === "Інше ПІП"; }), "грант не пише запис зміни");
+        check(state.edits.people.p4 && state.edits.people.p4.surname === "Інше", "грант може правити картку");
+        check(state.changes.length === changesAtNarrow && !state.changes.some(function (item) { return item.after === "Інше"; }), "грант не пише запис зміни");
       }
     }
     applyCode("tekhnika");
@@ -7494,8 +7951,9 @@ button.count-toggle {
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     var serviceLine = "1 рота. Звання. Було: Капітан. Стало: Майор.";
     check(state.changes.length === journalBefore + 1, "галочка додає один запис");
-    check(document.getElementById("app").textContent.indexOf(serviceLine) !== -1, "запис видно у вікні");
-    check(document.getElementById("changes") && document.getElementById("changes").textContent.indexOf(serviceLine) !== -1, "запис у списку змін");
+    document.querySelector("[data-open-changes]").click();
+    check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceLine) !== -1, "запис видно у вікні журналу");
+    document.querySelector("[data-close-changes]").click();
     check(state.changes.some(function (item) { return item.who === "1 рота" && item.before === "Капітан" && item.after === "Майор"; }), "запис у звіті роти");
     check(!localStorage.getItem("zvitnist.lead.v1"), "журнал не в пам’яті браузера");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
@@ -7688,9 +8146,10 @@ button.count-toggle {
     chooseRank("rank-p4", "Генерал");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     var serviceWho = "Служба. Звання. Було: Майор. Стало: Генерал.";
-    check(document.getElementById("app").textContent.indexOf(serviceWho) !== -1, "запис служби називає службу");
-    check(document.getElementById("changes").textContent.indexOf(serviceWho) !== -1, "хто у списку змін — служба");
-    check(document.getElementById("app").textContent.indexOf("1 рота. Звання. Було: Підполковник.") === -1, "цей запис не від роти");
+    document.querySelector("[data-open-changes]").click();
+    check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceWho) !== -1, "запис служби називає службу");
+    check(document.getElementById("changes-overlay").textContent.indexOf("1 рота. Звання. Було: Підполковник.") === -1, "цей запис не від роти");
+    document.querySelector("[data-close-changes]").click();
     check(state.changes.some(function (item) { return item.who === "Служба" && item.after === "Генерал"; }), "запис служби у звіті");
     check(!localStorage.getItem("zvitnist.lead.v1") || localStorage.getItem("zvitnist.lead.v1").indexOf("Бондар") === -1, "люди звіту не в пам’яті браузера");
     var peoplePlus = document.querySelector("#people [data-add='person']");
@@ -7758,13 +8217,13 @@ button.count-toggle {
     check(!state.removed.people.p4, "до підтвердження картка на місці");
     var removeP4Again = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
     if (removeP4Again) removeP4Again.click();
-    check(!state.removed.people.p4 && !!document.getElementById("pip-p4") && !document.getElementById("confirm-ask") && document.getElementById("app").textContent.indexOf("В архів картку «Сокіл»?") === -1, "другий хрестик закриває без видалення");
+    check(!state.removed.people.p4 && !!document.getElementById("surname-p4") && !document.getElementById("confirm-ask") && document.getElementById("app").textContent.indexOf("В архів картку «Сокіл»?") === -1, "другий хрестик закриває без видалення");
     var removeP4Ask = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
     if (removeP4Ask) removeP4Ask.click();
     check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("В архів картку «Сокіл»?") !== -1, "перший хрестик знову питає");
     var cancelDelete = document.querySelector("[data-cancel-delete]");
     if (cancelDelete) cancelDelete.click();
-    check(!state.removed.people.p4 && !!document.getElementById("pip-p4") && !document.getElementById("confirm-ask"), "скасування не видаляє");
+    check(!state.removed.people.p4 && !!document.getElementById("surname-p4") && !document.getElementById("confirm-ask"), "скасування не видаляє");
     var afterCancel = document.querySelector("#people .frac");
     check(afterCancel && afterCancel.getAttribute("data-plus") === "14" && afterCancel.getAttribute("data-total") === "18", "дріб після скасування");
     var squadBefore = document.querySelectorAll("#panel-unit-s1 [data-toggle^='person:']").length;
@@ -7783,8 +8242,8 @@ button.count-toggle {
     newRank.querySelector("[data-pick-toggle]").click();
     check(!!newRank.querySelector(".pick-group") && newRank.textContent.indexOf("Рядовий склад") !== -1, "у вікні групи звань");
     newRank.querySelector("[data-pick-toggle]").click();
-    check(!!document.getElementById("pip-draft") && !!document.getElementById("unitp-draft") && !!document.getElementById("call-draft") && !!document.getElementById("post-draft"), "у вікні повна картка");
-    check(!document.getElementById("pip-draft").disabled, "нове вікно одразу можна заповнити");
+    check(!!document.getElementById("surname-draft") && !!document.getElementById("given-draft") && !!document.getElementById("patronym-draft") && !!document.getElementById("unitp-draft") && !!document.getElementById("call-draft") && !!document.getElementById("post-draft"), "у вікні повна картка");
+    check(!document.getElementById("surname-draft").disabled, "нове вікно одразу можна заповнити");
     checkTitleIcons(document.getElementById("card-overlay"), "Картка військовослужбовця");
     checkOverlayFrame();
     checkWorkWidth("картка");
@@ -7821,7 +8280,7 @@ button.count-toggle {
     check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("В архів картку «Буревій»?") !== -1, "підтвердження називає нову картку");
     var cancelCreated = document.querySelector("[data-cancel-delete]");
     if (cancelCreated) cancelCreated.click();
-    check(!state.removed.people[createdPerson.id] && !!document.getElementById("pip-" + createdPerson.id), "скасування лишає збережену картку");
+    check(!state.removed.people[createdPerson.id] && !!document.getElementById("surname-" + createdPerson.id), "скасування лишає збережену картку");
     if (!state.open.has("person:" + createdPerson.id)) toggle("person:" + createdPerson.id);
     var removeCreatedAgain = document.querySelector("[data-remove='person:" + createdPerson.id + "']");
     if (removeCreatedAgain) removeCreatedAgain.click();
@@ -8133,6 +8592,105 @@ button.count-toggle {
         });
       });
     }).then(function () {
+      // ZS-99: локальний кеш звітів (свій + діти) після sync / для офлайн reload.
+      try { localStorage.removeItem(CACHE_KEY); } catch (errCache) {}
+      var childCacheCode = "CHILD99CACHE";
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== childCacheCode; });
+      state.units.push({ id: "u99cache", name: "Дитина кеш", code: childCacheCode, parent: "lead" });
+      check(ingestChildUnit(childCacheCode, {
+        name: "Дитина кеш",
+        code: childCacheCode,
+        day: todayISO(),
+        days: {},
+        unit: {
+          id: "root",
+          name: "Дитина кеш",
+          people: [{ id: "c99", name: "Кешований Тест", rank: "Солдат", callsign: "Кеш", accounting: "official", duty: "in", position: "" }]
+        },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: []
+      }), "ingest дитини для кешу");
+      check(!!bundles[childCacheCode] && countPeopleInUnit(bundles[childCacheCode].report.unit) === 1, "дитина в bundles після ingest");
+      check(saveReportCache() && !!localStorage.getItem(CACHE_KEY), "знімки записані в zvitnist.cache.v1");
+      bundles = {};
+      state.report = emptyUnitReport({ name: "", code: "1rota" });
+      state.reportKey = "1rota";
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      check(!bundles[childCacheCode], "після «reload» bundles порожні");
+      check(applyReportCache(loadReportCache()) && !!bundles[childCacheCode], "applyReportCache відновлює bundles");
+      check(countPeopleInUnit(bundles[childCacheCode].report.unit) === 1 && JSON.stringify(bundles[childCacheCode].report).indexOf("Кеш") !== -1, "о/с дитини з локального кешу");
+      var onlineBefore = navigator.onLine;
+      try {
+        Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return false; } });
+      } catch (errOnline) {}
+      bundles = {};
+      state.driveFolder = "https://drive.google.com/drive/folders/cacheFolder99";
+      state.driveEncryptKey = "lead";
+      refreshFromNetworkOrCache();
+      check(!!bundles[childCacheCode] && state.driveNote.indexOf("локального") !== -1, "офлайн refreshFromNetworkOrCache бере кеш");
+      try {
+        Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return onlineBefore; } });
+      } catch (errOnline2) {}
+      try { localStorage.removeItem(CACHE_KEY); } catch (errCache2) {}
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== childCacheCode; });
+      delete state.unitReportStatus[childCacheCode];
+      state.refreshFallback = false;
+      state.driveFolder = "";
+      state.driveEncryptKey = "";
+      state.driveNote = "";
+      // ZS-105: save() сам пише локальний кеш без Drive sync.
+      try { localStorage.removeItem(CACHE_KEY); } catch (err105a) {}
+      state.reportKey = "1rota";
+      state.report = emptyUnitReport({ name: "Авто", code: "1rota" });
+      state.added = {
+        people: [{ id: "np105", name: "Авто Збереженко", surname: "Збереженко", givenName: "Авто", patronymic: "", rank: "Солдат", callsign: "Автокеш", accounting: "official", duty: "in", position: "", place: "root" }],
+        machines: []
+      };
+      state.edits = { people: {}, machines: {} };
+      save();
+      check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Автокеш") !== -1, "save() пише звіт у zvitnist.cache.v1");
+      bundles = {};
+      state.added = { people: [], machines: [] };
+      state.report = emptyUnitReport({ name: "", code: "1rota" });
+      check(applyReportCache(loadReportCache()) && ((state.added.people || []).some(function (item) { return item && item.callsign === "Автокеш"; }) || JSON.stringify(state.report || {}).indexOf("Автокеш") !== -1 || JSON.stringify(bundles["1rota"] || {}).indexOf("Автокеш") !== -1), "після reload з кешу правка на місці");
+      try { localStorage.removeItem(CACHE_KEY); } catch (err105b) {}
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      // ZS-103: видавець відкрив дитину — знімок/ключ для Диска = код дитини.
+      var child103 = "CHILD103EDIT";
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child103; });
+      state.units.push({ id: "u103", name: "Дитина 103", code: child103, parent: "lead" });
+      state.reportRoot = "lead";
+      state.openCode = child103;
+      state.scope = "all";
+      state.holder = "Дитина 103";
+      state.driveEncryptKey = "секрет-видавця";
+      ingestChildUnit(child103, {
+        name: "Дитина 103",
+        code: child103,
+        day: todayISO(),
+        days: {},
+        unit: { id: "root", name: "Дитина 103", people: [{ id: "c103", name: "Дитячий Тест", rank: "Солдат", callsign: "Лис", accounting: "official", duty: "in", position: "" }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: []
+      });
+      activateReport(child103);
+      check(viewingManagedChild() === child103, "viewingManagedChild бачить відкриту дитину видавця");
+      check(activeDriveUnitKey() === child103, "activeDriveUnitKey = код дитини");
+      var childSnap103 = currentUnitSnapshot();
+      check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с дитини");
+      check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл дитини ≠ файл видавця");
+      state.openCode = "lead";
+      state.holder = "Служба";
+      state.driveEncryptKey = "";
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== child103; });
+      delete state.unitReportStatus[child103];
+      delete bundles[child103];
       // Rollover: вчора → архів, новий день копіює о/с і плани.
       var yesterday = shiftISODate(todayISO(), -1);
       state.daysArchive = {};
@@ -8281,6 +8839,7 @@ button.count-toggle {
       }
     } else render();
     if (params.get("test") === "1") runSelfTest();
+    else refreshFromNetworkOrCache();
     if ((location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1") && typeof navigator !== "undefined" && navigator.serviceWorker) {
       var swRefreshing = false;
       navigator.serviceWorker.addEventListener("controllerchange", function () {
