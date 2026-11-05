@@ -2119,7 +2119,10 @@ button.count-toggle {
     // Запис файлу дитини підставляє своїх children окремо в upsertOwnUnitFile.
     var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
-      return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+      var code = String(unit.code || "");
+      var label = preferUnitName(unit.name, unitNameFromBundle(code));
+      if (label && unit.name !== label) unit.name = label;
+      return { name: String(label || unit.name || "").slice(0, 80), code: code };
     }).filter(function (item) { return !!item.code; });
     var report = state.report || sampleReportDocument();
     return {
@@ -2180,7 +2183,10 @@ button.count-toggle {
       changes: live.changes || [],
       days: days,
       children: subordinatesFor(unitKey).map(function (unit) {
-        return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+        var code = String(unit.code || "");
+        var label = preferUnitName(unit.name, unitNameFromBundle(code));
+        if (label && unit.name !== label) unit.name = label;
+        return { name: String(label || unit.name || "").slice(0, 80), code: code };
       }).filter(function (item) { return !!item.code; })
     };
   }
@@ -2222,16 +2228,34 @@ button.count-toggle {
     ensureDayRollover();
   }
 
+  // ZS-117: підтягувати/лікувати назви ланок з children[] папи (і з bundle, якщо є).
+  function unitNameFromBundle(code) {
+    var b = bundles[code];
+    if (!b || !b.report) return "";
+    return String(b.report.name || "").trim().slice(0, 80);
+  }
+
   function mergeChildrenFromSnapshot(raw) {
     if (!raw || !Array.isArray(raw.children)) return;
     var parentKey = fileOwnerKey();
     raw.children.forEach(function (item) {
       if (!item || !item.code) return;
       var code = String(item.code).trim();
-      if (!code || findUnitByCode(code)) return;
+      if (!code) return;
+      var incoming = String(item.name || "").trim().slice(0, 80);
+      var bundleName = unitNameFromBundle(code);
+      var existing = findUnitByCode(code);
+      if (existing) {
+        var healed = preferUnitName(existing.name, incoming);
+        healed = preferUnitName(healed, bundleName);
+        if (healed) existing.name = healed;
+        if (!existing.parent && parentKey) existing.parent = parentKey;
+        return;
+      }
+      var seed = preferUnitName(incoming, bundleName);
       state.units.push({
         id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36) + Math.floor(Math.random() * 36).toString(36),
-        name: String(item.name || "Підрозділ").slice(0, 80),
+        name: String(seed || "Підрозділ").slice(0, 80),
         code: code,
         parent: parentKey
       });
@@ -5245,7 +5269,10 @@ button.count-toggle {
       var childSnap = currentUnitSnapshot();
       childSnap.code = child;
       childSnap.children = subordinatesFor(child).map(function (unit) {
-        return { name: String(unit.name || "").slice(0, 80), code: String(unit.code || "") };
+        var childCode = String(unit.code || "");
+        var label = preferUnitName(unit.name, unitNameFromBundle(childCode));
+        if (label && unit.name !== label) unit.name = label;
+        return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
       }).filter(function (item) { return !!item.code; });
       return upsertKeyedUnitFile(token, folderId, child, childSnap).then(function (childResult) {
         normalizeOwnReportKey();
@@ -8271,6 +8298,21 @@ button.count-toggle {
       changes: []
     });
     check(state.units[0].name === "Туз", "ingest «Підрозділ» не затирає Туз");
+    // ZS-117: mergeChildren лікує локальне «Підрозділ» з children папи.
+    var code117 = state.units[0].code;
+    state.units[0].name = "Підрозділ";
+    mergeChildrenFromSnapshot({ children: [{ code: code117, name: "Туз" }] });
+    check(state.units[0].name === "Туз", "mergeChildren підтягує Туз з children");
+    document.querySelector("[data-close-profile]").click();
+    applyCode("lead");
+    state.reportRoot = "lead";
+    render();
+    var switch117 = document.getElementById("report-switch");
+    check(!!switch117, "є перемикач звітів папи");
+    switch117.querySelector("[data-pick-toggle]").click();
+    check(switch117.textContent.indexOf("Туз") !== -1 && !!document.querySelector("#report-switch [data-open-unit='" + code117 + "']"), "у списку звітів папи є Туз");
+    switch117.querySelector("[data-pick-toggle]").click();
+    document.querySelector("[data-open-profile]").click();
     var changeAccessBtn = document.querySelector("#profile-overlay [data-change-access]");
     check(!!changeAccessBtn && changeAccessBtn.textContent === "Змінити доступ" && getComputedStyle(changeAccessBtn).textDecorationLine.indexOf("underline") === -1, "кнопка Змінити доступ у стилі профілю");
     changeAccessBtn.click();
