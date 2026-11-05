@@ -1144,6 +1144,31 @@ button.count-toggle {
   var LEGACY_KEY = "zvitnist.sluzhba.v1";
   var DRIVE_KEY = "zvitnist.drive.v1";
   var CACHE_KEY = "zvitnist.cache.v1";
+  var MERGE_BASE_KEY = "zvitnist.merge.base.v1";
+  var PERSON_MERGE_FIELDS = ["surname", "givenName", "patronymic", "name", "rank", "callsign", "unit", "accounting", "duty", "position"];
+  var MACHINE_MERGE_FIELDS = ["type", "name", "board", "accounting", "duty", "mileage", "hours", "service"];
+  var PERSON_FIELD_LABELS = {
+    surname: "Прізвище",
+    givenName: "Ім’я",
+    patronymic: "По батькові",
+    name: "ПІБ",
+    rank: "Звання",
+    callsign: "Позивний",
+    unit: "Підрозділ",
+    accounting: "Облік",
+    duty: "Стан",
+    position: "Посада"
+  };
+  var MACHINE_FIELD_LABELS = {
+    type: "Тип",
+    name: "Назва",
+    board: "Борт",
+    accounting: "Облік",
+    duty: "Стан",
+    mileage: "Пробіг",
+    hours: "Мотогодини",
+    service: "Останнє ТО"
+  };
 
   var CODES = {
     lead: "all"
@@ -1383,7 +1408,9 @@ button.count-toggle {
     daysArchive: {},
     calendarOpen: false,
     calendarMonth: "",
-    changesOpen: false
+    changesOpen: false,
+    mergeConflicts: [],
+    removedAt: { people: {}, machines: {} }
   };
 
   var bundles = {};
@@ -1814,6 +1841,10 @@ button.count-toggle {
     return found;
   }
 
+  function stampNow() {
+    return new Date().toISOString();
+  }
+
   function bakedPersonFields(item) {
     var edit = personEdit(item.id);
     var dutyMapNow = dutyMap();
@@ -1825,7 +1856,10 @@ button.count-toggle {
       : (ACCOUNTING[item.accounting] ? item.accounting : "official");
     var parts = personNameParts(item);
     var unitText = edit.unit != null ? edit.unit : (item.unit != null ? item.unit : "");
-    return {
+    var position = Object.prototype.hasOwnProperty.call(state.positions, item.id)
+      ? String(state.positions[item.id] || "")
+      : String(item.position || "");
+    var out = {
       id: item.id,
       surname: parts.surname,
       givenName: parts.givenName,
@@ -1836,10 +1870,20 @@ button.count-toggle {
       unit: String(unitText || "").slice(0, 80),
       accounting: accounting,
       duty: duty,
-      position: Object.prototype.hasOwnProperty.call(state.positions, item.id)
-        ? String(state.positions[item.id] || "")
-        : String(item.position || "")
+      position: position,
+      updatedAt: item.updatedAt || null,
+      fieldsUpdatedAt: item.fieldsUpdatedAt && typeof item.fieldsUpdatedAt === "object" ? cloneData(item.fieldsUpdatedAt) : {}
     };
+    var touched = Object.keys(edit || {});
+    if (Object.prototype.hasOwnProperty.call(state.positions, item.id)) touched.push("position");
+    if (touched.length) {
+      var ts = stampNow();
+      out.updatedAt = ts;
+      touched.forEach(function (field) {
+        if (PERSON_MERGE_FIELDS.indexOf(field) !== -1) out.fieldsUpdatedAt[field] = ts;
+      });
+    }
+    return out;
   }
 
   function bakedMachineFields(item) {
@@ -1853,7 +1897,7 @@ button.count-toggle {
       : (ACCOUNTING[item.accounting] ? item.accounting : "official");
     var typeId = item.type;
     if (edit.type != null) typeId = resolveMachineTypeId(edit.type);
-    return {
+    var out = {
       id: item.id,
       type: typeId,
       name: edit.name != null ? edit.name : (item.name || ""),
@@ -1862,8 +1906,19 @@ button.count-toggle {
       duty: duty,
       mileage: Object.prototype.hasOwnProperty.call(edit, "mileage") ? edit.mileage : (item.mileage == null ? null : item.mileage),
       hours: Object.prototype.hasOwnProperty.call(edit, "hours") ? edit.hours : (item.hours == null ? null : item.hours),
-      service: Object.prototype.hasOwnProperty.call(edit, "service") ? edit.service : String(item.service || "")
+      service: Object.prototype.hasOwnProperty.call(edit, "service") ? edit.service : String(item.service || ""),
+      updatedAt: item.updatedAt || null,
+      fieldsUpdatedAt: item.fieldsUpdatedAt && typeof item.fieldsUpdatedAt === "object" ? cloneData(item.fieldsUpdatedAt) : {}
     };
+    var touched = Object.keys(edit || {});
+    if (touched.length) {
+      var ts = stampNow();
+      out.updatedAt = ts;
+      touched.forEach(function (field) {
+        if (MACHINE_MERGE_FIELDS.indexOf(field) !== -1) out.fieldsUpdatedAt[field] = ts;
+      });
+    }
+    return out;
   }
 
   // Знімок дня з накладками added/edits (без зміни живого state).
@@ -2143,6 +2198,24 @@ button.count-toggle {
       return { name: String(label || unit.name || "").slice(0, 80), code: code };
     }).filter(function (item) { return !!item.code; });
     var report = state.report || sampleReportDocument();
+    var removedPeople = Object.keys(state.removed.people || {}).filter(function (id) {
+      return !!state.removed.people[id];
+    }).map(function (id) {
+      return {
+        id: id,
+        removed: true,
+        updatedAt: (state.removedAt && state.removedAt.people && state.removedAt.people[id]) || stampNow()
+      };
+    });
+    var removedMachines = Object.keys(state.removed.machines || {}).filter(function (id) {
+      return !!state.removed.machines[id];
+    }).map(function (id) {
+      return {
+        id: id,
+        removed: true,
+        updatedAt: (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || stampNow()
+      };
+    });
     return {
       version: 2,
       name: String(report.name || state.holder || "").slice(0, 80),
@@ -2154,7 +2227,9 @@ button.count-toggle {
       people: live.people,
       changes: live.changes || [],
       days: days,
-      children: children
+      children: children,
+      removedPeople: removedPeople,
+      removedMachines: removedMachines
     };
   }
 
@@ -5325,6 +5400,332 @@ button.count-toggle {
     return true;
   }
 
+  function mergeBaseStorageKey(encryptKey) {
+    var name = unitDriveFileName(encryptKey) || String(encryptKey || "").slice(0, 80);
+    return MERGE_BASE_KEY + ":" + name;
+  }
+
+  function loadMergeBase(encryptKey) {
+    try {
+      if (typeof localStorage === "undefined") return null;
+      var raw = localStorage.getItem(mergeBaseStorageKey(encryptKey));
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      return data && typeof data === "object" ? data : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function saveMergeBase(encryptKey, snap) {
+    try {
+      if (typeof localStorage === "undefined" || !snap) return false;
+      localStorage.setItem(mergeBaseStorageKey(encryptKey), JSON.stringify(snap));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function flattenPeopleFromUnit(unit) {
+    var out = [];
+    function walk(node) {
+      if (!node || typeof node !== "object") return;
+      (Array.isArray(node.people) ? node.people : []).forEach(function (person) {
+        if (person && person.id) out.push(cloneData(person));
+      });
+      (Array.isArray(node.children) ? node.children : []).forEach(walk);
+    }
+    walk(unit);
+    return out;
+  }
+
+  function entityMapById(list) {
+    var map = {};
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (item && item.id) map[String(item.id)] = item;
+    });
+    return map;
+  }
+
+  function tombstoneMap(list) {
+    var map = {};
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (!item || !item.id) return;
+      map[String(item.id)] = item;
+    });
+    return map;
+  }
+
+  function valuesEqual(a, b) {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    return String(a) === String(b);
+  }
+
+  function isEmptyMergeValue(value) {
+    return value == null || value === "";
+  }
+
+  function fieldStamp(entity, field) {
+    if (!entity || !entity.fieldsUpdatedAt) return "";
+    return entity.fieldsUpdatedAt[field] ? String(entity.fieldsUpdatedAt[field]) : "";
+  }
+
+  function fieldChangedVsBase(entity, baseEntity, field) {
+    var current = entity ? entity[field] : null;
+    var baseVal = baseEntity ? baseEntity[field] : null;
+    // Зміна поля — лише коли значення відрізняється від бази (не весь updatedAt запису).
+    return !valuesEqual(current, baseVal);
+  }
+
+  function pickMergedField(kind, id, field, localEntity, remoteEntity, baseEntity, conflicts, labels) {
+    var localVal = localEntity ? localEntity[field] : null;
+    var remoteVal = remoteEntity ? remoteEntity[field] : null;
+    var baseVal = baseEntity ? baseEntity[field] : null;
+    var localChanged;
+    var remoteChanged;
+    if (baseEntity) {
+      localChanged = fieldChangedVsBase(localEntity, baseEntity, field);
+      remoteChanged = fieldChangedVsBase(remoteEntity, baseEntity, field);
+    } else {
+      localChanged = !isEmptyMergeValue(localVal) && !valuesEqual(localVal, remoteVal);
+      remoteChanged = !isEmptyMergeValue(remoteVal) && !valuesEqual(localVal, remoteVal);
+      if (isEmptyMergeValue(localVal) && !isEmptyMergeValue(remoteVal)) {
+        return remoteVal;
+      }
+      if (!isEmptyMergeValue(localVal) && isEmptyMergeValue(remoteVal)) {
+        return localVal;
+      }
+      if (valuesEqual(localVal, remoteVal)) return localVal;
+    }
+    if (localChanged && remoteChanged && !valuesEqual(localVal, remoteVal)) {
+      conflicts.push({
+        kind: kind,
+        id: id,
+        field: field,
+        localValue: localVal,
+        remoteValue: remoteVal,
+        label: (labels && labels[field]) || field
+      });
+      return localVal;
+    }
+    if (remoteChanged && !localChanged) return remoteVal;
+    return localVal;
+  }
+
+  function mergeEntityRecord(kind, localEntity, remoteEntity, baseEntity, fields, labels, conflicts) {
+    var id = String((localEntity && localEntity.id) || (remoteEntity && remoteEntity.id) || "");
+    if (!id) return null;
+    var out = cloneData(localEntity || remoteEntity || { id: id });
+    out.id = id;
+    var stamps = (localEntity && localEntity.fieldsUpdatedAt) || (remoteEntity && remoteEntity.fieldsUpdatedAt) || {};
+    out.fieldsUpdatedAt = cloneData(stamps);
+    fields.forEach(function (field) {
+      out[field] = pickMergedField(kind, id, field, localEntity, remoteEntity, baseEntity, conflicts, labels);
+      var localTs = fieldStamp(localEntity, field);
+      var remoteTs = fieldStamp(remoteEntity, field);
+      if (remoteTs && (!localTs || remoteTs > localTs) && valuesEqual(out[field], remoteEntity && remoteEntity[field])) {
+        out.fieldsUpdatedAt[field] = remoteTs;
+      } else if (localTs) {
+        out.fieldsUpdatedAt[field] = localTs;
+      }
+    });
+    var localAt = localEntity && localEntity.updatedAt ? String(localEntity.updatedAt) : "";
+    var remoteAt = remoteEntity && remoteEntity.updatedAt ? String(remoteEntity.updatedAt) : "";
+    out.updatedAt = localAt && remoteAt ? (localAt >= remoteAt ? localAt : remoteAt) : (localAt || remoteAt || null);
+    return out;
+  }
+
+  function mergeEntityLists(kind, localList, remoteList, baseList, tombLocal, tombRemote, fields, labels, conflicts) {
+    var localMap = entityMapById(localList);
+    var remoteMap = entityMapById(remoteList);
+    var baseMap = entityMapById(baseList);
+    var ids = {};
+    Object.keys(localMap).forEach(function (id) { ids[id] = true; });
+    Object.keys(remoteMap).forEach(function (id) { ids[id] = true; });
+    Object.keys(baseMap).forEach(function (id) { ids[id] = true; });
+    var out = [];
+    var removed = [];
+    Object.keys(ids).forEach(function (id) {
+      var localEntity = localMap[id];
+      var remoteEntity = remoteMap[id];
+      var baseEntity = baseMap[id];
+      var localTomb = tombLocal[id];
+      var remoteTomb = tombRemote[id];
+      var localTombAt = localTomb && localTomb.updatedAt ? String(localTomb.updatedAt) : "";
+      var remoteTombAt = remoteTomb && remoteTomb.updatedAt ? String(remoteTomb.updatedAt) : "";
+      var localAt = localEntity && localEntity.updatedAt ? String(localEntity.updatedAt) : "";
+      var remoteAt = remoteEntity && remoteEntity.updatedAt ? String(remoteEntity.updatedAt) : "";
+      if (localTomb && (!remoteEntity || (localTombAt && (!remoteAt || localTombAt >= remoteAt)))) {
+        if (!remoteTomb || localTombAt >= remoteTombAt) removed.push({ id: id, removed: true, updatedAt: localTombAt || stampNow() });
+        else removed.push({ id: id, removed: true, updatedAt: remoteTombAt || stampNow() });
+        return;
+      }
+      if (remoteTomb && (!localEntity || (remoteTombAt && (!localAt || remoteTombAt >= localAt)))) {
+        removed.push({ id: id, removed: true, updatedAt: remoteTombAt || stampNow() });
+        return;
+      }
+      if (localEntity && !remoteEntity) {
+        out.push(cloneData(localEntity));
+        return;
+      }
+      if (remoteEntity && !localEntity) {
+        out.push(cloneData(remoteEntity));
+        return;
+      }
+      out.push(mergeEntityRecord(kind, localEntity, remoteEntity, baseEntity, fields, labels, conflicts));
+    });
+    return { list: out.filter(Boolean), removed: removed };
+  }
+
+  function mergeDaySliceContent(localSlice, remoteSlice, baseSlice, conflicts) {
+    var local = normalizeDaySlice(localSlice);
+    var remote = normalizeDaySlice(remoteSlice);
+    var base = baseSlice ? normalizeDaySlice(baseSlice) : null;
+    var people = mergeEntityLists(
+      "person",
+      flattenPeopleFromUnit(local.unit),
+      flattenPeopleFromUnit(remote.unit),
+      base ? flattenPeopleFromUnit(base.unit) : [],
+      {},
+      {},
+      PERSON_MERGE_FIELDS,
+      PERSON_FIELD_LABELS,
+      conflicts
+    );
+    var machines = mergeEntityLists(
+      "machine",
+      local.machines,
+      remote.machines,
+      base ? base.machines : [],
+      {},
+      {},
+      MACHINE_MERGE_FIELDS,
+      MACHINE_FIELD_LABELS,
+      conflicts
+    );
+    var unitName = local.unit && local.unit.name ? local.unit.name : (remote.unit && remote.unit.name ? remote.unit.name : "");
+    return normalizeDaySlice({
+      unit: { id: "root", name: unitName, people: people.list },
+      machines: machines.list,
+      tasks: (local.tasks && local.tasks.length ? local.tasks : remote.tasks) || [],
+      people: [],
+      changes: (local.changes && local.changes.length ? local.changes : remote.changes) || []
+    });
+  }
+
+  // ZS-126: 3-way merge власного знімка з Диском (не LWW цілим файлом).
+  function mergeUnitSnapshots(localSnap, remoteSnap, baseSnap) {
+    var conflicts = [];
+    var local = localSnap && typeof localSnap === "object" ? localSnap : null;
+    var remote = remoteSnap && typeof remoteSnap === "object" ? remoteSnap : null;
+    if (!local && !remote) return { snapshot: null, conflicts: [] };
+    if (!local) return { snapshot: cloneData(remote), conflicts: [] };
+    if (!remote) return { snapshot: cloneData(local), conflicts: [] };
+
+    var base = baseSnap && typeof baseSnap === "object" ? baseSnap : null;
+    var localPeople = flattenPeopleFromUnit(local.unit);
+    var remotePeople = flattenPeopleFromUnit(remote.unit);
+    var basePeople = base ? flattenPeopleFromUnit(base.unit) : [];
+    var peopleMerge = mergeEntityLists(
+      "person",
+      localPeople,
+      remotePeople,
+      basePeople,
+      tombstoneMap(local.removedPeople),
+      tombstoneMap(remote.removedPeople),
+      PERSON_MERGE_FIELDS,
+      PERSON_FIELD_LABELS,
+      conflicts
+    );
+    var machinesMerge = mergeEntityLists(
+      "machine",
+      local.machines,
+      remote.machines,
+      base ? base.machines : [],
+      tombstoneMap(local.removedMachines),
+      tombstoneMap(remote.removedMachines),
+      MACHINE_MERGE_FIELDS,
+      MACHINE_FIELD_LABELS,
+      conflicts
+    );
+
+    var day = local.day || remote.day || todayISO();
+    if (remote.day && local.day && remote.day > local.day) day = remote.day;
+    var days = {};
+    var dayKeys = {};
+    Object.keys(local.days || {}).forEach(function (key) { dayKeys[key] = true; });
+    Object.keys(remote.days || {}).forEach(function (key) { dayKeys[key] = true; });
+    if (base && base.days) Object.keys(base.days).forEach(function (key) { dayKeys[key] = true; });
+    Object.keys(dayKeys).forEach(function (key) {
+      if (key === day) return;
+      days[key] = mergeDaySliceContent(
+        local.days && local.days[key],
+        remote.days && remote.days[key],
+        base && base.days ? base.days[key] : null,
+        conflicts
+      );
+    });
+
+    var childMap = {};
+    (Array.isArray(local.children) ? local.children : []).concat(Array.isArray(remote.children) ? remote.children : []).forEach(function (item) {
+      if (!item || !item.code) return;
+      var code = String(item.code);
+      if (!childMap[code]) childMap[code] = { name: String(item.name || "").slice(0, 80), code: code };
+      else if (item.name) childMap[code].name = preferUnitName(childMap[code].name, item.name);
+    });
+
+    var unitName = String(local.name || remote.name || "").slice(0, 80);
+    var snapshot = {
+      version: 2,
+      name: unitName,
+      code: String(local.code || remote.code || "").trim(),
+      day: day,
+      unit: { id: "root", name: unitName, people: peopleMerge.list },
+      machines: machinesMerge.list,
+      tasks: Array.isArray(local.tasks) && local.tasks.length ? cloneData(local.tasks) : cloneData(remote.tasks || []),
+      people: [],
+      changes: Array.isArray(local.changes) && local.changes.length ? cloneData(local.changes) : cloneData(remote.changes || []),
+      days: days,
+      children: Object.keys(childMap).map(function (code) { return childMap[code]; }),
+      removedPeople: peopleMerge.removed,
+      removedMachines: machinesMerge.removed
+    };
+    return { snapshot: snapshot, conflicts: conflicts };
+  }
+
+  function localOwnSnapshotForMerge(encryptKey) {
+    var bundleKey = canonicalOwnBundleKey(encryptKey);
+    var openChild = driveChildWriteCode();
+    if (openChild) {
+      return snapshotFromStoredBundle(bundleKey);
+    }
+    materializeOverlays();
+    captureBundle(state.reportKey);
+    if (String(state.reportKey || "") === String(bundleKey || "")) {
+      return currentUnitSnapshot();
+    }
+    return snapshotFromStoredBundle(bundleKey) || currentUnitSnapshot();
+  }
+
+  function applyMergedRemovals(snapshot) {
+    if (!snapshot) return;
+    if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+    if (!state.removedAt.people) state.removedAt.people = {};
+    if (!state.removedAt.machines) state.removedAt.machines = {};
+    (Array.isArray(snapshot.removedPeople) ? snapshot.removedPeople : []).forEach(function (item) {
+      if (!item || !item.id) return;
+      state.removed.people[item.id] = true;
+      state.removedAt.people[item.id] = item.updatedAt || stampNow();
+    });
+    (Array.isArray(snapshot.removedMachines) ? snapshot.removedMachines : []).forEach(function (item) {
+      if (!item || !item.id) return;
+      state.removed.machines[item.id] = true;
+      state.removedAt.machines[item.id] = item.updatedAt || stampNow();
+    });
+  }
+
   function pullOwnUnitFile(token, folderId) {
     var key = String(state.driveEncryptKey || "").trim();
     if (!key) return Promise.resolve({ pulled: false });
@@ -5339,19 +5740,36 @@ button.count-toggle {
           try { raw = JSON.parse(text); } catch (err) { return { pulled: false }; }
           if (!raw || typeof raw !== "object") return { pulled: false };
           mergeChildrenFromSnapshot(raw);
-          var keepLocal = localReportHasContent();
-          if (!keepLocal) {
-            // ZS-107: чужий код підлеглого в файлі lead — у bundles, не в загальний.
-            if (ownPullLooksLikeChildBleed(raw, key)) {
-              var childCode = String(raw.code || "").trim();
-              ingestChildUnit(childCode, raw);
-              return { pulled: true, keptLocal: false, quarantined: true, name: name, fileId: file.id, fromLegacy: !!resolved.fromLegacy };
-            }
-            applyOwnUnitSnapshot(raw, key);
-          } else {
-            normalizeOwnReportKey();
+          // ZS-107: чужий код підлеглого в файлі lead — у bundles, не в загальний.
+          if (ownPullLooksLikeChildBleed(raw, key)) {
+            var childCode = String(raw.code || "").trim();
+            ingestChildUnit(childCode, raw);
+            return { pulled: true, keptLocal: false, quarantined: true, name: name, fileId: file.id, fromLegacy: !!resolved.fromLegacy };
           }
-          return { pulled: true, keptLocal: keepLocal, name: name, fileId: file.id, fromLegacy: !!resolved.fromLegacy };
+          // ZS-126: завжди 3-way merge, без keepLocal «цілий файл».
+          var localSnap = localOwnSnapshotForMerge(key);
+          var baseSnap = loadMergeBase(key);
+          var merged = mergeUnitSnapshots(localSnap, raw, baseSnap);
+          if (!merged.snapshot) return { pulled: false };
+          applyOwnUnitSnapshot(merged.snapshot, key);
+          if (!driveChildWriteCode()) applyMergedRemovals(merged.snapshot);
+          else {
+            var ownKey = canonicalOwnBundleKey(key);
+            if (bundles[ownKey]) {
+              bundles[ownKey].removedPeople = cloneData(merged.snapshot.removedPeople || []);
+              bundles[ownKey].removedMachines = cloneData(merged.snapshot.removedMachines || []);
+            }
+          }
+          state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
+          return {
+            pulled: true,
+            keptLocal: false,
+            merged: true,
+            conflicts: state.mergeConflicts.length,
+            name: name,
+            fileId: file.id,
+            fromLegacy: !!resolved.fromLegacy
+          };
         });
       });
     }).catch(function () {
@@ -5396,6 +5814,10 @@ button.count-toggle {
               done = trashDriveFile(token, file.id).then(function () { return result; });
             }
             return done.then(function (out) {
+              // ZS-126: база для наступного 3-way — успішно записаний злитий знімок.
+              if (String(key) === String(state.driveEncryptKey || "").trim()) {
+                saveMergeBase(key, payload);
+              }
               return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
             });
           });
@@ -5710,7 +6132,10 @@ button.count-toggle {
     if (settings && settings.wroteSettings) parts.push("довідники записано");
     else if (settings && settings.readSettings) parts.push("довідники прочитано");
     if (pulled && pulled.pulled && pulled.quarantined) parts.push("звіт підлеглої ланки перенесено в загальний");
-    else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
+    else if (pulled && pulled.pulled && pulled.merged) {
+      parts.push("свій файл злито");
+      if (pulled.conflicts) parts.push("є поля на вибір: " + pulled.conflicts);
+    } else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
       if (looksLikeUnitCode(state.driveEncryptKey) && unitsOwnedHere().length === 0) {
@@ -5915,6 +6340,96 @@ button.count-toggle {
     sheet.append(form);
     overlay.append(sheet);
     return overlay;
+  }
+
+  function formatConflictValue(kind, field, value) {
+    if (value == null || value === "") return "—";
+    if (field === "duty") {
+      var map = kind === "machine" ? machineDutyMap() : dutyMap();
+      return (map[value] && map[value].label) || String(value);
+    }
+    if (field === "accounting") {
+      return (ACCOUNTING[value] && ACCOUNTING[value].label) || String(value);
+    }
+    if (field === "type") {
+      var typed = typeById(String(value || ""));
+      return typed ? typed.one : String(value);
+    }
+    return String(value);
+  }
+
+  function conflictSubjectLabel(conflict) {
+    if (!conflict) return "";
+    if (conflict.kind === "machine") {
+      var machine = findMachine(conflict.id);
+      return machine ? (machineName(machine) || machineBoard(machine) || conflict.id) : conflict.id;
+    }
+    var person = findPerson(conflict.id);
+    return person ? (personCallsign(person) || personName(person) || conflict.id) : conflict.id;
+  }
+
+  function renderMergeConflictOverlay() {
+    var list = Array.isArray(state.mergeConflicts) ? state.mergeConflicts : [];
+    if (!list.length) return null;
+    var conflict = list[0];
+    var overlay = el("div", { className: "overlay", attrs: { id: "merge-conflict-overlay", role: "dialog", "aria-label": "Розбіжність після sync" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Яке значення лишити" }));
+    sheet.append(head);
+    sheet.append(el("p", { className: "hint", text: "Після sync з’явилась розбіжність. Оберіть варіант для цього поля." }));
+    sheet.append(el("p", {
+      className: "hint",
+      text: conflictSubjectLabel(conflict) + " · " + (conflict.label || conflict.field) + (list.length > 1 ? " (ще " + (list.length - 1) + ")" : "")
+    }));
+    var form = el("div", { className: "unit-create" });
+    form.append(el("button", {
+      text: "На цьому пристрої: " + formatConflictValue(conflict.kind, conflict.field, conflict.localValue),
+      attrs: { type: "button", "data-merge-pick": "local" }
+    }));
+    form.append(el("button", {
+      text: "З іншого пристрою: " + formatConflictValue(conflict.kind, conflict.field, conflict.remoteValue),
+      attrs: { type: "button", "data-merge-pick": "remote" }
+    }));
+    sheet.append(form);
+    overlay.append(sheet);
+    return overlay;
+  }
+
+  function applyMergeConflictChoice(side) {
+    var list = Array.isArray(state.mergeConflicts) ? state.mergeConflicts : [];
+    if (!list.length) return;
+    var conflict = list[0];
+    var value = side === "remote" ? conflict.remoteValue : conflict.localValue;
+    var ts = stampNow();
+    if (conflict.kind === "person") {
+      var person = findPerson(conflict.id);
+      if (person) {
+        if (!state.edits.people[conflict.id]) state.edits.people[conflict.id] = {};
+        state.edits.people[conflict.id][conflict.field] = value;
+        if (conflict.field === "position") state.positions[conflict.id] = value == null ? "" : String(value);
+        person[conflict.field] = value;
+        person.updatedAt = ts;
+        if (!person.fieldsUpdatedAt) person.fieldsUpdatedAt = {};
+        person.fieldsUpdatedAt[conflict.field] = ts;
+      }
+    } else if (conflict.kind === "machine") {
+      var machine = findMachine(conflict.id);
+      if (machine) {
+        if (!state.edits.machines[conflict.id]) state.edits.machines[conflict.id] = {};
+        state.edits.machines[conflict.id][conflict.field] = value;
+        machine[conflict.field] = value;
+        machine.updatedAt = ts;
+        if (!machine.fieldsUpdatedAt) machine.fieldsUpdatedAt = {};
+        machine.fieldsUpdatedAt[conflict.field] = ts;
+      }
+    }
+    state.mergeConflicts = list.slice(1);
+    materializeOverlays();
+    captureBundle(state.reportKey);
+    save();
+    render();
   }
 
   function renderDrive() {
@@ -6531,6 +7046,10 @@ button.count-toggle {
     if (state.accessChange) parts.push(renderAccessChangeOverlay());
     if (state.calendarOpen) parts.push(renderCalendarOverlay());
     if (state.changesOpen) parts.push(renderChangesOverlay());
+    if (state.mergeConflicts && state.mergeConflicts.length) {
+      var mergeOverlay = renderMergeConflictOverlay();
+      if (mergeOverlay) parts.push(mergeOverlay);
+    }
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
     root.replaceChildren.apply(root, parts);
     if (pendingScroll) {
@@ -7214,8 +7733,18 @@ button.count-toggle {
       return;
     }
     if (!canDelete()) return;
-    if (state.confirm.kind === "person") state.removed.people[state.confirm.id] = true;
-    if (state.confirm.kind === "machine") state.removed.machines[state.confirm.id] = true;
+    if (state.confirm.kind === "person") {
+      state.removed.people[state.confirm.id] = true;
+      if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+      if (!state.removedAt.people) state.removedAt.people = {};
+      state.removedAt.people[state.confirm.id] = stampNow();
+    }
+    if (state.confirm.kind === "machine") {
+      state.removed.machines[state.confirm.id] = true;
+      if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+      if (!state.removedAt.machines) state.removedAt.machines = {};
+      state.removedAt.machines[state.confirm.id] = stampNow();
+    }
     state.confirm = null;
     save();
     render();
@@ -7421,6 +7950,11 @@ button.count-toggle {
     if (closeDriveFolder) {
       state.driveFolderOpen = false;
       render();
+      return;
+    }
+    var mergePick = event.target.closest("[data-merge-pick]");
+    if (mergePick) {
+      applyMergeConflictChoice(mergePick.getAttribute("data-merge-pick"));
       return;
     }
     var openAccess = event.target.closest("[data-change-access]");
@@ -10147,6 +10681,79 @@ button.count-toggle {
       openReportChoice("__general__");
       render();
       check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Unit125") !== -1, "ZS-125: на Загальному видно о/с unit");
+      // ZS-126: 3-way merge — різні поля зливаються; конфлікт одного поля → вибір, не тиха перемога.
+      var local126 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p126", name: "Local One", surname: "One", givenName: "Local", patronymic: "", rank: "Солдат", callsign: "LocalCS", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T10:00:00.000Z", fieldsUpdatedAt: { callsign: "2026-11-05T10:00:00.000Z" } },
+          { id: "p126b", name: "Only Local", surname: "Local", givenName: "Only", patronymic: "", rank: "Солдат", callsign: "OnlyL", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T10:00:00.000Z", fieldsUpdatedAt: {} }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var remote126 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p126", name: "Remote One", surname: "One", givenName: "Remote", patronymic: "", rank: "Солдат", callsign: "RemoteCS", accounting: "official", duty: "leave", position: "", updatedAt: "2026-11-05T11:00:00.000Z", fieldsUpdatedAt: { callsign: "2026-11-05T11:00:00.000Z", duty: "2026-11-05T11:00:00.000Z" } },
+          { id: "p126c", name: "Only Remote", surname: "Remote", givenName: "Only", patronymic: "", rank: "Солдат", callsign: "OnlyR", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T11:00:00.000Z", fieldsUpdatedAt: {} }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var base126 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p126", name: "Base One", surname: "One", givenName: "Base", patronymic: "", rank: "Солдат", callsign: "BaseCS", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T09:00:00.000Z", fieldsUpdatedAt: { callsign: "2026-11-05T09:00:00.000Z", duty: "2026-11-05T09:00:00.000Z" } }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var merged126 = mergeUnitSnapshots(local126, remote126, base126);
+      check(!!merged126.snapshot, "ZS-126: merge повертає знімок");
+      var mergedPeople126 = flattenPeopleFromUnit(merged126.snapshot.unit);
+      var byId126 = {};
+      mergedPeople126.forEach(function (person) { byId126[person.id] = person; });
+      check(!!byId126.p126b && !!byId126.p126c, "ZS-126: різні id з обох боків зберігаються");
+      check(byId126.p126 && byId126.p126.duty === "leave", "ZS-126: duty змінене лише remote → береться remote");
+      var callConflicts126 = (merged126.conflicts || []).filter(function (row) {
+        return row.id === "p126" && row.field === "callsign";
+      });
+      check(callConflicts126.length === 1 && byId126.p126.callsign === "LocalCS", "ZS-126: конфлікт callsign лишає local до вибору");
+      state.driveEncryptKey = "секрет-lead-126";
+      state.openCode = "lead";
+      state.reportRoot = "lead";
+      state.scope = "all";
+      check(!!applyOwnUnitSnapshot(merged126.snapshot, "секрет-lead-126"), "ZS-126: застосовуємо злитий знімок");
+      state.mergeConflicts = callConflicts126.slice();
+      render();
+      check(!!document.getElementById("merge-conflict-overlay"), "ZS-126: діалог конфлікту на екрані");
+      applyMergeConflictChoice("remote");
+      check((state.edits.people.p126 && state.edits.people.p126.callsign === "RemoteCS") || (findPerson("p126") && personCallsign(findPerson("p126")) === "RemoteCS"), "ZS-126: вибір remote застосовує значення");
+      state.mergeConflicts = [];
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125;
       });
