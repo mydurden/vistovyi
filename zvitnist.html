@@ -163,6 +163,30 @@ h1 {
 
 .top .now, .top .hint { color: var(--header-muted); font-size: 0.92rem; }
 
+.drive-progress {
+  height: 4px;
+  margin: 8px 0 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.drive-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 0.2s ease;
+}
+
+.top .drive-progress {
+  background: rgba(244, 240, 231, 0.22);
+}
+
+.top .drive-progress-fill {
+  background: var(--header-muted);
+}
+
 .top .error { color: #ffd2c8; font-size: 0.92rem; margin: 8px 0 0; }
 
 .top .report-switch {
@@ -1338,6 +1362,7 @@ button.count-toggle {
     driveTo: "",
     driveNote: "",
     driveDupNote: "",
+    driveProgress: null,
     viewDay: "",
     fileDay: "",
     daysArchive: {},
@@ -4231,14 +4256,64 @@ button.count-toggle {
     wrap.append(titleRow);
     var reportSwitch = renderReportSwitch();
     if (reportSwitch) wrap.append(reportSwitch);
-    if (state.driveNote) {
-      wrap.append(el("p", { className: "hint", text: state.driveNote }));
-    }
+    appendDriveSyncStatus(wrap);
     if (state.codeError) {
       wrap.append(el("p", { className: "error", text: state.codeError, attrs: { role: "alert" } }));
     }
     header.append(wrap);
     return header;
+  }
+
+  // ZS-110: підпис sync лишається; bar лише поки йде sync.
+  function setDriveProgress(step, total) {
+    if (step == null || !(total > 0)) {
+      state.driveProgress = null;
+      return;
+    }
+    var n = Number(step);
+    var t = Number(total);
+    if (!(n >= 0) || !(t > 0)) {
+      state.driveProgress = null;
+      return;
+    }
+    state.driveProgress = { step: n, total: t };
+  }
+
+  function clearDriveProgress() {
+    state.driveProgress = null;
+  }
+
+  function renderDriveProgressBar() {
+    if (!state.driveProgress || !(state.driveProgress.total > 0)) return null;
+    // Крок 0 = ще лише «Відкриваю Google» — bar з’являється з першого sync-кроку.
+    if (!(Number(state.driveProgress.step) > 0)) return null;
+    var pct = Math.round((Number(state.driveProgress.step) / Number(state.driveProgress.total)) * 100);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    var bar = el("div", {
+      className: "drive-progress",
+      attrs: {
+        role: "progressbar",
+        "aria-valuemin": "0",
+        "aria-valuemax": "100",
+        "aria-valuenow": String(pct),
+        "aria-label": "Прогрес синхронізації",
+        "data-drive-progress": "1"
+      }
+    });
+    var fill = el("div", { className: "drive-progress-fill" });
+    fill.style.width = pct + "%";
+    bar.append(fill);
+    return bar;
+  }
+
+  function appendDriveSyncStatus(parent) {
+    if (!parent) return;
+    if (state.driveNote) {
+      parent.append(el("p", { className: "hint", text: state.driveNote, attrs: { "data-drive-note": "1" } }));
+    }
+    var bar = renderDriveProgressBar();
+    if (bar) parent.append(bar);
   }
 
   function renderWideAccess() {
@@ -5053,14 +5128,17 @@ button.count-toggle {
 
   function runDriveSync(token, folderId) {
     var key = String(state.driveEncryptKey || "").trim();
+    var syncTotal = 5;
     if (!key) {
       state.driveNote = "Впишіть код доступу.";
+      clearDriveProgress();
       render();
       return;
     }
     rememberDriveUser(token);
     state.driveDupNote = "";
     state.driveNote = "Синхронізую довідники.";
+    setDriveProgress(1, syncTotal);
     render();
     findSettingsFile(token, folderId).then(function (file) {
       var prepare = file
@@ -5084,18 +5162,21 @@ button.count-toggle {
       });
     }).then(function (settingsResult) {
       state.driveNote = "Читаю свій файл підрозділу.";
+      setDriveProgress(2, syncTotal);
       render();
       return pullOwnUnitFile(token, folderId).then(function (pulled) {
         return { settings: settingsResult || {}, pulled: pulled || { pulled: false } };
       });
     }).then(function (bundle) {
       state.driveNote = "Пишу файл підрозділу.";
+      setDriveProgress(3, syncTotal);
       render();
       return upsertOwnUnitFile(token, folderId).then(function (own) {
         return { settings: bundle.settings, pulled: bundle.pulled, own: own };
       });
     }).then(function (bundle) {
       state.driveNote = "Читаю звіти нижчих ланок.";
+      setDriveProgress(4, syncTotal);
       render();
       return syncChildUnits(token, folderId).then(function (children) {
         return { settings: bundle.settings, pulled: bundle.pulled, own: bundle.own, children: children };
@@ -5106,11 +5187,14 @@ button.count-toggle {
       }
       state.driveLinked = true;
       state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children, bundle.pulled);
+      setDriveProgress(5, syncTotal);
+      clearDriveProgress();
       state.refreshFallback = false;
       save();
       saveReportCache();
       render();
     }).catch(function (err) {
+      clearDriveProgress();
       if (state.refreshFallback) {
         state.refreshFallback = false;
         if (restoreFromReportCache()) return;
@@ -5134,6 +5218,7 @@ button.count-toggle {
       driveTokenClient.callback = function (response) {
         if (!response || response.error || !response.access_token) {
           state.driveNote = "Вхід не підтверджено.";
+          clearDriveProgress();
           render();
           return;
         }
@@ -5149,6 +5234,7 @@ button.count-toggle {
   function sendReport(clientId, folderId, opts) {
     if (location.protocol === "file:") {
       state.driveNote = "Google не відкриває вхід з файлу на диску. Сторінку треба відкрити за адресою http або https.";
+      clearDriveProgress();
       render();
       return;
     }
@@ -5169,6 +5255,7 @@ button.count-toggle {
     var folderId = driveFolderId(state.driveFolder);
     if (!folderId) {
       state.driveNote = "";
+      clearDriveProgress();
       if (state.refreshFallback) {
         state.refreshFallback = false;
         if (restoreFromReportCache()) return;
@@ -5179,6 +5266,7 @@ button.count-toggle {
     var forceConsent = !!(opts && opts.forceConsent);
     if (forceConsent || !driveTokenValid()) state.driveNote = "Відкриваю вікно Google.";
     else state.driveNote = "Синхронізую.";
+    clearDriveProgress();
     render();
     sendReport(DRIVE_CLIENT, folderId, { forceConsent: forceConsent });
   }
@@ -5228,7 +5316,7 @@ button.count-toggle {
       row.append(el("p", { className: "code-line", text: item.name }));
       section.append(row);
     });
-    if (state.driveNote) section.append(el("p", { className: "hint", text: state.driveNote }));
+    appendDriveSyncStatus(section);
     return section;
   }
 
@@ -7474,7 +7562,21 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
+    // ZS-110: під note є progress bar; напис лишається; після clear bar зникає.
+    state.driveNote = "Синхронізую довідники.";
+    setDriveProgress(1, 5);
+    render();
+    check(!!document.querySelector("[data-drive-note]") && document.querySelector("[data-drive-note]").textContent.indexOf("Синхронізую довідники") !== -1, "підпис sync на місці з progress");
+    check(!!document.querySelector("[data-drive-progress]") && document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "20", "progress bar під підписом на 1/5");
+    clearDriveProgress();
+    state.driveNote = "довідники записано. свій файл записано.";
+    render();
+    check(!!document.querySelector("[data-drive-note]") && !document.querySelector("[data-drive-progress]"), "після sync bar зникає, підсумок лишається");
+    state.driveNote = "Відкриваю вікно Google.";
+    clearDriveProgress();
+    render();
     check(
+
       seenDriveScope.indexOf("https://www.googleapis.com/auth/drive.file") !== -1 &&
       seenDriveScope.indexOf("https://www.googleapis.com/auth/drive.readonly") !== -1 &&
       !/(^|\s)https:\/\/www\.googleapis\.com\/auth\/drive(?!\.)(\s|$)/.test(seenDriveScope) &&
