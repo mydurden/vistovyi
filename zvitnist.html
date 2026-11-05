@@ -746,9 +746,22 @@ button.count-toggle {
 .unit-create .label,
 .archive .label { display: block; margin-top: 8px; font-weight: 700; }
 
-.section-access .label { display: block; margin-top: 8px; }
+.wide-access .label { display: block; margin-top: 8px; font-weight: 700; }
 
-.section-access input.for-whom {
+.wide-access .check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 16px;
+}
+
+.wide-access .check input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
+.wide-access input.for-whom {
   display: block;
   width: 11.5rem;
   max-width: 100%;
@@ -761,7 +774,7 @@ button.count-toggle {
   font-size: 16px;
 }
 
-.section-access .issue {
+.wide-access .issue {
   display: block;
   width: 100%;
   min-height: 44px;
@@ -1074,24 +1087,16 @@ button.count-toggle {
 
   var CODES = {
     lead: "all",
-    "1rota": "all",
-    lyudy: "people",
-    tekhnika: "equipment",
-    zavdannya: "tasks"
+    "1rota": "all"
   };
 
   var SCOPE_LABEL = {
     all: "військовослужбовці, техніка і завдання",
+    grant: "обраний штат і завдання",
     people: "лише військовослужбовці",
     equipment: "лише техніка",
     tasks: "лише завдання"
   };
-
-  var SECTION_CHOICES = [
-    ["people", "Військовослужбовці"],
-    ["equipment", "Техніка"],
-    ["tasks", "Завдання"]
-  ];
 
   var DUTY = {
     in: { plus: true, label: "У строю" },
@@ -1246,9 +1251,13 @@ button.count-toggle {
     reportSource: "",
     fileNote: false,
     dirHandle: null,
-    sectionKeys: [],
-    sectionScopeDraft: "people",
-    sectionForDraft: "",
+    accessGrants: [],
+    accessForDraft: "",
+    accessPersonDraft: {},
+    accessMachineDraft: {},
+    accessTasksAllDraft: false,
+    accessNote: "",
+    activeGrant: null,
     driveLinked: false,
     driveFolder: "",
     driveEncryptKey: "",
@@ -1953,9 +1962,9 @@ button.count-toggle {
 
   function visibleMachines() {
     return viewMachines().filter(function (item) {
-      return !state.removed.machines[item.id];
+      return !state.removed.machines[item.id] && grantAllowsMachine(item.id);
     }).concat(state.added.machines.filter(function (item) {
-      return !state.removed.machines[item.id];
+      return !state.removed.machines[item.id] && grantAllowsMachine(item.id);
     }));
   }
 
@@ -2285,7 +2294,7 @@ button.count-toggle {
     state.units.forEach(function (unit) {
       if (unit.code.toLowerCase() === lower) known = true;
     });
-    state.sectionKeys.forEach(function (item) {
+    state.accessGrants.forEach(function (item) {
       if (item.code.toLowerCase() === lower) known = true;
     });
     if (known || CODES[lower]) return generateUnitCode();
@@ -2300,30 +2309,66 @@ button.count-toggle {
     return null;
   }
 
-  function findSectionKey(raw) {
+  function findAccessGrant(raw) {
     var code = String(raw || "").trim().toLowerCase();
-    for (var i = 0; i < state.sectionKeys.length; i++) {
-      if (state.sectionKeys[i].code.toLowerCase() === code) return state.sectionKeys[i];
+    for (var i = 0; i < state.accessGrants.length; i++) {
+      if (String(state.accessGrants[i].code || "").toLowerCase() === code) return state.accessGrants[i];
     }
     return null;
   }
 
-  function sectionScopeLabel(scope) {
-    for (var i = 0; i < SECTION_CHOICES.length; i++) {
-      if (SECTION_CHOICES[i][0] === scope) return SECTION_CHOICES[i][1];
-    }
-    return "";
+  function staffPeopleList() {
+    refreshPeopleIndex();
+    var list = [];
+    peopleById.forEach(function (item) {
+      if (!item || state.removed.people[item.id]) return;
+      list.push(item);
+    });
+    return list;
   }
 
-  function sectionKeyLabel(item) {
+  function staffMachinesList() {
+    return visibleMachines();
+  }
+
+  function grantHasPeople(grant) {
+    return !!(grant && Array.isArray(grant.personIds) && grant.personIds.length);
+  }
+
+  function grantHasMachines(grant) {
+    return !!(grant && Array.isArray(grant.machineIds) && grant.machineIds.length);
+  }
+
+  function grantHasTasks(grant) {
+    return !!(grant && (grant.tasksAll || (Array.isArray(grant.taskIds) && grant.taskIds.length)));
+  }
+
+  function grantAllowsPerson(id) {
+    if (state.scope !== "grant" || !state.activeGrant) return true;
+    return (state.activeGrant.personIds || []).indexOf(id) !== -1;
+  }
+
+  function grantAllowsMachine(id) {
+    if (state.scope !== "grant" || !state.activeGrant) return true;
+    return (state.activeGrant.machineIds || []).indexOf(id) !== -1;
+  }
+
+  function grantAllowsTask(id) {
+    if (state.scope !== "grant" || !state.activeGrant) return true;
+    if (state.activeGrant.tasksAll) return true;
+    return (state.activeGrant.taskIds || []).indexOf(id) !== -1;
+  }
+
+  function accessGrantLabel(item) {
     var parts = [];
-    if (item.unitKey && item.unitKey !== "1rota") {
-      var unit = findUnitByCode(item.unitKey);
-      if (unit && unit.name) parts.push(unit.name);
-    }
-    parts.push(sectionScopeLabel(item.scope));
     if (item.forWhom) parts.push(item.forWhom);
-    return parts.join(" · ");
+    var nPeople = (item.personIds || []).length;
+    var nMachines = (item.machineIds || []).length;
+    if (nPeople) parts.push(nPeople + " в/сл");
+    if (nMachines) parts.push(nMachines + " ОВТ");
+    if (item.tasksAll) parts.push("завдання");
+    else if ((item.taskIds || []).length) parts.push((item.taskIds || []).length + " завдань");
+    return parts.join(" · ") || "Доступ";
   }
 
   function formatDate(iso) {
@@ -2450,9 +2495,9 @@ button.count-toggle {
   function reportKey(code) {
     var lower = String(code || "").toLowerCase();
     if (lower === "sluzhba") lower = "lead";
-    if (lower === "lead" || lower === "1rota" || lower === "lyudy" || lower === "tekhnika" || lower === "zavdannya") return "1rota";
-    var section = findSectionKey(code);
-    if (section && section.unitKey) return section.unitKey;
+    if (lower === "lead" || lower === "1rota") return "1rota";
+    var grant = findAccessGrant(code);
+    if (grant && grant.unitKey) return grant.unitKey;
     var unit = findUnitByCode(code);
     return unit ? unit.code : "1rota";
   }
@@ -2607,6 +2652,23 @@ button.count-toggle {
         });
         state.unitReportStatus = nextStatus;
       }
+      if (Array.isArray(data.accessGrants)) {
+        var nextGrants = [];
+        data.accessGrants.forEach(function (item) {
+          if (!item || typeof item.code !== "string" || !item.code.trim()) return;
+          nextGrants.push({
+            id: String(item.id || ("g" + nextGrants.length)).slice(0, 40),
+            code: String(item.code).trim().slice(0, 80),
+            unitKey: String(item.unitKey || "").slice(0, 80),
+            forWhom: String(item.forWhom || "").slice(0, 40),
+            personIds: Array.isArray(item.personIds) ? item.personIds.map(String).slice(0, 200) : [],
+            machineIds: Array.isArray(item.machineIds) ? item.machineIds.map(String).slice(0, 200) : [],
+            tasksAll: !!item.tasksAll,
+            taskIds: Array.isArray(item.taskIds) ? item.taskIds.map(String).slice(0, 200) : []
+          });
+        });
+        state.accessGrants = nextGrants;
+      }
     } catch (err) {}
   }
 
@@ -2624,7 +2686,19 @@ button.count-toggle {
             parent: String(unit.parent || "").slice(0, 80)
           };
         }),
-        unitReportStatus: state.unitReportStatus || {}
+        unitReportStatus: state.unitReportStatus || {},
+        accessGrants: (state.accessGrants || []).map(function (item) {
+          return {
+            id: String(item.id || "").slice(0, 40),
+            code: String(item.code || "").slice(0, 80),
+            unitKey: String(item.unitKey || "").slice(0, 80),
+            forWhom: String(item.forWhom || "").slice(0, 40),
+            personIds: Array.isArray(item.personIds) ? item.personIds.map(String).slice(0, 200) : [],
+            machineIds: Array.isArray(item.machineIds) ? item.machineIds.map(String).slice(0, 200) : [],
+            tasksAll: !!item.tasksAll,
+            taskIds: Array.isArray(item.taskIds) ? item.taskIds.map(String).slice(0, 200) : []
+          };
+        })
       }));
     } catch (err) {}
   }
@@ -3134,7 +3208,6 @@ button.count-toggle {
     box.setAttribute("data-value", value);
     var shown = box.querySelector(".pick-current span");
     if (shown) shown.textContent = label;
-    if (box.id === "section-scope") state.sectionScopeDraft = value;
     closePick(box);
     if (!applyDraftField(box)) rememberPending(box);
   }
@@ -3284,12 +3357,22 @@ button.count-toggle {
 
   function renderPeople() {
     var root = viewUnit();
-    var stats = peopleStats(root);
+    var grantMode = state.scope === "grant" && state.activeGrant;
     var section = el("section", { className: "block people", attrs: { id: "people", "aria-labelledby": "people-title" } });
     var top = el("div", { className: "block-top" });
     top.append(el("h2", { text: "Особовий склад", attrs: { id: "people-title" } }));
     top.append(sectionTools("gear:people", "Шестерня: що показувати в списку військовослужбовців", "person"));
     section.append(top);
+    if (grantMode) {
+      var granted = staffPeopleList().filter(function (item) { return grantAllowsPerson(item.id); });
+      var plus = 0;
+      granted.forEach(function (item) { if (countedPlus(item)) plus += 1; });
+      section.append(frac({ plus: plus, total: granted.length }, "hero", (root.name || "Звіт") + ": " + plus + " у строю з " + granted.length));
+      if (state.open.has("gear:people")) section.append(renderPeopleGear());
+      granted.forEach(function (item) { section.append(renderPerson(item)); });
+      return section;
+    }
+    var stats = peopleStats(root);
     section.append(frac(stats, "hero", (root.name || "Звіт") + ": " + stats.plus + " у строю з " + stats.total));
     if (state.open.has("gear:people")) section.append(renderPeopleGear());
     if (root.people) {
@@ -3541,7 +3624,10 @@ button.count-toggle {
     var top = el("div", { className: "block-top" });
     top.append(el("h2", { text: "Завдання", attrs: { id: "tasks-title" } }));
     section.append(top);
-    viewTasks().forEach(function (task) { section.append(renderTask(task)); });
+    viewTasks().forEach(function (task) {
+      if (!grantAllowsTask(task.id)) return;
+      section.append(renderTask(task));
+    });
     return section;
   }
 
@@ -3567,9 +3653,10 @@ button.count-toggle {
       { scopes: ["tasks"], term: "Стан завдання", text: "Заплановано — ще попереду. Виконується — роблять зараз. Зроблено — вже завершили." },
       { scopes: ["tasks"], term: "Місце", text: "Де виконують роботу: контрольна точка або інше місце." },
       { scopes: ["tasks"], term: "Боєприпаси і названі інженерні роботи", text: "У такому рядку лише назва, кількість військовослужбовців і стан." },
-      { scopes: common, term: "Вужчий код", text: "Код одного розділу. З ним видно лише цей розділ, без посади окремим питанням." }
+      { scopes: common, term: "Широкий доступ", text: "Код із чекбоксами: видно лише обраний штат і завдання." }
     ].filter(function (item) {
       if (state.scope === "all") return true;
+      if (state.scope === "grant") return true;
       return item.scopes.indexOf(state.scope) !== -1;
     });
   }
@@ -3633,27 +3720,68 @@ button.count-toggle {
     return header;
   }
 
-  function renderSectionAccess() {
-    var section = el("section", { className: "block section-access", attrs: { id: "section-access", "aria-labelledby": "section-access-title" } });
-    section.append(el("h2", { text: "Доступ до розділу", attrs: { id: "section-access-title" } }));
-    var form = el("form", { attrs: { id: "section-key-form" } });
-    form.append(el("label", { className: "label", text: "Розділ", attrs: { for: "section-scope" } }));
-    form.append(inPlacePick("section-scope", state.sectionScopeDraft || "people", SECTION_CHOICES));
-    form.append(el("label", { className: "label", text: "Для кого", attrs: { for: "section-for" } }));
-    var who = textInput("section-for", state.sectionForDraft, { maxlength: "40" });
+  function renderWideAccess() {
+    var section = el("section", { className: "block unit-create wide-access", attrs: { id: "wide-access", "aria-labelledby": "wide-access-title" } });
+    section.append(el("h2", { text: "Штат і доступ", attrs: { id: "wide-access-title" } }));
+    var people = staffPeopleList();
+    var machines = staffMachinesList();
+    section.append(el("div", { className: "label", text: "Штат" }));
+    if (!people.length && !machines.length) {
+      section.append(el("p", { className: "hint", text: "Повний штат з’явиться, коли в звіті будуть люди й техніка." }));
+    } else {
+      people.forEach(function (item) {
+        section.append(el("div", { className: "hint", text: personName(item) || personCallsign(item) || item.id }));
+      });
+      machines.forEach(function (item) {
+        section.append(el("div", { className: "hint", text: machineName(item) || machineBoard(item) || item.id }));
+      });
+    }
+    var form = el("form", { attrs: { id: "wide-access-form" } });
+    form.append(el("div", { className: "label", text: "Новий доступ" }));
+    form.append(el("label", { className: "label", text: "Для кого", attrs: { for: "access-for" } }));
+    var who = textInput("access-for", state.accessForDraft, { maxlength: "40" });
     who.className = "for-whom";
     form.append(who);
+    if (people.length) {
+      form.append(el("div", { className: "label", text: "Військовослужбовці" }));
+      people.forEach(function (item) {
+        var label = el("label", { className: "check" });
+        var input = el("input", {
+          attrs: { type: "checkbox", "data-access-person": item.id }
+        });
+        input.checked = !!state.accessPersonDraft[item.id];
+        label.append(input, el("span", { text: personName(item) || personCallsign(item) || item.id }));
+        form.append(label);
+      });
+    }
+    if (machines.length) {
+      form.append(el("div", { className: "label", text: "Техніка" }));
+      machines.forEach(function (item) {
+        var label = el("label", { className: "check" });
+        var input = el("input", {
+          attrs: { type: "checkbox", "data-access-machine": item.id }
+        });
+        input.checked = !!state.accessMachineDraft[item.id];
+        label.append(input, el("span", { text: machineName(item) || machineBoard(item) || item.id }));
+        form.append(label);
+      });
+    }
+    var tasksLabel = el("label", { className: "check" });
+    var tasksInput = el("input", { attrs: { type: "checkbox", id: "access-tasks-all", "data-access-tasks-all": "1" } });
+    tasksInput.checked = !!state.accessTasksAllDraft;
+    tasksLabel.append(tasksInput, el("span", { text: "Усі закріплені завдання" }));
+    form.append(tasksLabel);
     form.append(el("button", { className: "issue", text: "Видати", attrs: { type: "submit" } }));
     section.append(form);
-    var unitKey = state.reportKey || "1rota";
-    state.sectionKeys.forEach(function (item) {
-      if (item.unitKey !== unitKey) return;
+    if (state.accessNote) section.append(el("p", { className: "hint", text: state.accessNote }));
+    var unitKey = state.reportKey || actorKey();
+    state.accessGrants.forEach(function (item) {
+      if (String(item.unitKey || "") !== String(unitKey || "")) return;
+      var invite = inviteForCode(item.code);
       var row = el("div", { className: "unit-code" });
-      var title = sectionScopeLabel(item.scope);
-      if (item.forWhom) title += " · " + item.forWhom;
-      row.append(el("div", { className: "label", text: title }));
-      row.append(el("p", { className: "code-line", text: item.code, attrs: { "data-key-code": item.code, "data-use-code": item.code, role: "button", tabindex: "0" } }));
-      row.append(el("button", { className: "issue", text: "Копіювати", attrs: { type: "button", "data-copy": item.code } }));
+      row.append(el("div", { className: "label", text: accessGrantLabel(item) }));
+      row.append(el("p", { className: "code-line", text: invite, attrs: { "data-key-code": item.code, "data-use-code": item.code, role: "button", tabindex: "0" } }));
+      row.append(el("button", { className: "issue", text: "Копіювати", attrs: { type: "button", "data-copy": invite } }));
       section.append(row);
     });
     return section;
@@ -4681,7 +4809,7 @@ button.count-toggle {
     if (canBranch()) {
       sheet.append(renderDrive());
       sheet.append(renderArchive());
-      sheet.append(renderSectionAccess());
+      sheet.append(renderWideAccess());
       sheet.append(renderUnitCreate());
     }
     overlay.append(sheet);
@@ -4787,9 +4915,9 @@ button.count-toggle {
       var changes = renderChanges();
       if (changes) main.append(changes);
     }
-    if (state.scope === "all" || state.scope === "people") main.append(renderPeople());
-    if (state.scope === "all" || state.scope === "equipment") main.append(renderEquipment());
-    if (state.scope === "all" || state.scope === "tasks") main.append(renderTasks());
+    if (state.scope === "all" || state.scope === "people" || (state.scope === "grant" && grantHasPeople(state.activeGrant))) main.append(renderPeople());
+    if (state.scope === "all" || state.scope === "equipment" || (state.scope === "grant" && grantHasMachines(state.activeGrant))) main.append(renderEquipment());
+    if (state.scope === "all" || state.scope === "tasks" || (state.scope === "grant" && grantHasTasks(state.activeGrant))) main.append(renderTasks());
     main.append(renderGlossary());
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
@@ -4881,16 +5009,18 @@ button.count-toggle {
     }
     var scope = CODES[code];
     var unit = scope ? null : findUnitByCode(typed);
-    var section = scope || unit ? null : findSectionKey(typed);
-    if (!scope && !unit && !section) {
+    var grant = scope || unit ? null : findAccessGrant(typed);
+    if (!scope && !unit && !grant) {
       state.codeError = "Такого коду на цьому пристрої немає.";
       render();
       return;
     }
-    if (section) {
-      state.scope = section.scope;
-      state.openCode = section.code;
-      state.holder = section.forWhom || "";
+    state.activeGrant = null;
+    if (grant) {
+      state.scope = "grant";
+      state.openCode = grant.code;
+      state.holder = grant.forWhom || "";
+      state.activeGrant = grant;
     } else if (unit) {
       state.scope = "all";
       state.openCode = unit.code;
@@ -4902,7 +5032,7 @@ button.count-toggle {
       else state.holder = "";
     }
     activateReport(state.openCode);
-    if (!section && !unit && code !== "lead" && scope === "all") {
+    if (!grant && !unit && code !== "lead" && scope === "all") {
       state.holder = (state.report && state.report.name) || "";
     }
     if (state.scope === "all") state.reportRoot = state.openCode;
@@ -5423,18 +5553,32 @@ button.count-toggle {
     render();
   }
 
-  function issueSectionKey(scope, rawWho) {
+  function issueWideAccess(rawWho, personIds, machineIds, tasksAll) {
     if (state.scope !== "all") return;
-    if (scope !== "people" && scope !== "equipment" && scope !== "tasks") return;
     var who = String(rawWho || "").replace(/\s+/g, " ").trim().slice(0, 40);
-    state.sectionKeys.push({
+    var people = (personIds || []).map(String).filter(Boolean);
+    var machines = (machineIds || []).map(String).filter(Boolean);
+    var allTasks = !!tasksAll;
+    if (!people.length && !machines.length && !allTasks) {
+      state.accessNote = "Оберіть штат або завдання.";
+      render();
+      return;
+    }
+    state.accessGrants.push({
+      id: "g" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
       code: generateUnitCode(),
-      scope: scope,
-      unitKey: state.reportKey || "1rota",
-      forWhom: who
+      unitKey: state.reportKey || actorKey() || "1rota",
+      forWhom: who,
+      personIds: people.slice(0, 200),
+      machineIds: machines.slice(0, 200),
+      tasksAll: allTasks,
+      taskIds: []
     });
-    state.sectionScopeDraft = scope;
-    state.sectionForDraft = "";
+    state.accessForDraft = "";
+    state.accessPersonDraft = {};
+    state.accessMachineDraft = {};
+    state.accessTasksAllDraft = false;
+    state.accessNote = "";
     save();
     render();
   }
@@ -5906,12 +6050,20 @@ button.count-toggle {
       saveDutyEdit(true, state.machineStatusEdit, machineDutyEditForm.querySelector("#machine-duty-edit-name").value, machineDutyCount && machineDutyCount.getAttribute("data-value") === "plus");
       return;
     }
-    var sectionForm = event.target.closest("#section-key-form");
-    if (sectionForm) {
+    var wideForm = event.target.closest("#wide-access-form");
+    if (wideForm) {
       event.preventDefault();
-      var sectionPick = sectionForm.querySelector("#section-scope");
-      var sectionWho = sectionForm.querySelector("#section-for");
-      issueSectionKey(sectionPick ? sectionPick.getAttribute("data-value") : "", sectionWho ? sectionWho.value : "");
+      var whoField = wideForm.querySelector("#access-for");
+      var personIds = [];
+      var machineIds = [];
+      wideForm.querySelectorAll("[data-access-person]").forEach(function (box) {
+        if (box.checked) personIds.push(box.getAttribute("data-access-person"));
+      });
+      wideForm.querySelectorAll("[data-access-machine]").forEach(function (box) {
+        if (box.checked) machineIds.push(box.getAttribute("data-access-machine"));
+      });
+      var tasksAllBox = wideForm.querySelector("[data-access-tasks-all]");
+      issueWideAccess(whoField ? whoField.value : "", personIds, machineIds, !!(tasksAllBox && tasksAllBox.checked));
       return;
     }
     var driveFolderForm = event.target.closest("#drive-folder-form");
@@ -5952,6 +6104,24 @@ button.count-toggle {
   function onChange(event) {
     if (applyDraftField(event.target)) return;
     if (rememberPending(event.target)) return;
+    var personBox = event.target.closest("[data-access-person]");
+    if (personBox) {
+      var personId = personBox.getAttribute("data-access-person");
+      if (personBox.checked) state.accessPersonDraft[personId] = true;
+      else delete state.accessPersonDraft[personId];
+      return;
+    }
+    var machineBox = event.target.closest("[data-access-machine]");
+    if (machineBox) {
+      var machineId = machineBox.getAttribute("data-access-machine");
+      if (machineBox.checked) state.accessMachineDraft[machineId] = true;
+      else delete state.accessMachineDraft[machineId];
+      return;
+    }
+    if (event.target.closest("[data-access-tasks-all]")) {
+      state.accessTasksAllDraft = !!event.target.checked;
+      return;
+    }
     var box = event.target.closest("[data-gear]");
     if (!box) return;
     var group = box.getAttribute("data-gear");
@@ -5976,8 +6146,8 @@ button.count-toggle {
       state.unitNameDraft = node.value.slice(0, 80);
       return;
     }
-    if (node.id === "section-for") {
-      state.sectionForDraft = node.value.slice(0, 40);
+    if (node.id === "access-for") {
+      state.accessForDraft = node.value.slice(0, 40);
       return;
     }
     if (node.id === "drive-folder") {
@@ -6057,9 +6227,13 @@ button.count-toggle {
     state.fileNote = false;
     state.profile = false;
     state.profilePane = "";
-    state.sectionKeys = [];
-    state.sectionScopeDraft = "people";
-    state.sectionForDraft = "";
+    state.accessGrants = [];
+    state.accessForDraft = "";
+    state.accessPersonDraft = {};
+    state.accessMachineDraft = {};
+    state.accessTasksAllDraft = false;
+    state.accessNote = "";
+    state.activeGrant = null;
     state.daysArchive = {};
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
@@ -6248,9 +6422,9 @@ button.count-toggle {
     check(pageSource.indexOf("DEMO_" + "SUBORDINATES") === -1 && pageSource.indexOf("findDemo" + "Subordinate") === -1 && pageSource.indexOf("1 рота · " + "демо") === -1 && pageSource.indexOf("ensureUnitReport" + "DemoStatuses") === -1, "у коді немає демо-підрозділів");
     startReport.querySelector("[data-pick-toggle]").click();
     checkWorkWidth("служба");
-    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("unit-create") && !document.getElementById("status-create") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "служба бачить звіт без форм");
+    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("unit-create") && !document.getElementById("status-create") && !document.getElementById("wide-access") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "служба бачить звіт без форм");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && !document.getElementById("main").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("section-access").textContent.indexOf("Доступ до розділу") !== -1 && document.getElementById("section-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі видає ключ, створює ланку і бачить архів");
+    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("main").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && document.getElementById("wide-access").textContent.indexOf("Штат і доступ") !== -1 && document.getElementById("access-for") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі має штат/доступ, створює ланку і бачить архів");
     var driveBlock = document.getElementById("drive");
     check(!!driveBlock && driveBlock.textContent.indexOf("Код доступу") !== -1 && driveBlock.textContent.indexOf("Адреса спільної папки") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі код доступу і кнопка адреси без позначки адміна");
     check(driveBlock.textContent.indexOf("Ключ шифрування звіт") === -1 && driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Здати") === -1, "немає старого підпису ключа, Диск і Здати");
@@ -6513,24 +6687,14 @@ button.count-toggle {
     check(gearFrac && gearFrac.getAttribute("data-plus") === "7" && gearFrac.getAttribute("data-total") === "8", "fixture 7/8");
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
-    check(!document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
+    check(!document.getElementById("wide-access") && !document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
     check(state.openCode === "1rota" && state.scope === "all", "після дотику 1rota вибрано");
     check(state.openCode !== "lead", "служба не лишається вибраною");
     check(!document.getElementById("status-create"), "рота не додає статус");
     check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "після 1rota рядок дати без порожніх змін");
     checkWorkWidth("підрозділ");
     useCode("lyudy");
-    check(!document.getElementById("equipment") && !document.getElementById("tasks"), "один дотик ховає чужі розділи");
-    check(!document.getElementById("section-access"), "вузький код не роздає доступ");
-    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("day-nav"), "вужчий дотик без дати і змін");
-    checkWorkWidth("один розділ");
-    document.querySelector("[data-open-profile]").click();
-    check(document.getElementById("profile-overlay") && document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "вужчий код бачить назви розділів");
-    checkWorkWidth("профіль розділу");
-    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вужчий код не створює і не відкриває архів");
-    document.querySelector("[data-profile-pane='people']").click();
-    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.getElementById("status-list"), "вужчий код без списку статусів");
-    document.querySelector("[data-close-profile]").click();
+    check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1 && state.openCode === "1rota", "старий код lyudy скасовано");
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "один дотик відкриває 1rota");
     check(state.openCode === "1rota", "після дотику 1rota вибрано");
@@ -6576,7 +6740,7 @@ button.count-toggle {
     profileBtn.click();
     check(document.getElementById("profile-overlay") && !document.getElementById("main").contains(document.getElementById("profile-overlay")), "профіль окремо від звіту");
     check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("section-scope").tagName !== "SELECT" && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "рота у профілі видає ключ, створює ланку і бачить архів");
+    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("wide-access").textContent.indexOf("Штат") !== -1 && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "рота у профілі має штат/доступ, створює ланку і бачить архів");
     document.querySelector("[data-profile-pane='people']").click();
     check(!document.getElementById("status-name"), "рота не відкриває форму статусу");
     document.querySelector("[data-profile-pane='types']").click();
@@ -6900,46 +7064,41 @@ button.count-toggle {
     toggle("unit:s4");
     check(text("people").includes("Обов’язків не виконує"), "довгий стан у списку");
     check(document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1, "без горизонтального прокручування після розкриття");
-    applyCode("lyudy");
-    check(document.getElementById("people") && !document.getElementById("equipment") && !document.getElementById("tasks"), "вузький код людей");
-    check(!document.getElementById("app").textContent.includes("Самоскиди") && !document.getElementById("app").textContent.includes("Інженерні загородження"), "чужі розділи не видно");
-    toggle("unit:v1");
-    toggle("unit:s1");
-    toggle("person:p4");
-    check(!document.querySelector("#panel-person-p4 [data-remove]"), "вужчий код не видаляє картку");
-    check(!document.querySelector("[data-add]") && !document.getElementById("add-person-form") && !document.querySelector("[data-remove]"), "вужчий код без плюса і без видалення");
-    document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
-    var pipNarrow = document.getElementById("pip-p4");
-    pipNarrow.value = "Інше ПІП";
-    pipNarrow.dispatchEvent(new Event("input", { bubbles: true }));
-    check(!state.edits.people.p4 || state.edits.people.p4.name !== "Інше ПІП", "до галочки вужчий код не пише");
-    var changesAtNarrow = state.changes.length;
-    document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
-    check(state.edits.people.p4 && state.edits.people.p4.name === "Інше ПІП", "вужчий код може правити картку");
-    check(state.changes.length === changesAtNarrow && !state.changes.some(function (item) { return item.after === "Інше ПІП"; }), "вужчий код не пише запис зміни");
-    check(!document.getElementById("equipment") && !document.getElementById("tasks"), "вужчий код не відкриває інші розділи");
-    check(document.getElementById("app").textContent.indexOf("Що змінено") === -1 && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("day-nav"), "lyudy без дати і змін");
-    check(document.getElementById("app").textContent.indexOf("Самоскиди") === -1, "lyudy не показує техніку");
+    document.querySelector("[data-open-profile]").click();
+    check(!!document.getElementById("wide-access") && !!document.querySelector("#wide-access [data-access-person='p4']") && !!document.querySelector("#wide-access [data-access-machine='m8']") && !!document.querySelector("#wide-access [data-access-tasks-all]"), "у штаті є чекбокси людей, техніки і завдань");
+    document.querySelector("#wide-access [data-access-person='p4']").checked = true;
+    document.querySelector("#wide-access [data-access-person='p4']").dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector("#wide-access [data-access-machine='m8']").checked = true;
+    document.querySelector("#wide-access [data-access-machine='m8']").dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("access-for").value = "Клен";
+    document.getElementById("wide-access-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.accessGrants.length === 1 && state.accessGrants[0].forWhom === "Клен" && state.accessGrants[0].personIds.indexOf("p4") !== -1 && state.accessGrants[0].machineIds.indexOf("m8") !== -1, "видано широкий доступ за чекбоксами");
+    var grantCode = state.accessGrants[0].code;
+    document.querySelector("[data-close-profile]").click();
+    applyCode(grantCode);
+    check(state.scope === "grant" && !!document.getElementById("people") && !!document.getElementById("equipment") && !document.getElementById("tasks") && !document.getElementById("day-nav"), "грант відкриває обране без завдань і без дати");
+    check(document.getElementById("people").textContent.indexOf("Мельник") !== -1 || document.getElementById("people").textContent.indexOf("p4") !== -1 || !!document.getElementById("panel-person-p4") || document.querySelector("[data-toggle='person:p4']"), "грант бачить обрану людину");
+    check(document.getElementById("app").textContent.indexOf("Інженерні загородження") === -1, "грант без невибраних завдань");
+    check(!document.querySelector("[data-add]") && !document.querySelector("[data-remove]"), "грант без плюса і без видалення");
+    document.querySelector("[data-toggle='person:p4']") && document.querySelector("[data-toggle='person:p4']").click();
+    if (document.querySelector("#panel-person-p4 [data-edit-card='person:p4']")) {
+      document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
+      var pipNarrow = document.getElementById("pip-p4");
+      if (pipNarrow) {
+        pipNarrow.value = "Інше ПІП";
+        pipNarrow.dispatchEvent(new Event("input", { bubbles: true }));
+        var changesAtNarrow = state.changes.length;
+        document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
+        check(state.edits.people.p4 && state.edits.people.p4.name === "Інше ПІП", "грант може правити картку");
+        check(state.changes.length === changesAtNarrow && !state.changes.some(function (item) { return item.after === "Інше ПІП"; }), "грант не пише запис зміни");
+      }
+    }
     applyCode("tekhnika");
-    check(!document.getElementById("people") && document.getElementById("equipment") && !document.getElementById("tasks"), "вузький код техніки");
-    check(!document.getElementById("section-access"), "вузький код техніки не роздає доступ");
-    toggle("type:dozer");
-    toggle("machine:m8");
-    check(!document.querySelector("#panel-machine-m8 [data-remove]"), "вужчий код не видаляє машину");
-    check(!document.querySelector("[data-add]") && !document.getElementById("add-machine-form") && !document.querySelector("[data-remove]"), "вужчий код техніки без плюса і без видалення");
-    document.querySelector("#panel-machine-m8 [data-edit-card='machine:m8']").click();
-    var board = document.getElementById("mboard-m8");
-    board.value = "999";
-    board.dispatchEvent(new Event("input", { bubbles: true }));
-    check(!state.edits.machines.m8 || state.edits.machines.m8.board !== "999", "до галочки борт не записаний");
-    document.querySelector("#panel-machine-m8 [data-save-card='machine:m8']").click();
-    check(state.edits.machines.m8 && state.edits.machines.m8.board === "999", "борт змінюється");
+    check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1, "старий код tekhnika скасовано");
     applyCode("zavdannya");
-    check(!document.getElementById("people") && !document.getElementById("equipment") && document.getElementById("tasks"), "вузький код завдань");
-    check(!document.getElementById("section-access"), "вузький код завдань не роздає доступ");
-    check(!document.querySelector("[data-add]"), "вузький код завдань без плюса");
+    check(document.getElementById("app").textContent.indexOf("Такого коду") !== -1, "старий код zavdannya скасовано");
     applyCode("немає");
-    check(state.scope === "tasks" && document.getElementById("app").textContent.includes("Такого коду"), "чужий код не відкриває");
+    check(document.getElementById("app").textContent.includes("Такого коду"), "чужий код не відкриває");
     applyCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "код підрозділу повертає три блоки");
     var peopleFracEnd = document.querySelector("#people .frac");
@@ -7014,49 +7173,27 @@ button.count-toggle {
     check(!!document.querySelector("#people [data-add='person']") && !!document.getElementById("people") && !!document.getElementById("equipment") && !!document.getElementById("tasks"), "довгий код бачить усі розділи");
     check(!document.getElementById("status-create"), "довгий код підрозділу не є службою");
     check(document.getElementById("app").textContent.indexOf("Профільні розділи") === -1, "профільних розділів немає і в новому звіті");
-    check(!document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "на звіті нової ланки немає доступу й архіву");
+    check(!document.getElementById("wide-access") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "на звіті нової ланки немає доступу й архіву");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && document.getElementById("profile-overlay").contains(document.getElementById("section-access")) && document.getElementById("section-scope").tagName !== "SELECT" && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name"), "новий підрозділ у профілі видає ключ, створює нижче і бачить архів");
-    var accessNext = document.querySelector("#section-key-form button[type='submit']");
-    var accessTop = accessNext.offsetTop;
-    var accessPage = document.documentElement.scrollHeight;
-    document.querySelector("#section-scope [data-pick-toggle]").click();
-    var accessList = document.querySelector("#section-scope .pick-list");
-    check(accessList && accessNext.offsetTop === accessTop && document.documentElement.scrollHeight === accessPage && (layerPos(accessList) === "fixed" || layerPos(accessList) === "absolute"), "список розділу поверх, без зсуву");
-    check(accessList.textContent.indexOf("Військовослужбовці") !== -1 && accessList.textContent.indexOf("Техніка") !== -1 && accessList.textContent.indexOf("Завдання") !== -1, "три розділи в списку доступу");
-    document.querySelector("#section-scope [data-pick-value='equipment']").click();
-    document.getElementById("section-for").value = "Клен";
-    document.getElementById("section-key-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    document.getElementById("section-for").value = "Барс";
-    document.getElementById("section-key-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    check(state.sectionKeys.length === 2 && state.sectionKeys[0].code !== state.sectionKeys[1].code && state.sectionKeys[0].scope === "equipment" && state.sectionKeys[1].scope === "equipment" && state.sectionKeys[0].forWhom === "Клен" && state.sectionKeys[1].forWhom === "Барс", "два окремі ключі на техніку");
-    document.querySelector("#section-scope [data-pick-toggle]").click();
-    document.querySelector("#section-scope [data-pick-value='tasks']").click();
-    document.getElementById("section-for").value = "   ";
-    document.getElementById("section-key-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    check(state.sectionKeys.length === 3 && state.sectionKeys[2].scope === "tasks" && state.sectionKeys[2].forWhom === "" && state.sectionKeys[2].unitKey === state.units[0].code, "поле для кого не обов’язкове");
-    var keyA = state.sectionKeys[0].code;
-    var keyB = state.sectionKeys[1].code;
-    var keyC = state.sectionKeys[2].code;
-    document.querySelector("[data-open-profile]").click();
-    check(!!document.querySelector("#profile-overlay [data-use-code='" + keyA + "']") && !!document.querySelector("#profile-overlay [data-use-code='" + keyB + "']") && !!document.querySelector("#profile-overlay [data-use-code='" + keyC + "']"), "ключі розділу в профілі");
+    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name"), "новий підрозділ у профілі має штат/доступ, створює нижче і бачить архів");
+    check(document.getElementById("wide-access").textContent.indexOf("Повний штат") !== -1 || document.getElementById("wide-access").textContent.indexOf("Штат") !== -1, "порожній штат нової ланки позначено");
+    document.getElementById("access-for").value = "Клен";
+    document.querySelector("#wide-access [data-access-tasks-all]").checked = true;
+    document.querySelector("#wide-access [data-access-tasks-all]").dispatchEvent(new Event("change", { bubbles: true }));
+    document.getElementById("wide-access-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(state.accessGrants.some(function (item) { return item.forWhom === "Клен" && item.tasksAll && item.unitKey === state.units[0].code; }), "доступ лише до завдань нової ланки");
+    var emptyGrant = state.accessGrants.filter(function (item) { return item.unitKey === state.units[0].code; }).pop();
     document.querySelector("[data-close-profile]").click();
-    applyCode(keyA);
-    check(!document.getElementById("people") && document.getElementById("equipment") && !document.getElementById("tasks") && !document.getElementById("section-access"), "вузький ключ лише техніка і без видачі");
-    check(document.querySelector("#equipment .frac").getAttribute("data-total") === "0", "вузький ключ не читає 7/8");
-    check(document.getElementById("equipment").textContent.indexOf("Степ") === -1 && document.getElementById("equipment").textContent.indexOf("Січ") === -1, "вузький ключ без машин зразка");
-    check(state.reportKey === state.units[0].code && state.report && state.report.file === reportFileName(state.units[0].code) && state.report.file !== SAMPLE_FILE && state.report.machines.length === 0, "вузький ключ читає файл підрозділу");
+    applyCode(emptyGrant.code);
+    check(state.scope === "grant" && !document.getElementById("people") && !document.getElementById("equipment") && !!document.getElementById("tasks") && !document.getElementById("wide-access"), "грант завдань порожньої ланки без штату і без видачі");
+    check(state.reportKey === state.units[0].code && state.report && state.report.file === reportFileName(state.units[0].code) && state.report.file !== SAMPLE_FILE, "грант читає файл підрозділу");
     document.querySelector("[data-open-profile]").click();
-    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("section-access") && !document.getElementById("archive"), "вузький ключ без службових речей і без архіву");
+    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("wide-access") && !document.getElementById("archive"), "грант без службових речей і без архіву");
     document.querySelector("[data-close-profile]").click();
-    applyCode(keyB);
-    check(state.openCode === keyB && state.scope === "equipment" && state.reportKey === state.units[0].code && document.querySelector("#equipment .frac").getAttribute("data-total") === "0", "другий ключ той самий порожній файл");
-    applyCode(keyC);
-    check(!document.getElementById("people") && !document.getElementById("equipment") && document.getElementById("tasks") && document.getElementById("tasks").textContent.indexOf("Огляд рубежу") === -1, "ключ без імені відкриває завдання підрозділу");
     applyCode(state.units[0].code);
-    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("section-access"), "той, хто видав, бачить розділи на звіті");
+    check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("wide-access"), "той, хто видав, бачить розділи на звіті");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive"), "той, хто видав, має доступ і архів у профілі");
+    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive"), "той, хто видав, має штат/доступ і архів у профілі");
     document.getElementById("unit-name").value = "Вал";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var childUnit = state.units[1];
@@ -7069,7 +7206,7 @@ button.count-toggle {
     applyCode(childUnit.code);
     check(state.scope === "all" && document.querySelector("#people .frac").getAttribute("data-total") === "0" && document.querySelector("#equipment .frac").getAttribute("data-total") === "0" && document.getElementById("people").textContent.indexOf("Бондар") === -1, "код нижчої ланки відкриває порожній звіт");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("type-name"), "нижча ланка теж створює ще нижче");
+    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("type-name"), "нижча ланка теж створює ще нижче");
     document.getElementById("unit-name").value = "Група";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var grandUnit = state.units[2];
