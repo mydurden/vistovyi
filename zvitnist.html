@@ -5280,10 +5280,45 @@ button.count-toggle {
     var bundleKey = canonicalOwnBundleKey(encrypt || state.driveEncryptKey);
     var doc = applyUnitSnapshot(raw, bundleKey);
     if (!doc) return false;
+    mergeChildrenFromSnapshot(raw);
+    // ZS-125: під час відкритої підлеглої ланки lead-файл кладемо лише в bundles[lead],
+    // не підміняємо живий state (інакше upsert перезапише файл unit знімком lead).
+    var openChild = driveChildWriteCode();
+    if (openChild && String(openChild).toLowerCase() !== String(bundleKey).toLowerCase()) {
+      var day = raw && typeof raw.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.day) ? raw.day : todayISO();
+      var days = {};
+      if (raw && raw.days && typeof raw.days === "object") {
+        Object.keys(raw.days).forEach(function (key) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+          days[key] = normalizeDaySlice(raw.days[key]);
+        });
+      }
+      var liveSlice = daySliceFromReportOrArchive(doc, days, day, Array.isArray(raw && raw.changes) ? raw.changes : []);
+      if (daySliceHasReport(liveSlice) || !days[day]) days[day] = liveSlice;
+      if (daySliceHasReport(liveSlice)) {
+        doc.unit = liveSlice.unit;
+        doc.machines = liveSlice.machines;
+        doc.tasks = liveSlice.tasks;
+        doc.people = liveSlice.people;
+      }
+      captureBundle(state.reportKey);
+      bundles[bundleKey] = {
+        edits: { people: {}, machines: {} },
+        removed: { people: {}, machines: {} },
+        added: { people: [], machines: [] },
+        positions: {},
+        changes: Array.isArray(raw && raw.changes) ? raw.changes.slice(-100) : [],
+        report: doc,
+        daysArchive: days,
+        fileDay: day,
+        viewDay: day
+      };
+      if (encrypt && encrypt !== bundleKey) delete bundles[encrypt];
+      return true;
+    }
     state.report = doc;
     state.reportKey = bundleKey;
     loadDaysFromSnapshot(raw);
-    mergeChildrenFromSnapshot(raw);
     if (raw.name) state.holder = String(raw.name).slice(0, 80);
     captureBundle(bundleKey);
     if (encrypt && encrypt !== bundleKey) delete bundles[encrypt];
@@ -5377,7 +5412,20 @@ button.count-toggle {
     var ownBundleKey = canonicalOwnBundleKey(parentKey);
     if (child && child.toLowerCase() !== parentKey.toLowerCase()) {
       captureBundle(state.reportKey);
-      var childSnap = currentUnitSnapshot();
+      // ZS-125: знімок unit лише з її bundle / живого state цієї ланки — ніколи з lead.
+      var childSnap = null;
+      if (String(state.reportKey || "").toLowerCase() === String(child).toLowerCase()) {
+        childSnap = currentUnitSnapshot();
+      } else {
+        childSnap = snapshotFromStoredBundle(child);
+      }
+      if (!childSnap) {
+        normalizeOwnReportKey();
+        var parentOnly = snapshotFromStoredBundle(ownBundleKey || bundleKeyForDriveKey(parentKey));
+        if (!parentOnly) return Promise.reject(new Error("nocode"));
+        parentOnly.code = parentKey;
+        return upsertKeyedUnitFile(token, folderId, parentKey, parentOnly);
+      }
       childSnap.code = child;
       childSnap.children = subordinatesFor(child).map(function (unit) {
         var childCode = String(unit.code || "");
@@ -5410,9 +5458,11 @@ button.count-toggle {
   }
 
   function generalBundleKey() {
+    // ZS-125: ціль merge — канонічний bundle власника файлу (lead), не збитий reportRoot.
+    var own = canonicalOwnBundleKey(state.driveEncryptKey);
+    if (own) return own;
     var root = String(state.reportRoot || "").trim();
     if (root) return reportKey(root) || "lead";
-    if (String(state.openCode || "").toLowerCase() === "lead") return "lead";
     return "lead";
   }
 
@@ -5436,7 +5486,7 @@ button.count-toggle {
     return key;
   }
 
-  // ZS-123: після ingest unit — перенести о/с/ОВТ/завдання в Загальний (lead).
+  // ZS-123/125: після ingest unit — перенести о/с/ОВТ/завдання в Загальний (lead).
   function mergeUnitIntoGeneral(code) {
     var unitCode = String(code || "").trim();
     var child = bundles[unitCode];
@@ -5447,6 +5497,9 @@ button.count-toggle {
     if (meta) unitLabel = preferUnitName(meta.name, child.report.name);
     if (!unitLabel) unitLabel = String(child.report.name || "Підрозділ").slice(0, 80);
 
+    // Беремо живий зріз дня unit (report + daysArchive), не лише сире unit-дерево.
+    var childDay = child.fileDay || child.viewDay || todayISO();
+    var childLive = daySliceFromReportOrArchive(child.report, child.daysArchive || {}, childDay, child.changes);
     function walkPeople(node, acc) {
       if (!node || typeof node !== "object") return;
       (Array.isArray(node.people) ? node.people : []).forEach(function (person) {
@@ -5459,13 +5512,12 @@ button.count-toggle {
       (Array.isArray(node.children) ? node.children : []).forEach(function (row) { walkPeople(row, acc); });
     }
     var people = [];
-    walkPeople(child.report.unit, people);
-    var childMachines = Array.isArray(child.report.machines) ? child.report.machines : [];
-    var childTasks = Array.isArray(child.report.tasks) ? child.report.tasks : [];
-    // Порожній звіт ланки — не чіпати дерево загального (інакше people:[] ховає children фікстури).
+    walkPeople(childLive.unit, people);
+    var childMachines = Array.isArray(childLive.machines) ? childLive.machines : [];
+    var childTasks = Array.isArray(childLive.tasks) ? childLive.tasks : [];
+    // Порожній звіт ланки — не чіпати дерево загального і не брехати статусом «merged».
     if (!people.length && !childMachines.length && !childTasks.length) {
-      setUnitReportStatus(unitCode, "merged");
-      return true;
+      return false;
     }
 
     var leadKey = ensureGeneralBundle();
@@ -5512,6 +5564,7 @@ button.count-toggle {
       changes: lead.changes
     });
     lead.fileDay = day;
+    lead.viewDay = day;
     setUnitReportStatus(unitCode, "merged");
 
     var openNow = String(state.openCode || "").toLowerCase();
@@ -5521,7 +5574,7 @@ button.count-toggle {
       state.report = report;
       state.daysArchive = lead.daysArchive ? cloneData(lead.daysArchive) : {};
       state.fileDay = day;
-      if (!state.viewDay) state.viewDay = day;
+      state.viewDay = day;
       indexPeople(viewUnit());
     }
     return true;
@@ -5734,11 +5787,17 @@ button.count-toggle {
         return { settings: bundle.settings, pulled: bundle.pulled, own: bundle.own, children: children };
       });
     }).then(function (bundle) {
-      // ZS-123: після merge unit у Загальний — перезаписати файл lead на Диску.
-      var needParentWrite = bundle.children && Number(bundle.children.merged) > 0 && !driveChildWriteCode();
+      // ZS-123/125: після реального merge — завжди перезаписати файл lead зі знімка bundles,
+      // навіть якщо зараз відкрита підлегла ланка (не через upsertOwnUnitFile → файл unit).
+      var needParentWrite = bundle.children && Number(bundle.children.merged) > 0;
       if (!needParentWrite) return bundle;
+      var parentKey = String(state.driveEncryptKey || "").trim();
+      var parentBundleKey = canonicalOwnBundleKey(parentKey);
+      var parentSnap = snapshotFromStoredBundle(parentBundleKey);
+      if (!parentSnap || !parentKey) return bundle;
+      parentSnap.code = parentKey;
       state.driveNote = "Пишу загальний звіт із перенесеними ланками.";
-      return upsertOwnUnitFile(token, folderId).then(function (own) {
+      return upsertKeyedUnitFile(token, folderId, parentKey, parentSnap).then(function (own) {
         bundle.own = own || bundle.own;
         return bundle;
       }).catch(function () {
@@ -10016,15 +10075,89 @@ button.count-toggle {
       check(parentSnap109 && JSON.stringify(parentSnap109.unit || {}).indexOf("Lead109") !== -1, "знімок lead має о/с lead");
       openReportChoice("__general__");
       check(state.openCode === "lead" && state.reportKey === "lead" && document.getElementById("people").textContent.indexOf("Lead109") !== -1, "назад у загальний — звіт lead збережений");
+      // ZS-125: sync при відкритому unit не підміняє state lead-знімком і не ставить merged на порожнє.
+      var child125 = "BBBB-CCCC-DDDD-EEEE-125A";
       state.units = (state.units || []).filter(function (unit) {
-        return unit.code !== child107 && unit.code !== child103 && unit.code !== child109;
+        return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125;
+      });
+      state.units.push({ id: "u125", name: "Ланка 125", code: child125, parent: "lead" });
+      state.reportRoot = "lead";
+      state.driveEncryptKey = "секрет-lead-125";
+      state.openCode = child125;
+      state.scope = "all";
+      state.reportKey = child125;
+      state.report = emptyUnitReport({ name: "Ланка 125", code: child125 });
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.removed = { people: {}, machines: {} };
+      state.daysArchive = {};
+      bundles[child125] = {
+        edits: { people: {}, machines: {} },
+        removed: { people: {}, machines: {} },
+        added: { people: [], machines: [] },
+        positions: {},
+        changes: [],
+        report: state.report,
+        daysArchive: {},
+        fileDay: todayISO(),
+        viewDay: todayISO()
+      };
+      bundles["lead"] = {
+        edits: { people: {}, machines: {} },
+        removed: { people: {}, machines: {} },
+        added: { people: [], machines: [] },
+        positions: {},
+        changes: [],
+        report: emptyUnitReport({ name: "Служба", code: "lead" }),
+        daysArchive: {},
+        fileDay: todayISO(),
+        viewDay: todayISO()
+      };
+      check(driveChildWriteCode() === child125 && !localReportHasContent(), "ZS-125: відкритий порожній unit");
+      check(!!applyOwnUnitSnapshot({
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        days: {},
+        unit: { id: "root", name: "Служба", people: [{ id: "p125lead", name: "Lead Keep", surname: "Keep", givenName: "Lead", patronymic: "", rank: "Солдат", callsign: "Keep125", accounting: "official", duty: "in", position: "" }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: [],
+        children: [{ name: "Ланка 125", code: child125 }]
+      }, "секрет-lead-125"), "ZS-125: pull lead при відкритому unit");
+      check(state.openCode === child125 && state.reportKey === child125, "ZS-125: після pull openCode/reportKey лишаються unit");
+      check(!!bundles["lead"] && JSON.stringify(bundles["lead"].report || {}).indexOf("Keep125") !== -1, "ZS-125: о/с lead у bundles, не в живому unit");
+      check(JSON.stringify(state.report || {}).indexOf("Keep125") === -1, "ZS-125: живий unit не затерто знімком lead");
+      check(!mergeUnitIntoGeneral(child125) && unitReportStatus(child125) !== "merged", "ZS-125: порожній unit не стає merged");
+      check(ingestChildUnit(child125, {
+        name: "Ланка 125",
+        code: child125,
+        day: todayISO(),
+        days: {},
+        unit: { id: "root", name: "Ланка 125", people: [{ id: "c125", name: "Unit 125", surname: "Unit", givenName: "125", patronymic: "", rank: "Солдат", callsign: "Unit125", accounting: "official", duty: "in", position: "" }] },
+        machines: [],
+        tasks: [],
+        people: [],
+        changes: []
+      }), "ZS-125: ingest unit з о/с");
+      check(unitReportStatus(child125) === "merged", "ZS-125: після ingest зі змістом — merged");
+      check(!!bundles["lead"] && JSON.stringify(bundles["lead"].report || {}).indexOf("Unit125") !== -1, "ZS-125: о/с unit у bundle lead");
+      check(!!snapshotFromStoredBundle("lead") && JSON.stringify(snapshotFromStoredBundle("lead").unit || {}).indexOf("Unit125") !== -1, "ZS-125: знімок lead для upsert має о/с unit");
+      openReportChoice("__general__");
+      render();
+      check(document.getElementById("people") && document.getElementById("people").textContent.indexOf("Unit125") !== -1, "ZS-125: на Загальному видно о/с unit");
+      state.units = (state.units || []).filter(function (unit) {
+        return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125;
       });
       delete state.unitReportStatus[child107];
       delete state.unitReportStatus[child103];
       delete state.unitReportStatus[child109];
+      delete state.unitReportStatus[child125];
       delete bundles[child107];
       delete bundles[child103];
       delete bundles[child109];
+      delete bundles[child125];
       state.driveEncryptKey = "";
       state.driveDupNote = "";
       // ZS-108: не плодити create, якщо list бачить файл; identical trash; різні — позначка.
