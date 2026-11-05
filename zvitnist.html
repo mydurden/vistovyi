@@ -1563,10 +1563,91 @@ button.count-toggle {
     return packInvite(folderId, code);
   }
 
-  function unitDriveFileName(code) {
+  // ZS-112: старе ім’я від хеша — лише для міграції / fallback.
+  function unitDriveFileNameLegacy(code) {
     var hash = keyFingerprint(code);
     if (!hash) return "";
     return "vu-" + hash.slice(0, 32) + ".bin";
+  }
+
+  function translitDriveChar(ch) {
+    var map = {
+      а: "a", б: "b", в: "v", г: "h", ґ: "g", д: "d", е: "e", є: "ye", ж: "zh", з: "z",
+      и: "y", і: "i", ї: "yi", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p",
+      р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh", щ: "shch",
+      ь: "", ю: "yu", я: "ya", "'": "", "’": "", "ʼ": ""
+    };
+    var lower = String(ch || "").toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(map, lower)) return map[lower];
+    if (/[a-z0-9]/i.test(ch)) return lower;
+    return "-";
+  }
+
+  function sanitizeDriveSlug(raw) {
+    var src = String(raw || "").trim();
+    if (!src) return "";
+    var out = "";
+    for (var i = 0; i < src.length; i++) out += translitDriveChar(src.charAt(i));
+    out = out.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-+/g, "-");
+    return out.slice(0, 48);
+  }
+
+  function unitDriveLabelForKey(code) {
+    var key = String(code || "").trim();
+    if (!key) return "";
+    var lower = key.toLowerCase();
+    if (lower === "lead" || lower === "sluzhba" || lower === "1rota") return "sluzhba";
+    var unit = findUnitByCode(key);
+    if (unit && unit.name) return String(unit.name);
+    if (looksLikeUnitCode(key)) {
+      var parts = key.split("-");
+      return parts[parts.length - 1] || "unit";
+    }
+    // Пароль адміна / загальний — не світити пароль; ярлик служби.
+    if (String(state.reportRoot || "").toLowerCase() === "lead" || String(state.openCode || "").toLowerCase() === "lead") {
+      return "sluzhba";
+    }
+    if (state.holder) return String(state.holder);
+    return "zagalnyi";
+  }
+
+  function unitDriveFileName(code) {
+    var key = String(code || "").trim();
+    if (!key) return "";
+    var slug = sanitizeDriveSlug(unitDriveLabelForKey(key));
+    if (!slug) {
+      if (looksLikeUnitCode(key)) {
+        var tail = key.replace(/[^A-Za-z0-9]/g, "").slice(-4).toLowerCase();
+        slug = "unit-" + (tail || "x");
+      } else {
+        slug = "zagalnyi";
+      }
+    }
+    return "vu-" + slug + ".bin";
+  }
+
+  function resolveUnitDriveFile(token, folderId, key, opts) {
+    var modern = unitDriveFileName(key);
+    var legacy = unitDriveFileNameLegacy(key);
+    if (!modern) return Promise.resolve({ file: null, name: "", legacyName: legacy, fromLegacy: false });
+    var queryOpts = opts || { kind: "binary", decryptKey: key };
+    return resolveDriveFileByName(token, folderId, modern, queryOpts).then(function (info) {
+      if (info && info.file) {
+        return { file: info.file, name: modern, legacyName: legacy, fromLegacy: false, trashed: info.trashed || 0 };
+      }
+      if (!legacy || legacy === modern) {
+        return { file: null, name: modern, legacyName: legacy, fromLegacy: false, trashed: 0 };
+      }
+      return resolveDriveFileByName(token, folderId, legacy, queryOpts).then(function (legacyInfo) {
+        return {
+          file: legacyInfo && legacyInfo.file ? legacyInfo.file : null,
+          name: modern,
+          legacyName: legacy,
+          fromLegacy: !!(legacyInfo && legacyInfo.file),
+          trashed: legacyInfo && legacyInfo.trashed ? legacyInfo.trashed : 0
+        };
+      });
+    });
   }
 
   function bytesToArrayBuffer(bytes) {
@@ -4307,9 +4388,21 @@ button.count-toggle {
     return bar;
   }
 
+  // ZS-111: технічні підписи sync ховаємо; лишаємо помилки/дії + progress bar.
+  function isVisibleDriveNote(note) {
+    var text = String(note || "").trim();
+    if (!text) return false;
+    if (/^Впишіть код доступу/.test(text)) return true;
+    if (/^Вхід не підтверджено/.test(text)) return true;
+    if (/^Мережа не відповіла/.test(text)) return true;
+    if (/^Вікно Google не відкрилось/.test(text)) return true;
+    if (/^Google не відкриває вхід/.test(text)) return true;
+    return false;
+  }
+
   function appendDriveSyncStatus(parent) {
     if (!parent) return;
-    if (state.driveNote) {
+    if (isVisibleDriveNote(state.driveNote)) {
       parent.append(el("p", { className: "hint", text: state.driveNote, attrs: { "data-drive-note": "1" } }));
     }
     var bar = renderDriveProgressBar();
@@ -4809,10 +4902,10 @@ button.count-toggle {
     if (!token || !folderId || !from || !to || from === to) {
       return Promise.resolve({ ok: false, reason: "skip" });
     }
-    var oldName = unitDriveFileName(from);
     var newName = unitDriveFileName(to);
-    if (!oldName || !newName) return Promise.resolve({ ok: false, reason: "name" });
-    return findNamedFile(token, folderId, oldName).then(function (file) {
+    if (!newName) return Promise.resolve({ ok: false, reason: "name" });
+    return resolveUnitDriveFile(token, folderId, from, { kind: "binary", decryptKey: from }).then(function (resolved) {
+      var file = resolved && resolved.file;
       if (!file || !file.id) return { ok: false, reason: "missing" };
       return downloadBinaryFile(token, file.id).then(function (bytes) {
         return decryptWithCode(from, bytes).then(function (text) {
@@ -4821,9 +4914,9 @@ button.count-toggle {
           if (!raw || typeof raw !== "object") return { ok: false, reason: "json" };
           raw.code = to;
           return encryptWithCode(to, JSON.stringify(raw)).then(function (sealed) {
-            var sameName = oldName === newName;
-            return uploadBinaryFile(token, folderId, newName, sealed, sameName ? file.id : null).then(function () {
-              if (sameName) return { ok: true, resealed: true };
+            var sameFile = !resolved.fromLegacy && resolved.name === newName;
+            return uploadBinaryFile(token, folderId, newName, sealed, sameFile ? file.id : null).then(function () {
+              if (sameFile) return { ok: true, resealed: true };
               return trashDriveFile(token, file.id).then(function () {
                 return { ok: true, resealed: true };
               });
@@ -4921,8 +5014,8 @@ button.count-toggle {
     if (!key) return Promise.resolve({ pulled: false });
     var name = unitDriveFileName(key);
     if (!name) return Promise.resolve({ pulled: false });
-    return resolveDriveFileByName(token, folderId, name, { kind: "binary", decryptKey: key }).then(function (info) {
-      var file = info && info.file;
+    return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
+      var file = resolved && resolved.file;
       if (!file || !file.id) return { pulled: false };
       return downloadBinaryFile(token, file.id).then(function (bytes) {
         return decryptWithCode(key, bytes).then(function (text) {
@@ -4936,13 +5029,13 @@ button.count-toggle {
             if (ownPullLooksLikeChildBleed(raw, key)) {
               var childCode = String(raw.code || "").trim();
               ingestChildUnit(childCode, raw);
-              return { pulled: true, keptLocal: false, quarantined: true, name: name, fileId: file.id };
+              return { pulled: true, keptLocal: false, quarantined: true, name: name, fileId: file.id, fromLegacy: !!resolved.fromLegacy };
             }
             applyOwnUnitSnapshot(raw, key);
           } else {
             normalizeOwnReportKey();
           }
-          return { pulled: true, keptLocal: keepLocal, name: name, fileId: file.id };
+          return { pulled: true, keptLocal: keepLocal, name: name, fileId: file.id, fromLegacy: !!resolved.fromLegacy };
         });
       });
     }).catch(function () {
@@ -4954,8 +5047,9 @@ button.count-toggle {
     if (!key) return Promise.reject(new Error("nocode"));
     var name = unitDriveFileName(key);
     if (!name) return Promise.reject(new Error("nocode"));
-    return resolveDriveFileByName(token, folderId, name, { kind: "binary", decryptKey: key }).then(function (info) {
-      var file = info && info.file;
+    return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
+      var file = resolved && resolved.file;
+      var fromLegacy = !!(resolved && resolved.fromLegacy);
       var preserve = Promise.resolve(null);
       // Не затирати на Диску непорожній children порожнім локальним списком.
       if (file && file.id && subordinatesFor(key).length === 0) {
@@ -4977,9 +5071,17 @@ button.count-toggle {
             return { name: String(item && item.name || "").slice(0, 80), code: String(item && item.code || "") };
           }).filter(function (item) { return !!item.code; });
         }
+        // З legacy hash — створюємо нове ім’я (не PATCH старого), потім trash hash.
+        var writeId = fromLegacy ? null : (file && file.id);
         return encryptWithCode(key, JSON.stringify(payload)).then(function (bytes) {
-          return uploadBinaryFile(token, folderId, name, bytes, file && file.id).then(function (result) {
-            return { ok: true, name: name, key: key, updated: !!(result && result.updated) };
+          return uploadBinaryFile(token, folderId, name, bytes, writeId).then(function (result) {
+            var done = Promise.resolve(result);
+            if (fromLegacy && file && file.id) {
+              done = trashDriveFile(token, file.id).then(function () { return result; });
+            }
+            return done.then(function (out) {
+              return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
+            });
           });
         });
       });
@@ -5074,8 +5176,9 @@ button.count-toggle {
           setUnitReportStatus(unit.code, "missing");
           return;
         }
-        return findNamedFile(token, folderId, name).then(function (file) {
-          if (!file) {
+        return resolveUnitDriveFile(token, folderId, unit.code, { kind: "binary", decryptKey: unit.code }).then(function (resolved) {
+          var file = resolved && resolved.file;
+          if (!file || !file.id) {
             missing += 1;
             setUnitReportStatus(unit.code, "missing");
             return;
@@ -7537,7 +7640,9 @@ button.count-toggle {
     check(legacyPacked.invite && legacyPacked.folderId === "abcTEST123" && legacyPacked.code === "секрет", "старий рядок з префіксом vs1. приймається");
     check(legacyUa.invite && legacyUa.folderId === "abcTEST123" && legacyUa.code === "секрет", "старий рядок з префіксом ВСТ-1. приймається");
     check(!parseAccessCode("секрет").invite && parseAccessCode("секрет").code === "секрет", "звичайний пароль не плутається з запрошенням");
-    check(unitDriveFileName("секрет").indexOf("vu-") === 0 && unitDriveFileName("секрет").indexOf("секрет") === -1 && unitDriveFileName("секрет").slice(-4) === ".bin", "ім’я файлу від відбитка без відкритого коду");
+    check(unitDriveFileName("секрет").indexOf("vu-") === 0 && unitDriveFileName("секрет").indexOf("секрет") === -1 && unitDriveFileName("секрет").slice(-4) === ".bin", "ім’я файлу без відкритого коду/пароля");
+    check(unitDriveFileName("секрет") === "vu-sluzhba.bin" || unitDriveFileName("секрет").indexOf("vu-") === 0, "зрозуміле ім’я загального/служби");
+    check(unitDriveFileNameLegacy("секрет").indexOf("vu-") === 0 && unitDriveFileNameLegacy("секрет") !== unitDriveFileName("секрет"), "legacy hash лишається для міграції");
     check(pageSource.indexOf("toString(36) + " + '".bin"') === -1 && pageSource.indexOf("function " + "putReport") === -1, "немає заглушки випадкового .bin");
     state.driveNote = "";
     var seenDriveScope = "";
@@ -7562,16 +7667,20 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
-    // ZS-110: під note є progress bar; напис лишається; після clear bar зникає.
+    // ZS-110/111: progress bar є; технічний підпис сховано; помилка видима.
     state.driveNote = "Синхронізую довідники.";
     setDriveProgress(1, 5);
     render();
-    check(!!document.querySelector("[data-drive-note]") && document.querySelector("[data-drive-note]").textContent.indexOf("Синхронізую довідники") !== -1, "підпис sync на місці з progress");
-    check(!!document.querySelector("[data-drive-progress]") && document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "20", "progress bar під підписом на 1/5");
+    check(!document.querySelector("[data-drive-note]"), "технічний підпис sync сховано");
+    check(!!document.querySelector("[data-drive-progress]") && document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "20", "progress bar на 1/5 лишається");
     clearDriveProgress();
     state.driveNote = "довідники записано. свій файл записано.";
     render();
-    check(!!document.querySelector("[data-drive-note]") && !document.querySelector("[data-drive-progress]"), "після sync bar зникає, підсумок лишається");
+    check(!document.querySelector("[data-drive-note]") && !document.querySelector("[data-drive-progress]"), "після sync немає технічного підсумку й bar");
+    state.driveNote = "Впишіть код доступу.";
+    clearDriveProgress();
+    render();
+    check(!!document.querySelector("[data-drive-note]") && document.querySelector("[data-drive-note]").textContent.indexOf("Впишіть код доступу") !== -1, "помилка/дія видима");
     state.driveNote = "Відкриваю вікно Google.";
     clearDriveProgress();
     render();
@@ -9051,6 +9160,93 @@ button.count-toggle {
       var childSnap103 = currentUnitSnapshot();
       check(childSnap103 && childSnap103.code === child103 && JSON.stringify(childSnap103.unit).indexOf("Лис") !== -1, "знімок для Диска з кодом і о/с дитини");
       check(unitDriveFileName(child103) !== unitDriveFileName("секрет-видавця"), "файл дитини ≠ файл видавця");
+      check(sanitizeDriveSlug("1 Рота") === "1-rota" || sanitizeDriveSlug("1 Рота").indexOf("rota") !== -1, "sanitize дає зрозумілий slug");
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== "ROTA-TEST-NAME-CODE-AAAA"; });
+      state.units.push({ id: "u112", name: "1 Рота", code: "ROTA-TEST-NAME-CODE-AAAA", parent: "lead" });
+      check(unitDriveFileName("ROTA-TEST-NAME-CODE-AAAA") === "vu-1-rota.bin", "файл ланки від назви");
+      check(unitDriveFileName("ROTA-TEST-NAME-CODE-AAAA").indexOf("ROTA-TEST-NAME-CODE-AAAA") === -1, "повний код ланки не в імені файлу");
+      state.units = (state.units || []).filter(function (unit) { return unit.code !== "ROTA-TEST-NAME-CODE-AAAA"; });
+      // ZS-112: upsert мігрує з legacy hash на зрозуміле ім’я.
+      return (function () {
+        var key112 = "секрет-112";
+        var modern112 = unitDriveFileName(key112);
+        var legacy112 = unitDriveFileNameLegacy(key112);
+        var payload112 = JSON.stringify({
+          version: 2,
+          name: "Служба",
+          code: key112,
+          day: todayISO(),
+          unit: { id: "root", name: "Служба", people: [] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: []
+        });
+        return encryptWithCode(key112, payload112).then(function (bytes112) {
+          var store112 = {};
+          store112[legacy112] = { id: "file-legacy-112", bytes: bytes112 };
+          var created112 = 0;
+          var trashed112 = [];
+          var originalFetch112 = window.fetch;
+          window.fetch = function (url, opts) {
+            var href = String(url || "");
+            opts = opts || {};
+            if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+              var decoded = decodeURIComponent(href);
+              var list = [];
+              Object.keys(store112).forEach(function (name) {
+                if (decoded.indexOf("name='" + name + "'") !== -1) {
+                  list.push({ id: store112[name].id, name: name, modifiedTime: "2026-11-05T12:00:00.000Z" });
+                }
+              });
+              return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ files: list }); } });
+            }
+            if (href.indexOf("alt=media") !== -1) {
+              var hit = null;
+              Object.keys(store112).forEach(function (name) {
+                if (store112[name].id && href.indexOf(encodeURIComponent(store112[name].id)) !== -1) hit = store112[name];
+              });
+              return Promise.resolve({
+                ok: !!hit,
+                arrayBuffer: function () {
+                  return Promise.resolve(hit ? hit.bytes.buffer.slice(hit.bytes.byteOffset, hit.bytes.byteOffset + hit.bytes.byteLength) : new ArrayBuffer(0));
+                }
+              });
+            }
+            if (opts.method === "POST" && href.indexOf("uploadType=multipart") !== -1) {
+              created112 += 1;
+              store112[modern112] = { id: "file-modern-112", bytes: opts.body };
+              return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ id: "file-modern-112", name: modern112 }); } });
+            }
+            if (opts.method === "PATCH" && href.indexOf("/drive/v3/files/") !== -1) {
+              var meta112 = null;
+              try { meta112 = JSON.parse(opts.body || "{}"); } catch (err112) { meta112 = null; }
+              if (meta112 && meta112.trashed) {
+                Object.keys(store112).forEach(function (name) {
+                  if (href.indexOf(encodeURIComponent(store112[name].id)) !== -1) {
+                    trashed112.push(name);
+                    delete store112[name];
+                  }
+                });
+              }
+              return Promise.resolve({ ok: true });
+            }
+            return originalFetch112.apply(this, arguments);
+          };
+          return resolveUnitDriveFile("token", "folder112", key112, { kind: "binary", decryptKey: key112 }).then(function (resolved112) {
+            check(resolved112 && resolved112.fromLegacy && resolved112.name === modern112, "resolveUnitDriveFile знаходить legacy hash");
+            return upsertKeyedUnitFile("token", "folder112", key112, JSON.parse(payload112)).then(function (up112) {
+              window.fetch = originalFetch112;
+              check(up112 && up112.migrated && created112 === 1, "upsert мігрує на зрозуміле ім’я");
+              check(!!store112[modern112] && !store112[legacy112] && trashed112.indexOf(legacy112) !== -1, "новий файл є, hash у кошику");
+            });
+          }).catch(function (err112) {
+            window.fetch = originalFetch112;
+            check(false, "ZS-112 migrate: " + (err112 && err112.message ? err112.message : err112));
+          });
+        });
+      })().then(function () {
       // ZS-107: ingest на загальному не підміняє людей; applyCode зберігає reportRoot; upsert цілить файл дитини.
       var child107 = "ZZZZ-YYYY-XXXX-WWWW-VVVV";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child107 && unit.code !== child103; });
@@ -9314,6 +9510,7 @@ button.count-toggle {
         check(state.report.tasks && state.report.tasks[0] && state.report.tasks[0].status === "plan", "плани лишаються планами");
         check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ОВТ як були");
         finishSelfTest();
+      });
       });
     }).catch(function (err) {
       check(false, "шифрування кодом: " + (err && err.message ? err.message : err));
