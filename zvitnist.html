@@ -31,6 +31,9 @@
   --red-soft: #f7e8e5;
   --done-soft: #eceae6;
   --done-ink: #3e3a34;
+  --today: #2f6fed;
+  --today-soft: #dce8fb;
+  --today-ink: #1a4fbf;
   --shadow: 0 1px 2px rgba(27, 25, 21, 0.05), 0 12px 28px rgba(27, 25, 21, 0.05);
   --radius: 16px;
   color-scheme: light;
@@ -176,7 +179,7 @@ h1 {
   width: 0;
   border-radius: inherit;
   background: var(--green);
-  transition: width 0.2s ease;
+  transition: width 0.35s ease-out;
 }
 
 .top .drive-progress {
@@ -410,6 +413,19 @@ h1 {
 .calendar-day.is-selected {
   outline: 2px solid var(--green);
   outline-offset: 1px;
+}
+.calendar-day.is-today {
+  background: var(--today-soft);
+  color: var(--today-ink);
+  box-shadow: inset 0 0 0 2px var(--today);
+}
+.calendar-day.is-today.has-report {
+  background: var(--today);
+  color: #f4f8ff;
+  box-shadow: none;
+}
+.calendar-day.is-today.is-selected {
+  outline-color: var(--today);
 }
 .calendar-day:active { opacity: 0.85; }
 
@@ -1525,23 +1541,28 @@ button.count-toggle {
   }
 
   // Упаковка Вістового: base64url(тека\\nкод). Префікс vs1./ВСТ-1. лише для старих рядків.
-  function packInvite(folderId, code) {
+  function packInvite(folderId, code, name) {
     var id = String(folderId || "").trim();
     var pass = String(code || "").trim();
     if (!id || !pass) return pass;
-    var bytes = new TextEncoder().encode(id + "\n" + pass);
+    var payload = id + "\n" + pass;
+    var label = String(name || "").trim().slice(0, 80);
+    // ZS-114: третій рядок — назва ланки; старі 2-рядкові запрошення лишаються валідними.
+    if (label) payload += "\n" + label;
+    var bytes = new TextEncoder().encode(payload);
     return toBase64Url(bytes);
   }
 
   function decodeInvitePayload(payload) {
     try {
       var decoded = new TextDecoder().decode(fromBase64Url(payload));
-      var cut = decoded.indexOf("\n");
-      if (cut > 0) {
-        var folderId = decoded.slice(0, cut).trim();
-        var code = decoded.slice(cut + 1).trim();
+      var parts = String(decoded || "").split("\n");
+      if (parts.length >= 2) {
+        var folderId = String(parts[0] || "").trim();
+        var code = String(parts[1] || "").trim();
+        var name = parts.length >= 3 ? parts.slice(2).join("\n").trim().slice(0, 80) : "";
         if (folderId && code && /^[a-zA-Z0-9_-]{10,}$/.test(folderId)) {
-          return { invite: true, folderId: folderId, code: code };
+          return { invite: true, folderId: folderId, code: code, name: name };
         }
       }
     } catch (err) {}
@@ -1550,17 +1571,18 @@ button.count-toggle {
 
   function parseAccessCode(raw) {
     var typed = String(raw || "").trim();
-    if (!typed) return { invite: false, folderId: "", code: "" };
+    if (!typed) return { invite: false, folderId: "", code: "", name: "" };
     var prefix = typed.match(/^(vs1\.|вст-?1\.)/i);
     var payload = prefix ? typed.slice(prefix[0].length) : typed;
     var parsed = decodeInvitePayload(payload);
     if (parsed) return parsed;
-    return { invite: false, folderId: "", code: typed };
+    return { invite: false, folderId: "", code: typed, name: "" };
   }
 
   function inviteForCode(code) {
     var folderId = folderIdFromLink(state.driveFolder);
-    return packInvite(folderId, code);
+    var unit = findUnitByCode(code);
+    return packInvite(folderId, code, unit && unit.name);
   }
 
   // ZS-112: старе ім’я від хеша — лише для міграції / fallback.
@@ -2228,7 +2250,8 @@ button.count-toggle {
     if (CODES[lower] || lower === "sluzhba") return null;
     var existing = findUnitByCode(pass);
     if (existing) {
-      if (name && name !== existing.name) existing.name = String(name).slice(0, 80);
+      var keptInvite = preferUnitName(existing.name, name);
+      if (keptInvite) existing.name = keptInvite;
       return existing;
     }
     var created = {
@@ -2242,13 +2265,27 @@ button.count-toggle {
     return created;
   }
 
+  function isDefaultUnitName(name) {
+    var label = String(name || "").trim();
+    return !label || label === "Підрозділ";
+  }
+
+  // ZS-114: не затирати справжню назву порожньою / «Підрозділ».
+  function preferUnitName(current, incoming) {
+    var cur = String(current || "").trim().slice(0, 80);
+    var next = String(incoming || "").trim().slice(0, 80);
+    if (!next) return cur;
+    if (isDefaultUnitName(next) && !isDefaultUnitName(cur)) return cur;
+    return next;
+  }
+
   function applyParsedAccess(parsed) {
     var code = String(parsed && parsed.code || "").trim();
     state.driveEncryptKey = code.slice(0, 500);
     if (parsed && parsed.invite && parsed.folderId) {
       state.driveFolder = folderLinkFromId(parsed.folderId).slice(0, 240);
       // Підлеглий з довгим кодом ланки — відкрити цю ланку. Звичайний пароль адміна роль не чіпає.
-      var unit = ensureInviteUnit(code, "");
+      var unit = ensureInviteUnit(code, parsed.name || "");
       if (unit) {
         state.scope = "all";
         state.openCode = unit.code;
@@ -4345,7 +4382,9 @@ button.count-toggle {
     return header;
   }
 
-  // ZS-110: підпис sync лишається; bar лише поки йде sync.
+  // ZS-110/113: bar лише поки йде sync; width анімується між кроками (rAF після remount).
+  var driveProgressPaintPct = 0;
+
   function setDriveProgress(step, total) {
     if (step == null || !(total > 0)) {
       state.driveProgress = null;
@@ -4362,6 +4401,7 @@ button.count-toggle {
 
   function clearDriveProgress() {
     state.driveProgress = null;
+    driveProgressPaintPct = 0;
   }
 
   function renderDriveProgressBar() {
@@ -4371,6 +4411,9 @@ button.count-toggle {
     var pct = Math.round((Number(state.driveProgress.step) / Number(state.driveProgress.total)) * 100);
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
+    var from = driveProgressPaintPct;
+    if (!(from >= 0)) from = 0;
+    if (from > 100) from = 100;
     var bar = el("div", {
       className: "drive-progress",
       attrs: {
@@ -4383,8 +4426,19 @@ button.count-toggle {
       }
     });
     var fill = el("div", { className: "drive-progress-fill" });
-    fill.style.width = pct + "%";
+    fill.style.width = from + "%";
     bar.append(fill);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          fill.style.width = pct + "%";
+          driveProgressPaintPct = pct;
+        });
+      });
+    } else {
+      fill.style.width = pct + "%";
+      driveProgressPaintPct = pct;
+    }
     return bar;
   }
 
@@ -5125,7 +5179,11 @@ button.count-toggle {
     var doc = applyUnitSnapshot(rawJson, code);
     if (!doc) return false;
     var unit = findUnitByCode(code);
-    if (unit && doc.name) unit.name = doc.name;
+    if (unit) {
+      var kept = preferUnitName(unit.name, doc && doc.name);
+      if (kept) unit.name = kept;
+      if (isDefaultUnitName(doc.name) && !isDefaultUnitName(kept) && doc) doc.name = kept;
+    }
     var day = rawJson && typeof rawJson.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawJson.day) ? rawJson.day : todayISO();
     var days = {};
     if (rawJson && rawJson.days && typeof rawJson.days === "object") {
@@ -5971,11 +6029,13 @@ button.count-toggle {
     for (i = 0; i < startWeekday; i++) {
       grid.append(el("span", { className: "calendar-day is-muted", text: "" }));
     }
+    var today = todayISO();
     for (i = 1; i <= daysInMonth; i++) {
       var iso = year + "-" + pad2(month) + "-" + pad2(i);
       var classes = "calendar-day";
       if (hasDaySnapshot(iso)) classes += " has-report";
       else classes += " is-empty";
+      if (iso === today) classes += " is-today";
       if (iso === state.viewDay) classes += " is-selected";
       grid.append(el("button", {
         className: classes,
@@ -7635,6 +7695,9 @@ button.count-toggle {
     var packed = packInvite("abcTEST123", "секрет");
     var unpacked = parseAccessCode(packed);
     check(packed.indexOf("vs1.") === -1 && packed.indexOf(".") === -1 && unpacked.invite && unpacked.folderId === "abcTEST123" && unpacked.code === "секрет", "упаковка і розбір коду-запрошення без префікса");
+    var packedNamed = packInvite("abcTEST123", "ABCD-EFGH-JKLM-NPQR-NAME", "Туз");
+    var unpackedNamed = parseAccessCode(packedNamed);
+    check(unpackedNamed.invite && unpackedNamed.code === "ABCD-EFGH-JKLM-NPQR-NAME" && unpackedNamed.name === "Туз", "запрошення несе назву ланки");
     var legacyPacked = parseAccessCode("vs1." + packed);
     var legacyUa = parseAccessCode("ВСТ-1." + packed);
     check(legacyPacked.invite && legacyPacked.folderId === "abcTEST123" && legacyPacked.code === "секрет", "старий рядок з префіксом vs1. приймається");
@@ -7667,12 +7730,17 @@ button.count-toggle {
     };
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.driveNote.indexOf("Відкриваю вікно Google") !== -1, "Зберегти пише поля і запускає sync");
-    // ZS-110/111: progress bar є; технічний підпис сховано; помилка видима.
+    // ZS-110/111/113: progress bar є; технічний підпис сховано; анімація width між кроками.
     state.driveNote = "Синхронізую довідники.";
     setDriveProgress(1, 5);
     render();
     check(!document.querySelector("[data-drive-note]"), "технічний підпис sync сховано");
     check(!!document.querySelector("[data-drive-progress]") && document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "20", "progress bar на 1/5 лишається");
+    var fill113 = document.querySelector("[data-drive-progress] .drive-progress-fill");
+    check(!!fill113 && String(getComputedStyle(fill113).transitionProperty || "").indexOf("width") !== -1, "fill має CSS transition на width");
+    setDriveProgress(2, 5);
+    render();
+    check(document.querySelector("[data-drive-progress]").getAttribute("aria-valuenow") === "40", "progress bar на 2/5");
     clearDriveProgress();
     state.driveNote = "довідники записано. свій файл записано.";
     render();
@@ -7718,11 +7786,12 @@ button.count-toggle {
     state.driveFolder = "";
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "секрет" && state.openCode === "lead", "запрошення витягує теку і код без зміни ролі");
-    var unitInvite = packInvite("abcTEST123", "ABCD-EFGH-JKLM-NPQR-STUV");
+    var unitInvite = packInvite("abcTEST123", "ABCD-EFGH-JKLM-NPQR-STUV", "Вал");
     state.driveFolder = "";
     document.getElementById("drive-encrypt-key").value = unitInvite;
     document.getElementById("drive-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.driveFolder.indexOf("folders/abcTEST123") !== -1 && state.driveEncryptKey === "ABCD-EFGH-JKLM-NPQR-STUV" && state.openCode === "ABCD-EFGH-JKLM-NPQR-STUV", "запрошення ланки відкриває підрозділ");
+    check(state.holder === "Вал" && findUnitByCode("ABCD-EFGH-JKLM-NPQR-STUV") && findUnitByCode("ABCD-EFGH-JKLM-NPQR-STUV").name === "Вал", "запрошення підставляє назву ланки");
     state.units = state.units.filter(function (unit) { return unit.code !== "ABCD-EFGH-JKLM-NPQR-STUV"; });
     delete state.unitReportStatus["ABCD-EFGH-JKLM-NPQR-STUV"];
     applyCode("lead");
@@ -7765,6 +7834,9 @@ button.count-toggle {
     check(!!document.getElementById("calendar-overlay") && !!document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']"), "календар-оверлей");
     var emptyToday = document.querySelector("#calendar-overlay [data-pick-day='" + todayISO() + "']");
     check(emptyToday && emptyToday.classList.contains("is-empty") && !emptyToday.classList.contains("has-report"), "порожній сьогодні без позначки звіту");
+    check(emptyToday.classList.contains("is-today"), "сьогодні має клас is-today");
+    var todayColor = getComputedStyle(emptyToday).color;
+    check(todayColor.indexOf("26, 79, 191") !== -1 || todayColor.indexOf("47, 111, 237") !== -1 || todayColor === "rgb(26, 79, 191)" || /rgb\(\s*26\s*,\s*79\s*,\s*191\s*\)/.test(todayColor), "сьогодні блакитний текст");
     document.querySelector("[data-close-calendar]").click();
     var beforeDay = state.viewDay;
     var openedDay = shiftISODate(beforeDay, 1);
@@ -8072,7 +8144,22 @@ button.count-toggle {
     var inviteValue = copyBtn ? copyBtn.getAttribute("data-copy") : "";
     var inviteParsed = parseAccessCode(inviteValue);
     check(born && born.textContent === inviteValue && inviteValue.indexOf("vs1.") === -1 && inviteValue.indexOf(state.units[0].code) === -1, "на екрані одразу довге запрошення без префікса, не короткий код");
-    check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code, "Копіювати дає рядок-запрошення з текою і кодом");
+    check(inviteParsed.invite && inviteParsed.folderId === "abcTEST123" && inviteParsed.code === state.units[0].code && inviteParsed.name === "Туз", "Копіювати дає запрошення з текою, кодом і назвою");
+    // ZS-114: ingest дитини з «Підрозділ» не затирає назву видавця.
+    var keptTuz = state.units[0].name;
+    check(keptTuz === "Туз", "перед ingest назва Туз");
+    ingestChildUnit(state.units[0].code, {
+      name: "Підрозділ",
+      code: state.units[0].code,
+      day: todayISO(),
+      days: {},
+      unit: { id: "root", name: "Підрозділ", people: [] },
+      machines: [],
+      tasks: [],
+      people: [],
+      changes: []
+    });
+    check(state.units[0].name === "Туз", "ingest «Підрозділ» не затирає Туз");
     var changeAccessBtn = document.querySelector("#profile-overlay [data-change-access]");
     check(!!changeAccessBtn && changeAccessBtn.textContent === "Змінити доступ" && getComputedStyle(changeAccessBtn).textDecorationLine.indexOf("underline") === -1, "кнопка Змінити доступ у стилі профілю");
     changeAccessBtn.click();
