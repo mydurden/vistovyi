@@ -1417,7 +1417,10 @@ button.count-toggle {
     mergeConflicts: [],
     mergeDupes: [],
     mergeDeletes: [],
-    removedAt: { people: {}, machines: {} }
+    removedAt: { people: {}, machines: {} },
+    // ZS-133: наскрізні картки о/с і ОВТ (одна на весь час; стани по днях у card.days).
+    peopleCards: {},
+    machineCards: {}
   };
 
   var bundles = {};
@@ -1454,7 +1457,23 @@ button.count-toggle {
   }
 
   function peopleStats(node) {
-    if (node.people) {
+    var kids = Array.isArray(node && node.children) ? node.children : [];
+    // Дерево ланок важливіше за people на гілці (порожній/зайвий people[] не ховає дітей).
+    if (kids.length) {
+      var sumPlus = 0;
+      var sumTotal = 0;
+      kids.forEach(function (child) {
+        var stats = peopleStats(child);
+        sumPlus += stats.plus;
+        sumTotal += stats.total;
+      });
+      extraPeople(node).forEach(function (item) {
+        sumTotal += 1;
+        if (countedPlus(item)) sumPlus += 1;
+      });
+      return { plus: sumPlus, total: sumTotal };
+    }
+    if (node && node.people) {
       var plus = 0;
       var total = 0;
       node.people.forEach(function (item) {
@@ -1468,14 +1487,7 @@ button.count-toggle {
       });
       return { plus: plus, total: total };
     }
-    var sumPlus = 0;
-    var sumTotal = 0;
-    (node.children || []).forEach(function (child) {
-      var stats = peopleStats(child);
-      sumPlus += stats.plus;
-      sumTotal += stats.total;
-    });
-    return { plus: sumPlus, total: sumTotal };
+    return { plus: 0, total: 0 };
   }
 
   function machineStats(list) {
@@ -1932,6 +1944,500 @@ button.count-toggle {
     return new Date().toISOString();
   }
 
+  // ——— ZS-133: наскрізні картки о/с / ОВТ ———
+  function ensureCardStores() {
+    if (!state.peopleCards || typeof state.peopleCards !== "object") state.peopleCards = {};
+    if (!state.machineCards || typeof state.machineCards !== "object") state.machineCards = {};
+  }
+
+  function cloneDayFields(raw) {
+    var src = raw && typeof raw === "object" ? raw : {};
+    var out = {};
+    Object.keys(src).forEach(function (key) {
+      if (key === "id" || key === "days" || key === "archived" || key === "archivedAt" || key === "place") return;
+      out[key] = cloneData(src[key]);
+    });
+    return out;
+  }
+
+  function personIdentityFromFields(fields) {
+    var parts = personNameParts(fields || {});
+    return {
+      surname: parts.surname,
+      givenName: parts.givenName,
+      patronymic: parts.patronymic,
+      name: joinPersonName(parts),
+      callsign: fields && fields.callsign != null ? String(fields.callsign) : "",
+      unit: fields && fields.unit != null ? String(fields.unit).slice(0, 80) : "",
+      place: fields && fields.place ? fields.place : "root"
+    };
+  }
+
+  function cardOwnerKey() {
+    return String(state.reportKey || "lead");
+  }
+
+  function cardBelongsHere(card) {
+    if (!card) return false;
+    var owner = card.ownerKey != null && card.ownerKey !== "" ? String(card.ownerKey) : "";
+    // Старі картки без ownerKey — лише для поточної вкладки після міграції на ній.
+    if (!owner) return true;
+    return owner === cardOwnerKey();
+  }
+
+  function upsertPersonCardDay(id, day, fields, opts) {
+    ensureCardStores();
+    if (!id || !day) return null;
+    var card = state.peopleCards[id];
+    if (!card) {
+      card = { id: id, days: {}, archived: false, archivedAt: null, place: "root", ownerKey: cardOwnerKey() };
+      state.peopleCards[id] = card;
+    }
+    if (!card.days || typeof card.days !== "object") card.days = {};
+    card.ownerKey = cardOwnerKey();
+    var dayFields = cloneDayFields(fields);
+    dayFields.id = id;
+    card.days[day] = dayFields;
+    var ident = personIdentityFromFields(dayFields);
+    card.surname = ident.surname;
+    card.givenName = ident.givenName;
+    card.patronymic = ident.patronymic;
+    card.name = ident.name;
+    if (ident.callsign) card.callsign = ident.callsign;
+    if (ident.unit) card.unit = ident.unit;
+    if (fields && fields.place) card.place = fields.place;
+    else if (!card.place) card.place = "root";
+    if (opts && opts.archived) {
+      card.archived = true;
+      card.archivedAt = opts.archivedAt || stampNow();
+    }
+    return card;
+  }
+
+  function upsertMachineCardDay(id, day, fields, opts) {
+    ensureCardStores();
+    if (!id || !day) return null;
+    var card = state.machineCards[id];
+    if (!card) {
+      card = { id: id, days: {}, archived: false, archivedAt: null, ownerKey: cardOwnerKey() };
+      state.machineCards[id] = card;
+    }
+    if (!card.days || typeof card.days !== "object") card.days = {};
+    card.ownerKey = cardOwnerKey();
+    var dayFields = cloneDayFields(fields);
+    dayFields.id = id;
+    card.days[day] = dayFields;
+    if (dayFields.name != null) card.name = dayFields.name;
+    if (dayFields.board != null) card.board = dayFields.board;
+    if (dayFields.type != null) card.type = dayFields.type;
+    if (opts && opts.archived) {
+      card.archived = true;
+      card.archivedAt = opts.archivedAt || stampNow();
+    }
+    return card;
+  }
+
+  function latestCardDayKey(card) {
+    if (!card || !card.days) return "";
+    return Object.keys(card.days).filter(function (key) {
+      return /^\d{4}-\d{2}-\d{2}$/.test(key);
+    }).sort().pop() || "";
+  }
+
+  function personItemFromCard(card, day) {
+    if (!card) return null;
+    var slice = card.days && day && card.days[day] ? card.days[day] : null;
+    if (!slice) {
+      var latest = latestCardDayKey(card);
+      slice = latest ? card.days[latest] : null;
+    }
+    var base = Object.assign({
+      id: card.id,
+      surname: card.surname || "",
+      givenName: card.givenName || "",
+      patronymic: card.patronymic || "",
+      name: card.name || "",
+      callsign: card.callsign || "",
+      unit: card.unit || "",
+      rank: "",
+      accounting: "official",
+      duty: "in",
+      position: "",
+      place: card.place || "root"
+    }, cloneDayFields(slice || {}));
+    base.id = card.id;
+    base.place = card.place || base.place || "root";
+    return base;
+  }
+
+  function machineItemFromCard(card, day) {
+    if (!card) return null;
+    var slice = card.days && day && card.days[day] ? card.days[day] : null;
+    if (!slice) {
+      var latest = latestCardDayKey(card);
+      slice = latest ? card.days[latest] : null;
+    }
+    var base = Object.assign({
+      id: card.id,
+      type: card.type || "",
+      name: card.name || "",
+      board: card.board || "",
+      accounting: "official",
+      duty: "in",
+      mileage: null,
+      hours: null,
+      service: ""
+    }, cloneDayFields(slice || {}));
+    base.id = card.id;
+    return base;
+  }
+
+  function syncRemovedFlagsFromCards() {
+    ensureCardStores();
+    if (!state.removed) state.removed = { people: {}, machines: {} };
+    if (!state.removed.people) state.removed.people = {};
+    if (!state.removed.machines) state.removed.machines = {};
+    if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+    if (!state.removedAt.people) state.removedAt.people = {};
+    if (!state.removedAt.machines) state.removedAt.machines = {};
+    Object.keys(state.peopleCards).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (card && card.archived) {
+        state.removed.people[id] = true;
+        if (card.archivedAt) state.removedAt.people[id] = card.archivedAt;
+      } else {
+        delete state.removed.people[id];
+        delete state.removedAt.people[id];
+      }
+    });
+    Object.keys(state.machineCards).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (card && card.archived) {
+        state.removed.machines[id] = true;
+        if (card.archivedAt) state.removedAt.machines[id] = card.archivedAt;
+      } else {
+        delete state.removed.machines[id];
+        delete state.removedAt.machines[id];
+      }
+    });
+  }
+
+  // Живий екран ← картки за обраний день (завдання не чіпаємо; дерево підрозділів лишається).
+  function projectCardsToLiveDay() {
+    ensureCardStores();
+    var day = state.viewDay || todayISO();
+    if (!state.report) state.report = sampleReportDocument();
+    var unit = cloneData(state.report.unit || { id: "root", name: state.report.name || "" });
+    if (!unit.id) unit.id = "root";
+    function clearPeople(node) {
+      if (!node || typeof node !== "object") return;
+      var kids = Array.isArray(node.children) ? node.children : [];
+      // У вузлів із дітьми people прибираємо зовсім — інакше renderPeople не малює дерево (порожній [] truthy).
+      if (kids.length) delete node.people;
+      else node.people = [];
+      kids.forEach(clearPeople);
+    }
+    clearPeople(unit);
+    function findNodeById(node, id) {
+      if (!node) return null;
+      if (String(node.id) === String(id)) return node;
+      var kids = Array.isArray(node.children) ? node.children : [];
+      var i;
+      for (i = 0; i < kids.length; i++) {
+        var found = findNodeById(kids[i], id);
+        if (found) return found;
+      }
+      return null;
+    }
+    var orphanPeople = [];
+    Object.keys(state.peopleCards).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (!card || card.archived || !cardBelongsHere(card)) return;
+      if (!card.days || !card.days[day]) return;
+      var person = personItemFromCard(card, day);
+      var place = card.place || person.place || unit.id;
+      if (place === "root") place = unit.id;
+      var node = findNodeById(unit, place);
+      // Чужі place (картки іншої вкладки) не звалюємо на чужий корінь.
+      if (!node) return;
+      // Не садити людей на гілку з дітьми — інакше зникає дерево в UI.
+      if (Array.isArray(node.children) && node.children.length) {
+        person.place = node.id;
+        orphanPeople.push(person);
+        return;
+      }
+      if (!Array.isArray(node.people)) node.people = [];
+      node.people.push(person);
+    });
+    if (Array.isArray(unit.children) && unit.children.length) delete unit.people;
+    var machines = [];
+    Object.keys(state.machineCards).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (!card || card.archived || !cardBelongsHere(card)) return;
+      if (!card.days || !card.days[day]) return;
+      machines.push(machineItemFromCard(card, day));
+    });
+    state.report.unit = unit;
+    state.report.machines = machines;
+    state.added = { people: orphanPeople, machines: [] };
+    state.edits = { people: {}, machines: {} };
+    state.positions = {};
+    syncRemovedFlagsFromCards();
+    indexPeople(viewUnit());
+  }
+
+  // Overlay added/edits/removed → картки поточного дня.
+  function syncLiveOverlaysIntoCards() {
+    ensureCardStores();
+    var day = state.viewDay || todayISO();
+    var baked = buildBakedDayParts();
+    flattenPeopleFromUnit(baked.unit).forEach(function (person) {
+      if (!person || !person.id) return;
+      if (state.removed.people[person.id]) {
+        upsertPersonCardDay(person.id, day, person, {
+          archived: true,
+          archivedAt: (state.removedAt && state.removedAt.people && state.removedAt.people[person.id]) || stampNow()
+        });
+        state.peopleCards[person.id].archived = true;
+        state.peopleCards[person.id].archivedAt = (state.removedAt && state.removedAt.people && state.removedAt.people[person.id]) || stampNow();
+        return;
+      }
+      upsertPersonCardDay(person.id, day, person);
+      if (state.peopleCards[person.id]) {
+        state.peopleCards[person.id].archived = false;
+        state.peopleCards[person.id].archivedAt = null;
+      }
+    });
+    // Видалені, яких уже немає в baked (м’яке видалення зі списку).
+    Object.keys(state.removed.people || {}).forEach(function (id) {
+      if (!state.removed.people[id]) return;
+      var card = state.peopleCards[id];
+      if (!card) {
+        var raw = findPerson(id);
+        upsertPersonCardDay(id, day, raw || { id: id }, {
+          archived: true,
+          archivedAt: (state.removedAt && state.removedAt.people && state.removedAt.people[id]) || stampNow()
+        });
+      } else {
+        card.archived = true;
+        card.archivedAt = (state.removedAt && state.removedAt.people && state.removedAt.people[id]) || card.archivedAt || stampNow();
+      }
+    });
+    (baked.machines || []).forEach(function (machine) {
+      if (!machine || !machine.id) return;
+      if (state.removed.machines[machine.id]) {
+        upsertMachineCardDay(machine.id, day, machine, {
+          archived: true,
+          archivedAt: (state.removedAt && state.removedAt.machines && state.removedAt.machines[machine.id]) || stampNow()
+        });
+        state.machineCards[machine.id].archived = true;
+        return;
+      }
+      upsertMachineCardDay(machine.id, day, machine);
+      if (state.machineCards[machine.id]) {
+        state.machineCards[machine.id].archived = false;
+        state.machineCards[machine.id].archivedAt = null;
+      }
+    });
+    Object.keys(state.removed.machines || {}).forEach(function (id) {
+      if (!state.removed.machines[id]) return;
+      var card = state.machineCards[id];
+      if (!card) {
+        upsertMachineCardDay(id, day, findMachine(id) || { id: id }, {
+          archived: true,
+          archivedAt: (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || stampNow()
+        });
+      } else {
+        card.archived = true;
+        card.archivedAt = (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || card.archivedAt || stampNow();
+      }
+    });
+    syncRemovedFlagsFromCards();
+  }
+
+  function ingestPeopleListForDay(day, list, archivedIds) {
+    (Array.isArray(list) ? list : []).forEach(function (person) {
+      if (!person || !person.id) return;
+      var archived = !!(archivedIds && archivedIds[person.id]);
+      upsertPersonCardDay(person.id, day, person, archived ? {
+        archived: true,
+        archivedAt: (state.removedAt && state.removedAt.people && state.removedAt.people[person.id]) || stampNow()
+      } : null);
+      if (archived && state.peopleCards[person.id]) {
+        state.peopleCards[person.id].archived = true;
+      }
+    });
+  }
+
+  function ingestMachinesListForDay(day, list, archivedIds) {
+    (Array.isArray(list) ? list : []).forEach(function (machine) {
+      if (!machine || !machine.id) return;
+      var archived = !!(archivedIds && archivedIds[machine.id]);
+      upsertMachineCardDay(machine.id, day, machine, archived ? {
+        archived: true,
+        archivedAt: (state.removedAt && state.removedAt.machines && state.removedAt.machines[machine.id]) || stampNow()
+      } : null);
+      if (archived && state.machineCards[machine.id]) {
+        state.machineCards[machine.id].archived = true;
+      }
+    });
+  }
+
+  function mergeIncomingCards(kind, incoming) {
+    ensureCardStores();
+    var store = kind === "machine" ? state.machineCards : state.peopleCards;
+    if (!incoming || typeof incoming !== "object") return;
+    Object.keys(incoming).forEach(function (id) {
+      var src = incoming[id];
+      if (!src || !src.id) return;
+      var cur = store[id];
+      if (!cur) {
+        store[id] = cloneData(src);
+        if (!store[id].days) store[id].days = {};
+        return;
+      }
+      if (!cur.days) cur.days = {};
+      Object.keys(src.days || {}).forEach(function (day) {
+        if (!cur.days[day]) cur.days[day] = cloneData(src.days[day]);
+        else {
+          // Пізніший updatedAt перемагає поля дня.
+          var a = cur.days[day] && cur.days[day].updatedAt ? String(cur.days[day].updatedAt) : "";
+          var b = src.days[day] && src.days[day].updatedAt ? String(src.days[day].updatedAt) : "";
+          if (!a || (b && b >= a)) cur.days[day] = cloneData(src.days[day]);
+        }
+      });
+      if (src.archived && !cur.archived) {
+        cur.archived = true;
+        cur.archivedAt = src.archivedAt || stampNow();
+      }
+      if (kind === "person") {
+        var ident = personIdentityFromFields(personItemFromCard(cur, latestCardDayKey(cur)));
+        cur.surname = ident.surname || cur.surname;
+        cur.givenName = ident.givenName || cur.givenName;
+        cur.patronymic = ident.patronymic || cur.patronymic;
+        cur.name = ident.name || cur.name;
+        if (ident.callsign) cur.callsign = ident.callsign;
+      }
+    });
+  }
+
+  // Міграція зі старих day-зрізів + знімків peopleCards/machineCards.
+  function migrateSlicesToCards(rawSnap) {
+    ensureCardStores();
+    if (rawSnap && rawSnap.peopleCards) mergeIncomingCards("person", rawSnap.peopleCards);
+    if (rawSnap && rawSnap.machineCards) mergeIncomingCards("machine", rawSnap.machineCards);
+    var archivedPeople = state.removed && state.removed.people ? state.removed.people : {};
+    var archivedMachines = state.removed && state.removed.machines ? state.removed.machines : {};
+    var liveDay = state.viewDay || state.fileDay || todayISO();
+    if (state.report) {
+      (function ingestTree(node, day) {
+        if (!node || typeof node !== "object") return;
+        (Array.isArray(node.people) ? node.people : []).forEach(function (person) {
+          if (!person || !person.id) return;
+          var row = cloneData(person);
+          row.place = node.id || "root";
+          ingestPeopleListForDay(day, [row], archivedPeople);
+        });
+        (Array.isArray(node.children) ? node.children : []).forEach(function (child) {
+          ingestTree(child, day);
+        });
+      })(state.report.unit, liveDay);
+      ingestMachinesListForDay(liveDay, state.report.machines || [], archivedMachines);
+    }
+    (state.added && state.added.people || []).forEach(function (person) {
+      if (!person || !person.id) return;
+      ingestPeopleListForDay(liveDay, [person], archivedPeople);
+    });
+    (state.added && state.added.machines || []).forEach(function (machine) {
+      if (!machine || !machine.id) return;
+      ingestMachinesListForDay(liveDay, [machine], archivedMachines);
+    });
+    Object.keys(state.daysArchive || {}).forEach(function (day) {
+      var slice = state.daysArchive[day];
+      if (!slice) return;
+      ingestPeopleListForDay(day, flattenPeopleFromUnit(slice.unit), archivedPeople);
+      ingestMachinesListForDay(day, slice.machines || [], archivedMachines);
+    });
+    if (rawSnap && rawSnap.days && typeof rawSnap.days === "object") {
+      Object.keys(rawSnap.days).forEach(function (day) {
+        var slice = rawSnap.days[day];
+        if (!slice) return;
+        ingestPeopleListForDay(day, flattenPeopleFromUnit(slice.unit), {});
+        ingestMachinesListForDay(day, slice.machines || [], {});
+      });
+    }
+    if (rawSnap && rawSnap.unit) {
+      var snapDay = rawSnap.day && /^\d{4}-\d{2}-\d{2}$/.test(rawSnap.day) ? rawSnap.day : liveDay;
+      ingestPeopleListForDay(snapDay, flattenPeopleFromUnit(rawSnap.unit), {});
+      ingestMachinesListForDay(snapDay, rawSnap.machines || [], {});
+    }
+    Object.keys(archivedPeople).forEach(function (id) {
+      if (!archivedPeople[id] || !state.peopleCards[id]) return;
+      state.peopleCards[id].archived = true;
+      state.peopleCards[id].archivedAt = (state.removedAt && state.removedAt.people && state.removedAt.people[id]) || state.peopleCards[id].archivedAt || stampNow();
+    });
+    Object.keys(archivedMachines).forEach(function (id) {
+      if (!archivedMachines[id] || !state.machineCards[id]) return;
+      state.machineCards[id].archived = true;
+      state.machineCards[id].archivedAt = (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || state.machineCards[id].archivedAt || stampNow();
+    });
+    syncRemovedFlagsFromCards();
+  }
+
+  // Зріз дня для архіву/Drive: о/с і ОВТ з карток; завдання — як були.
+  function daySliceFromCards(day, tasks, changes) {
+    ensureCardStores();
+    var unit = state.report && state.report.unit
+      ? cloneData(state.report.unit)
+      : { id: "root", name: (state.report && state.report.name) || "" };
+    if (!unit.id) unit.id = "root";
+    function clearPeople(node) {
+      if (!node || typeof node !== "object") return;
+      var kids = Array.isArray(node.children) ? node.children : [];
+      if (kids.length) delete node.people;
+      else node.people = [];
+      kids.forEach(clearPeople);
+    }
+    clearPeople(unit);
+    function findNodeById(node, id) {
+      if (!node) return null;
+      if (String(node.id) === String(id)) return node;
+      var kids = Array.isArray(node.children) ? node.children : [];
+      var i;
+      for (i = 0; i < kids.length; i++) {
+        var found = findNodeById(kids[i], id);
+        if (found) return found;
+      }
+      return null;
+    }
+    Object.keys(state.peopleCards).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (!card || card.archived || !cardBelongsHere(card) || !card.days || !card.days[day]) return;
+      var person = personItemFromCard(card, day);
+      var place = card.place || person.place || unit.id;
+      if (place === "root") place = unit.id;
+      var node = findNodeById(unit, place);
+      if (!node) return;
+      if (Array.isArray(node.children) && node.children.length) return;
+      if (!Array.isArray(node.people)) node.people = [];
+      node.people.push(person);
+    });
+    if (Array.isArray(unit.children) && unit.children.length) delete unit.people;
+    var machines = [];
+    Object.keys(state.machineCards).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (!card || card.archived || !cardBelongsHere(card) || !card.days || !card.days[day]) return;
+      machines.push(machineItemFromCard(card, day));
+    });
+    return normalizeDaySlice({
+      unit: unit,
+      machines: machines,
+      tasks: Array.isArray(tasks) ? tasks : [],
+      people: [],
+      changes: Array.isArray(changes) ? changes : []
+    });
+  }
+
   function bakedPersonFields(item) {
     var edit = personEdit(item.id);
     var dutyMapNow = dutyMap();
@@ -1994,6 +2500,8 @@ button.count-toggle {
       mileage: Object.prototype.hasOwnProperty.call(edit, "mileage") ? edit.mileage : (item.mileage == null ? null : item.mileage),
       hours: Object.prototype.hasOwnProperty.call(edit, "hours") ? edit.hours : (item.hours == null ? null : item.hours),
       service: Object.prototype.hasOwnProperty.call(edit, "service") ? edit.service : String(item.service || ""),
+      reason: Object.prototype.hasOwnProperty.call(edit, "reason") ? edit.reason : (item.reason || ""),
+      back: Object.prototype.hasOwnProperty.call(edit, "back") ? edit.back : (item.back || ""),
       updatedAt: item.updatedAt || null,
       fieldsUpdatedAt: item.fieldsUpdatedAt && typeof item.fieldsUpdatedAt === "object" ? cloneData(item.fieldsUpdatedAt) : {}
     };
@@ -2083,6 +2591,7 @@ button.count-toggle {
     };
     state.edits = { people: {}, machines: {} };
     state.positions = {};
+    syncLiveOverlaysIntoCards();
     return true;
   }
 
@@ -2127,8 +2636,10 @@ button.count-toggle {
     var unit = cloneData(slice.unit || { id: "root", name: "", people: [] });
     function clearPeople(node) {
       if (!node || typeof node !== "object") return;
-      node.people = [];
-      (Array.isArray(node.children) ? node.children : []).forEach(clearPeople);
+      var kids = Array.isArray(node.children) ? node.children : [];
+      if (kids.length) delete node.people;
+      else node.people = [];
+      kids.forEach(clearPeople);
     }
     clearPeople(unit);
     return {
@@ -2169,32 +2680,39 @@ button.count-toggle {
 
   function stashViewDay() {
     if (!state.viewDay) return;
+    // ZS-133: спочатку злити екранні правки в наскрізні картки.
+    syncLiveOverlaysIntoCards();
+    var tasks = state.report && Array.isArray(state.report.tasks) ? state.report.tasks : [];
+    var changes = Array.isArray(state.changes) ? state.changes : [];
+    var slice = daySliceFromCards(state.viewDay, tasks, changes);
     // Порожній зріз від самого лише відкриття дати в архів не кладемо.
-    if (viewDayHasReport()) state.daysArchive[state.viewDay] = daySliceFromState();
-    else delete state.daysArchive[state.viewDay];
+    if (daySliceHasReport(slice) || (Array.isArray(tasks) && tasks.length) || (Array.isArray(changes) && changes.length)) {
+      state.daysArchive[state.viewDay] = slice;
+    } else delete state.daysArchive[state.viewDay];
   }
 
   function applyDaySliceToState(slice) {
     var normalized = normalizeDaySlice(slice);
     var base = state.report || sampleReportDocument();
+    // ZS-133: з архіву дня беремо лише завдання/журнал; о/с і ОВТ — з карток.
     state.report = {
       name: base.name,
       code: base.code,
       file: base.file,
-      unit: normalized.unit,
-      machines: normalized.machines,
+      unit: base.unit || { id: "root", name: base.name || "", people: [] },
+      machines: Array.isArray(base.machines) ? base.machines : [],
       tasks: normalized.tasks,
-      people: normalized.people
+      people: []
     };
     state.changes = Array.isArray(normalized.changes) ? normalized.changes.slice(-100) : [];
     state.edits = { people: {}, machines: {} };
-    // ZS-132: не зкидати tombstone при зміні дня — інакше видалені знову видимі.
     state.added = { people: [], machines: [] };
     state.positions = {};
     state.editing = null;
     state.pending = null;
     state.draft = null;
     state.confirm = null;
+    projectCardsToLiveDay();
   }
 
   function nearestSourceSlice(iso, archive) {
@@ -2219,20 +2737,19 @@ button.count-toggle {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) target = todayISO();
     if (state.viewDay === target && state.report) return;
     stashViewDay();
-    // Навігація по датах: без підстановки чужого дня. Порожня дата = порожній зріз.
-    // Автокопії о/с/ОВТ на новий день немає (ZS-131); сіє лише ensureDayRollover → blankStaffDaySlice.
-    if (state.daysArchive[target]) {
-      var slice = state.daysArchive[target];
-      delete state.daysArchive[target];
-      applyDaySliceToState(slice);
+    // Навігація по датах: завдання з архіву дня; о/с/ОВТ — проекція наскрізних карток (ZS-133).
+    // Автокопії о/с/ОВТ на новий день немає (ZS-131).
+    if (!state.viewDay) {
+      // Перше прив’язування дати — не затирати вже зібраний звіт; завести картки з нього.
       state.viewDay = target;
-    } else if (!state.viewDay) {
-      // Перше прив’язування дати до вже зібраного звіту (rollover/тест) — не затирати.
-      state.viewDay = target;
-    } else {
-      applyDaySliceToState(null);
-      state.viewDay = target;
+      migrateSlicesToCards();
+      if (!state.fileDay || target > state.fileDay) state.fileDay = target;
+      return;
     }
+    var archived = state.daysArchive[target] ? normalizeDaySlice(state.daysArchive[target]) : null;
+    if (archived) delete state.daysArchive[target];
+    state.viewDay = target;
+    applyDaySliceToState(archived);
     if (!state.fileDay || target > state.fileDay) state.fileDay = target;
   }
 
@@ -2244,25 +2761,53 @@ button.count-toggle {
     var today = todayISO();
     if (!state.fileDay) state.fileDay = today;
     if (!state.viewDay) state.viewDay = state.fileDay;
+    migrateSlicesToCards();
     if (state.fileDay >= today) {
       if (!state.report) applyDaySliceToState(normalizeDaySlice(state.daysArchive[state.viewDay] || null));
       return;
     }
     stashViewDay();
     while (state.fileDay < today) {
-      // Зафіксувати минулий день в архіві (як є), новий — без автокопії о/с/ОВТ.
-      if (!state.daysArchive[state.fileDay] && viewDayHasReport() && state.viewDay === state.fileDay) {
-        state.daysArchive[state.fileDay] = daySliceFromState();
+      // Зафіксувати минулий день в архіві з карток (або з поточного зрізу).
+      if (!state.daysArchive[state.fileDay]) {
+        if (viewDayHasReport() && state.viewDay === state.fileDay) {
+          state.daysArchive[state.fileDay] = daySliceFromCards(
+            state.fileDay,
+            state.report && state.report.tasks,
+            state.changes
+          );
+        } else {
+          ensureDaySliceIn(state.daysArchive, state.fileDay);
+        }
       }
       ensureDaySliceIn(state.daysArchive, state.fileDay);
+      // Підсіяти картки з цього архівного дня (міграція).
+      ingestPeopleListForDay(state.fileDay, flattenPeopleFromUnit(state.daysArchive[state.fileDay].unit), {});
+      ingestMachinesListForDay(state.fileDay, state.daysArchive[state.fileDay].machines || [], {});
       var next = shiftISODate(state.fileDay, 1);
       if (!state.daysArchive[next]) {
         state.daysArchive[next] = blankStaffDaySlice(state.daysArchive[state.fileDay]);
       }
       state.fileDay = next;
     }
+    // Перед відкриттям сьогодні: о/с/ОВТ уже в картках за вчора; живий звіт очистити,
+    // щоб перше прив’язування дати не завело вчорашніх у сьогоднішні дні карток.
+    // Дерево ланок зберігаємо — прибираємо лише людей у вузлах.
+    if (state.report && state.report.unit) {
+      (function clearTreePeople(node) {
+        if (!node || typeof node !== "object") return;
+        var kids = Array.isArray(node.children) ? node.children : [];
+        if (kids.length) delete node.people;
+        else node.people = [];
+        kids.forEach(clearTreePeople);
+      })(state.report.unit);
+      state.report.machines = [];
+    }
+    state.added = { people: [], machines: [] };
+    state.edits = { people: {}, machines: {} };
     state.viewDay = "";
     openViewDay(state.fileDay);
+    projectCardsToLiveDay();
   }
 
   function hasDaySnapshot(iso) {
@@ -2301,55 +2846,82 @@ button.count-toggle {
     return { archive: archive, liveKey: liveKey, viewKey: viewKey };
   }
 
-  // ZS-131: скопіювати поточний зріз о/с або ОВТ у обраний день (не обов’язково сьогодні).
+  // ZS-131/133: скопіювати стани о/с або ОВТ поточного дня в інший день (ті самі картки).
   function copyCurrentStaffToDay(kind, targetIso) {
     var target = String(targetIso || "").trim();
     var mode = kind === "machines" || kind === "machine" ? "machines" : "people";
     if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) return false;
-    var source = daySliceFromState();
-    function paint(slice) {
-      var next = normalizeDaySlice(slice);
-      if (mode === "people") {
-        next.unit = cloneData(source.unit);
-        next.people = cloneData(source.people || []);
-      } else {
-        next.machines = cloneData(source.machines || []);
-      }
-      return next;
+    syncLiveOverlaysIntoCards();
+    var sourceDay = state.viewDay || todayISO();
+    if (mode === "people") {
+      Object.keys(state.peopleCards || {}).forEach(function (id) {
+        var card = state.peopleCards[id];
+        if (!card || card.archived || !card.days || !card.days[sourceDay]) return;
+        upsertPersonCardDay(id, target, card.days[sourceDay]);
+      });
+    } else {
+      Object.keys(state.machineCards || {}).forEach(function (id) {
+        var card = state.machineCards[id];
+        if (!card || card.archived || !card.days || !card.days[sourceDay]) return;
+        upsertMachineCardDay(id, target, card.days[sourceDay]);
+      });
     }
     if (target === state.viewDay) {
-      if (!state.report) state.report = sampleReportDocument();
-      if (mode === "people") {
-        state.report.unit = cloneData(source.unit);
-        state.report.people = cloneData(source.people || []);
-      } else {
-        state.report.machines = cloneData(source.machines || []);
-      }
-      state.edits = { people: {}, machines: {} };
-      state.removed = { people: {}, machines: {} };
-      state.removedAt = { people: {}, machines: {} };
-      state.added = { people: [], machines: [] };
-      return true;
+      projectCardsToLiveDay();
+    } else {
+      var base = state.daysArchive[target]
+        ? normalizeDaySlice(state.daysArchive[target])
+        : blankStaffDaySlice(daySliceFromState());
+      var painted = daySliceFromCards(target, base.tasks, base.changes);
+      state.daysArchive[target] = painted;
+      if (!state.fileDay || target > state.fileDay) state.fileDay = target;
     }
-    var base = state.daysArchive[target]
-      ? normalizeDaySlice(state.daysArchive[target])
-      : blankStaffDaySlice(source);
-    state.daysArchive[target] = paint(base);
-    if (!state.fileDay || target > state.fileDay) state.fileDay = target;
     return true;
   }
 
   function currentUnitSnapshot() {
-    var packed = allDaysMap();
-    if (packed.liveKey !== state.fileDay) state.fileDay = packed.liveKey;
-    var live = packed.archive[packed.liveKey];
-    var days = {};
-    Object.keys(packed.archive).forEach(function (key) {
-      if (key === packed.liveKey) return;
-      days[key] = packed.archive[key];
+    syncLiveOverlaysIntoCards();
+    projectCardsToLiveDay();
+    // Пересобрати days[] з карток (зворотна сумісність файлу на Диску).
+    var dayKeys = {};
+    Object.keys(state.daysArchive || {}).forEach(function (key) { dayKeys[key] = true; });
+    Object.keys(state.peopleCards || {}).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (!card || !card.days) return;
+      Object.keys(card.days).forEach(function (key) { dayKeys[key] = true; });
     });
-    // children у знімку — від власника файлу (drive), навіть якщо зараз відкритий підлеглий.
-    // Запис файлу підлеглої ланки (unit) підставляє своїх children окремо в upsertOwnUnitFile.
+    Object.keys(state.machineCards || {}).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (!card || !card.days) return;
+      Object.keys(card.days).forEach(function (key) { dayKeys[key] = true; });
+    });
+    var viewKey = state.viewDay || todayISO();
+    var today = todayISO();
+    var liveKey = state.fileDay || viewKey;
+    // Як allDaysMap: підтягнути «живий» ключ до сьогодні; не ховати вміст екрана в майбутньому порожньому дні.
+    while (liveKey < today) {
+      dayKeys[liveKey] = true;
+      liveKey = shiftISODate(liveKey, 1);
+    }
+    var viewSlice = daySliceFromCards(viewKey, state.report && state.report.tasks, state.changes);
+    dayKeys[viewKey] = true;
+    dayKeys[liveKey] = true;
+    if (liveKey !== viewKey && daySliceHasReport(viewSlice)) {
+      var liveProbe = daySliceFromCards(liveKey, null, null);
+      if (!daySliceHasReport(liveProbe)) liveKey = viewKey;
+    }
+    if (liveKey !== state.fileDay) state.fileDay = liveKey;
+    var days = {};
+    Object.keys(dayKeys).forEach(function (key) {
+      if (key === liveKey) return;
+      var prev = state.daysArchive[key] ? normalizeDaySlice(state.daysArchive[key]) : null;
+      var tasks = key === viewKey ? (state.report && state.report.tasks) : (prev && prev.tasks);
+      var changes = key === viewKey ? state.changes : (prev && prev.changes);
+      days[key] = daySliceFromCards(key, tasks, changes);
+    });
+    var live = liveKey === viewKey
+      ? viewSlice
+      : daySliceFromCards(liveKey, state.report && state.report.tasks, state.changes);
     var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
       var code = String(unit.code || "");
@@ -2358,6 +2930,7 @@ button.count-toggle {
       return { name: String(label || unit.name || "").slice(0, 80), code: code };
     }).filter(function (item) { return !!item.code; });
     var report = state.report || sampleReportDocument();
+    syncRemovedFlagsFromCards();
     var removedPeople = Object.keys(state.removed.people || {}).filter(function (id) {
       return !!state.removed.people[id];
     }).map(function (id) {
@@ -2380,7 +2953,7 @@ button.count-toggle {
       version: 2,
       name: String(report.name || state.holder || "").slice(0, 80),
       code: unitKey,
-      day: packed.liveKey,
+      day: liveKey,
       unit: live.unit,
       machines: live.machines,
       tasks: live.tasks,
@@ -2389,7 +2962,9 @@ button.count-toggle {
       days: days,
       children: children,
       removedPeople: removedPeople,
-      removedMachines: removedMachines
+      removedMachines: removedMachines,
+      peopleCards: cloneData(state.peopleCards || {}),
+      machineCards: cloneData(state.machineCards || {})
     };
   }
 
@@ -3357,6 +3932,8 @@ button.count-toggle {
       removedAt: removedAt,
       removedPeople: tombsFromRemovedFlags(state.removed && state.removed.people, removedAt.people),
       removedMachines: tombsFromRemovedFlags(state.removed && state.removed.machines, removedAt.machines),
+      peopleCards: cloneData(state.peopleCards || {}),
+      machineCards: cloneData(state.machineCards || {}),
       added: state.added,
       positions: state.positions,
       changes: state.changes,
@@ -3379,6 +3956,8 @@ button.count-toggle {
         removedAt: cloneData(row.removedAt || { people: {}, machines: {} }),
         removedPeople: cloneData(row.removedPeople || []),
         removedMachines: cloneData(row.removedMachines || []),
+        peopleCards: cloneData(row.peopleCards || {}),
+        machineCards: cloneData(row.machineCards || {}),
         added: cloneData(row.added || { people: [], machines: [] }),
         positions: cloneData(row.positions || {}),
         changes: cloneData(row.changes || []),
@@ -3435,6 +4014,8 @@ button.count-toggle {
         removedAt: src.removedAt || { people: {}, machines: {} },
         removedPeople: Array.isArray(src.removedPeople) ? src.removedPeople : [],
         removedMachines: Array.isArray(src.removedMachines) ? src.removedMachines : [],
+        peopleCards: src.peopleCards || {},
+        machineCards: src.machineCards || {},
         added: src.added || { people: [], machines: [] },
         positions: src.positions || {},
         changes: Array.isArray(src.changes) ? src.changes : [],
@@ -3465,6 +4046,8 @@ button.count-toggle {
     state.edits = saved.edits;
     state.removed = saved.removed;
     state.removedAt = saved.removedAt || { people: {}, machines: {} };
+    state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
+    state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
     state.added = saved.added;
     state.positions = saved.positions;
     state.changes = saved.changes;
@@ -3472,7 +4055,9 @@ button.count-toggle {
     state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
     state.fileDay = saved.fileDay || todayISO();
     state.viewDay = saved.viewDay || state.fileDay;
+    migrateSlicesToCards();
     ensureDayRollover();
+    projectCardsToLiveDay();
     indexPeople(viewUnit());
     return true;
   }
@@ -3504,6 +4089,8 @@ button.count-toggle {
     state.added = { people: [], machines: [] };
     state.positions = {};
     state.changes = [];
+    state.peopleCards = {};
+    state.machineCards = {};
   }
 
   function activateReport(code) {
@@ -3516,6 +4103,8 @@ button.count-toggle {
       state.edits = saved.edits;
       state.removed = saved.removed || { people: {}, machines: {} };
       state.removedAt = saved.removedAt || { people: {}, machines: {} };
+      state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
+      state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
       state.added = saved.added;
       state.positions = saved.positions;
       state.changes = saved.changes;
@@ -3527,7 +4116,9 @@ button.count-toggle {
       var liveDay = state.fileDay || state.viewDay || todayISO();
       var seeded = daySliceFromReportOrArchive(state.report, state.daysArchive, liveDay, state.changes);
       if (daySliceHasReport(seeded)) state.daysArchive[liveDay] = seeded;
+      migrateSlicesToCards();
       ensureDayRollover();
+      projectCardsToLiveDay();
       return;
     }
     freshOverlays();
@@ -3536,6 +4127,8 @@ button.count-toggle {
     state.viewDay = state.fileDay;
     if (key === "lead") {
       state.report = state.sampleReport || sampleReportDocument();
+      migrateSlicesToCards();
+      projectCardsToLiveDay();
       return;
     }
     var unit = findUnitByCode(key);
@@ -3543,8 +4136,14 @@ button.count-toggle {
     if (loaded && loaded.unit && Array.isArray(loaded.machines)) {
       state.report = applyUnitSnapshot(loaded, key) || loaded;
       loadDaysFromSnapshot(loaded);
+      migrateSlicesToCards(loaded);
+      projectCardsToLiveDay();
+      return;
     } else {
       state.report = emptyUnitReport(unit || { name: String(key), code: String(key) });
+      migrateSlicesToCards();
+      projectCardsToLiveDay();
+      return;
     }
   }
 
@@ -4397,9 +4996,12 @@ button.count-toggle {
     frag.append(btn);
     if (state.open.has(id)) {
       var panel = el("div", { className: "panel", attrs: { id: panelDomId(id) } });
-      if (node.children) node.children.forEach(function (child) { panel.append(renderUnit(child)); });
-      else {
-        node.people.forEach(function (item) {
+      var kids = Array.isArray(node.children) ? node.children : [];
+      if (kids.length) {
+        kids.forEach(function (child) { panel.append(renderUnit(child)); });
+        extraPeople(node).forEach(function (item) { panel.append(renderPerson(item)); });
+      } else {
+        (Array.isArray(node.people) ? node.people : []).forEach(function (item) {
           if (state.removed.people[item.id]) return;
           panel.append(renderPerson(item));
         });
@@ -4430,14 +5032,16 @@ button.count-toggle {
     var stats = peopleStats(root);
     section.append(frac(stats, "hero", (root.name || "Звіт") + ": " + stats.plus + " у строю з " + stats.total));
     if (state.open.has("gear:people")) section.append(renderPeopleGear());
-    if (root.people) {
+    var rootKids = Array.isArray(root.children) ? root.children : [];
+    if (rootKids.length) {
+      rootKids.forEach(function (child) { section.append(renderUnit(child)); });
+      extraPeople(root).forEach(function (item) { section.append(renderPerson(item)); });
+    } else if (root.people) {
       root.people.forEach(function (item) {
         if (state.removed.people[item.id]) return;
         section.append(renderPerson(item));
       });
       extraPeople(root).forEach(function (item) { section.append(renderPerson(item)); });
-    } else {
-      (root.children || []).forEach(function (child) { section.append(renderUnit(child)); });
     }
     return section;
   }
@@ -5677,9 +6281,14 @@ button.count-toggle {
         doc.people = liveSlice.people;
       }
       captureBundle(state.reportKey);
+      // ZS-133: картки lead з файлу — у bundle, живий state (unit) не чіпаємо.
+      var leadPeopleCards = raw.peopleCards ? cloneData(raw.peopleCards) : {};
+      var leadMachineCards = raw.machineCards ? cloneData(raw.machineCards) : {};
       bundles[bundleKey] = {
         edits: { people: {}, machines: {} },
         removed: { people: {}, machines: {} },
+        peopleCards: leadPeopleCards,
+        machineCards: leadMachineCards,
         added: { people: [], machines: [] },
         positions: {},
         changes: Array.isArray(raw && raw.changes) ? raw.changes.slice(-100) : [],
@@ -5695,6 +6304,8 @@ button.count-toggle {
     state.reportKey = bundleKey;
     loadDaysFromSnapshot(raw);
     if (raw.name) state.holder = String(raw.name).slice(0, 80);
+    migrateSlicesToCards(raw);
+    projectCardsToLiveDay();
     captureBundle(bundleKey);
     if (encrypt && encrypt !== bundleKey) delete bundles[encrypt];
     return true;
@@ -5732,7 +6343,10 @@ button.count-toggle {
     function walk(node) {
       if (!node || typeof node !== "object") return;
       (Array.isArray(node.people) ? node.people : []).forEach(function (person) {
-        if (person && person.id) out.push(cloneData(person));
+        if (!person || !person.id) return;
+        var row = cloneData(person);
+        if (!row.place) row.place = node.id || "root";
+        out.push(row);
       });
       (Array.isArray(node.children) ? node.children : []).forEach(walk);
     }
@@ -6076,8 +6690,40 @@ button.count-toggle {
       days: days,
       children: Object.keys(childMap).map(function (code) { return childMap[code]; }),
       removedPeople: peopleMerge.removed,
-      removedMachines: machinesMerge.removed
+      removedMachines: machinesMerge.removed,
+      peopleCards: cloneData((local.peopleCards && Object.keys(local.peopleCards).length ? local.peopleCards : null) || remote.peopleCards || {}),
+      machineCards: cloneData((local.machineCards && Object.keys(local.machineCards).length ? local.machineCards : null) || remote.machineCards || {})
     };
+    // ZS-133: злити наскрізні картки local∪remote (дні всередині картки).
+    function mergeCardMaps(a, b) {
+      var out = {};
+      [a || {}, b || {}].forEach(function (src) {
+        Object.keys(src).forEach(function (id) {
+          var row = src[id];
+          if (!row || !row.id) return;
+          if (!out[id]) {
+            out[id] = cloneData(row);
+            if (!out[id].days) out[id].days = {};
+            return;
+          }
+          Object.keys(row.days || {}).forEach(function (d) {
+            if (!out[id].days[d]) out[id].days[d] = cloneData(row.days[d]);
+            else {
+              var leftAt = out[id].days[d].updatedAt ? String(out[id].days[d].updatedAt) : "";
+              var rightAt = row.days[d].updatedAt ? String(row.days[d].updatedAt) : "";
+              if (!leftAt || (rightAt && rightAt >= leftAt)) out[id].days[d] = cloneData(row.days[d]);
+            }
+          });
+          if (row.archived) {
+            out[id].archived = true;
+            out[id].archivedAt = row.archivedAt || out[id].archivedAt || stampNow();
+          }
+        });
+      });
+      return out;
+    }
+    snapshot.peopleCards = mergeCardMaps(local.peopleCards, remote.peopleCards);
+    snapshot.machineCards = mergeCardMaps(local.machineCards, remote.machineCards);
     // Один діалог на id (живий день + days[] можуть обидва поставити ту саму розбіжність).
     var seenDelete = {};
     var uniqueDeletes = [];
@@ -6572,6 +7218,8 @@ button.count-toggle {
     state.edits = saved.edits || { people: {}, machines: {} };
     state.removed = saved.removed || { people: {}, machines: {} };
     state.removedAt = saved.removedAt || { people: {}, machines: {} };
+    state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
+    state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
     state.added = saved.added || { people: [], machines: [] };
     state.positions = saved.positions || {};
     state.changes = Array.isArray(saved.changes) ? saved.changes : [];
@@ -6591,7 +7239,16 @@ button.count-toggle {
       people: seeded.people
     };
     if (daySliceHasReport(seeded) && Array.isArray(seeded.changes)) state.changes = seeded.changes.slice(-100);
+    migrateSlicesToCards(saved.peopleCards || saved.machineCards ? {
+      peopleCards: saved.peopleCards,
+      machineCards: saved.machineCards,
+      day: liveDay,
+      unit: seeded.unit,
+      machines: seeded.machines,
+      days: saved.daysArchive
+    } : null);
     ensureDayRollover();
+    projectCardsToLiveDay();
     return true;
   }
 
@@ -7724,26 +8381,47 @@ button.count-toggle {
   }
 
   function archivedPeople() {
+    ensureCardStores();
     var list = [];
+    var seen = {};
+    Object.keys(state.peopleCards).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (!card || !card.archived) return;
+      seen[id] = true;
+      list.push(personItemFromCard(card, state.viewDay || latestCardDayKey(card)));
+    });
+    // Сумісність: якщо картки ще немає, але є removed-прапорець.
     function walk(node) {
       (node.people || []).forEach(function (item) {
-        if (state.removed.people[item.id]) list.push(item);
+        if (!item || !item.id || seen[item.id] || !state.removed.people[item.id]) return;
+        seen[item.id] = true;
+        list.push(item);
       });
       (node.children || []).forEach(walk);
     }
     walk(viewUnit());
-    state.added.people.forEach(function (item) {
-      if (state.removed.people[item.id]) list.push(item);
+    (state.added.people || []).forEach(function (item) {
+      if (!item || !item.id || seen[item.id] || !state.removed.people[item.id]) return;
+      list.push(item);
     });
     return list;
   }
 
   function archivedMachines() {
-    return viewMachines().filter(function (item) {
-      return !!state.removed.machines[item.id];
-    }).concat(state.added.machines.filter(function (item) {
-      return !!state.removed.machines[item.id];
-    }));
+    ensureCardStores();
+    var list = [];
+    var seen = {};
+    Object.keys(state.machineCards).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (!card || !card.archived) return;
+      seen[id] = true;
+      list.push(machineItemFromCard(card, state.viewDay || latestCardDayKey(card)));
+    });
+    viewMachines().concat(state.added.machines || []).forEach(function (item) {
+      if (!item || !item.id || seen[item.id] || !state.removed.machines[item.id]) return;
+      list.push(item);
+    });
+    return list;
   }
 
   function renderArchive() {
@@ -8325,6 +9003,8 @@ button.count-toggle {
     }
     state.draft = null;
     state.confirm = null;
+    // Картка вже в реєстрі; overlays лишаємо до зміни дня / bake (як раніше в UI).
+    syncLiveOverlaysIntoCards();
     save();
     render();
   }
@@ -8467,6 +9147,7 @@ button.count-toggle {
       }
     }
     discardEdits();
+    syncLiveOverlaysIntoCards();
     save();
     render();
   }
@@ -8615,9 +9296,17 @@ button.count-toggle {
     }
     if (!canDelete()) return;
     var ts = stampNow();
-    // М’яке видалення: прапорець + архів у профілі; з days[] прибираємо, щоб sync не воскресив.
+    var day = state.viewDay || todayISO();
+    syncLiveOverlaysIntoCards();
+    // ZS-133: ручний архів наскрізної картки (позначка archived); історія днів на картці лишається.
     if (state.confirm.kind === "person") {
       var personId = state.confirm.id;
+      var person = findPerson(personId) || addedPerson(personId) || (state.peopleCards[personId] && personItemFromCard(state.peopleCards[personId], day));
+      if (person) upsertPersonCardDay(personId, day, person);
+      if (state.peopleCards[personId]) {
+        state.peopleCards[personId].archived = true;
+        state.peopleCards[personId].archivedAt = ts;
+      }
       state.removed.people[personId] = true;
       if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
       if (!state.removedAt.people) state.removedAt.people = {};
@@ -8626,12 +9315,20 @@ button.count-toggle {
     }
     if (state.confirm.kind === "machine") {
       var machineId = state.confirm.id;
+      var machine = findMachine(machineId) || addedMachine(machineId) || (state.machineCards[machineId] && machineItemFromCard(state.machineCards[machineId], day));
+      if (machine) upsertMachineCardDay(machineId, day, machine);
+      if (state.machineCards[machineId]) {
+        state.machineCards[machineId].archived = true;
+        state.machineCards[machineId].archivedAt = ts;
+      }
       state.removed.machines[machineId] = true;
       if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
       if (!state.removedAt.machines) state.removedAt.machines = {};
       state.removedAt.machines[machineId] = ts;
       stripMachineFromDaysArchive(machineId);
     }
+    // Не projectCardsToLiveDay: лишаємо запис у дереві/added для архіву в профілі (як раніше).
+    syncRemovedFlagsFromCards();
     state.confirm = null;
     save();
     render();
@@ -9110,8 +9807,46 @@ button.count-toggle {
       var restored = restore.getAttribute("data-restore").split(":");
       var restoredKind = restored[0];
       var restoredId = restored.slice(1).join(":");
-      if (restoredKind === "person") delete state.removed.people[restoredId];
-      if (restoredKind === "machine") delete state.removed.machines[restoredId];
+      var restoreDay = state.viewDay || todayISO();
+      ensureCardStores();
+      // ZS-133: повернути з архіву й внести запис на поточний день (для редагування).
+      if (restoredKind === "person") {
+        delete state.removed.people[restoredId];
+        if (state.removedAt && state.removedAt.people) delete state.removedAt.people[restoredId];
+        var pCard = state.peopleCards[restoredId];
+        if (!pCard) {
+          upsertPersonCardDay(restoredId, restoreDay, { id: restoredId });
+          pCard = state.peopleCards[restoredId];
+        }
+        if (pCard) {
+          pCard.archived = false;
+          pCard.archivedAt = null;
+          if (!pCard.days) pCard.days = {};
+          if (!pCard.days[restoreDay]) {
+            var latestP = latestCardDayKey(pCard);
+            upsertPersonCardDay(restoredId, restoreDay, latestP ? pCard.days[latestP] : personItemFromCard(pCard, ""));
+          }
+        }
+      }
+      if (restoredKind === "machine") {
+        delete state.removed.machines[restoredId];
+        if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[restoredId];
+        var mCard = state.machineCards[restoredId];
+        if (!mCard) {
+          upsertMachineCardDay(restoredId, restoreDay, { id: restoredId });
+          mCard = state.machineCards[restoredId];
+        }
+        if (mCard) {
+          mCard.archived = false;
+          mCard.archivedAt = null;
+          if (!mCard.days) mCard.days = {};
+          if (!mCard.days[restoreDay]) {
+            var latestM = latestCardDayKey(mCard);
+            upsertMachineCardDay(restoredId, restoreDay, latestM ? mCard.days[latestM] : machineItemFromCard(mCard, ""));
+          }
+        }
+      }
+      projectCardsToLiveDay();
       save();
       render();
       return;
@@ -9866,6 +10601,8 @@ button.count-toggle {
     state.edits = { people: {}, machines: {} };
     state.removed = { people: {}, machines: {} };
     state.positions = {};
+    state.peopleCards = {};
+    state.machineCards = {};
     state.daysArchive = {};
     state.report = emptyUnitReport({ name: "", code: "lead" });
     state.reportKey = "lead";
@@ -10012,6 +10749,11 @@ button.count-toggle {
       state.reportKey = "lead";
       bundles = {};
       freshOverlays();
+      state.daysArchive = {};
+      state.viewDay = todayISO();
+      state.fileDay = state.viewDay;
+      migrateSlicesToCards();
+      projectCardsToLiveDay();
       refreshPeopleIndex();
       render();
     }
@@ -10235,7 +10977,7 @@ button.count-toggle {
     toggle("person:p4");
     var personCard = text("panel-person-p4");
     check(personCard.includes("Прізвище") && personCard.includes("Ім’я") && personCard.includes("По батькові") && personCard.includes("Звання") && personCard.includes("Підрозділ") && personCard.includes("Позивний") && personCard.includes("Посада"), "поля картки");
-    check(document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор" && document.getElementById("patronym-p4").value === "Васильович", "картка розкладає ПІП на три поля");
+    check(document.getElementById("surname-p4") && document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор" && document.getElementById("patronym-p4").value === "Васильович", "картка розкладає ПІП на три поля");
     var rank = document.getElementById("rank-p4");
     var rankNext = document.getElementById("unitp-p4");
     var rankCard = document.getElementById("panel-person-p4");
@@ -11515,6 +12257,9 @@ button.count-toggle {
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       state.removed = { people: {}, machines: {} };
+      state.peopleCards = {};
+      state.machineCards = {};
+      state.daysArchive = {};
       state.report = {
         name: "Служба",
         code: "lead",
@@ -11528,6 +12273,8 @@ button.count-toggle {
         tasks: [],
         people: []
       };
+      migrateSlicesToCards();
+      projectCardsToLiveDay();
       captureBundle("lead");
       var leadSnap109 = currentUnitSnapshot();
       check(!!applyOwnUnitSnapshot(leadSnap109, "секрет-lead-109"), "fake pull lead з паролем як encrypt key");
@@ -11574,10 +12321,14 @@ button.count-toggle {
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       state.removed = { people: {}, machines: {} };
+      state.peopleCards = {};
+      state.machineCards = {};
       state.daysArchive = {};
       bundles[child125] = {
         edits: { people: {}, machines: {} },
         removed: { people: {}, machines: {} },
+        peopleCards: {},
+        machineCards: {},
         added: { people: [], machines: [] },
         positions: {},
         changes: [],
@@ -11646,6 +12397,8 @@ button.count-toggle {
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       state.removed = { people: {}, machines: {} };
+      state.peopleCards = {};
+      state.machineCards = {};
       state.daysArchive = {};
       state.fileDay = todayISO();
       state.viewDay = todayISO();
@@ -11655,6 +12408,8 @@ button.count-toggle {
       bundles[child128] = {
         edits: { people: {}, machines: {} },
         removed: { people: {}, machines: {} },
+        peopleCards: {},
+        machineCards: {},
         added: { people: [], machines: [] },
         positions: {},
         changes: [],
@@ -12204,6 +12959,8 @@ button.count-toggle {
         state.removed = { people: {}, machines: {} };
         state.added = { people: [], machines: [] };
         state.positions = {};
+        state.peopleCards = {};
+        state.machineCards = {};
         state.calendarOpen = false;
         state.calendarCopyKind = "";
         state.report = {
@@ -12242,6 +12999,60 @@ button.count-toggle {
           check(state.daysArchive[yesterday] && (state.daysArchive[yesterday].unit.people || []).length === 1, "після копіювання вчора лишається");
         } catch (err131) {
           check(false, "ZS-131 UI: " + (err131 && err131.message ? err131.message : err131));
+        }
+        // ZS-133: одна наскрізна картка; стани по днях; архів → відновлення з днем.
+        try {
+          var dayA = todayISO();
+          var dayB = shiftISODate(dayA, -1);
+          state.scope = "all";
+          state.openCode = "lead";
+          state.reportRoot = "lead";
+          state.reportKey = "lead";
+          state.peopleCards = {};
+          state.machineCards = {};
+          state.daysArchive = {};
+          state.added = { people: [], machines: [] };
+          state.edits = { people: {}, machines: {} };
+          state.removed = { people: {}, machines: {} };
+          state.removedAt = { people: {}, machines: {} };
+          state.fileDay = dayA;
+          state.viewDay = dayA;
+          state.report = {
+            name: "Картка",
+            code: "lead",
+            file: SAMPLE_FILE,
+            unit: { id: "root", name: "Картка", people: [{ id: "pc133", name: "Карта Іван", surname: "Карта", givenName: "Іван", patronymic: "", rank: "Солдат", callsign: "Наскріз", accounting: "official", duty: "in", position: "Стрілець", place: "root" }] },
+            machines: [{ id: "mc133", name: "Машина133", type: "lat", board: "133", accounting: "official", duty: "in" }],
+            tasks: [],
+            people: []
+          };
+          migrateSlicesToCards();
+          projectCardsToLiveDay();
+          check(!!state.peopleCards.pc133 && !!state.peopleCards.pc133.days[dayA], "ZS-133: міграція створює картку людини з днем");
+          check(!!state.machineCards.mc133 && !!state.machineCards.mc133.days[dayA], "ZS-133: міграція створює картку ОВТ з днем");
+          upsertPersonCardDay("pc133", dayB, Object.assign({}, state.peopleCards.pc133.days[dayA], { duty: "leave" }));
+          check(state.peopleCards.pc133.days[dayA].duty === "in" && state.peopleCards.pc133.days[dayB].duty === "leave", "ZS-133: різні стани в одній картці по днях");
+          openViewDay(dayB);
+          projectCardsToLiveDay();
+          check(countPeopleInUnit(state.report.unit) === 1 && (state.report.unit.people[0].duty === "leave"), "ZS-133: проєкція дня B показує leave");
+          openViewDay(dayA);
+          projectCardsToLiveDay();
+          check(countPeopleInUnit(state.report.unit) === 1 && (state.report.unit.people[0].duty === "in"), "ZS-133: проєкція дня A показує in");
+          state.confirm = { kind: "person", id: "pc133" };
+          confirmRemoval();
+          projectCardsToLiveDay();
+          check(!!state.peopleCards.pc133.archived && countPeopleInUnit(state.report.unit) === 0, "ZS-133: архів ховає людину з живого дня");
+          // Відновлення з архіву + запис на поточний день.
+          delete state.removed.people.pc133;
+          state.peopleCards.pc133.archived = false;
+          state.peopleCards.pc133.archivedAt = null;
+          if (!state.peopleCards.pc133.days[dayA]) {
+            upsertPersonCardDay("pc133", dayA, state.peopleCards.pc133.days[dayB] || { id: "pc133", duty: "in" });
+          }
+          projectCardsToLiveDay();
+          check(!state.peopleCards.pc133.archived && countPeopleInUnit(state.report.unit) === 1, "ZS-133: після відновлення людина знову в дні");
+        } catch (err133) {
+          check(false, "ZS-133: " + (err133 && err133.message ? err133.message : err133));
         }
         finishSelfTest();
       });
