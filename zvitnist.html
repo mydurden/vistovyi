@@ -1473,6 +1473,7 @@ button.count-toggle {
     draft: null,
     editing: null,
     pending: null,
+    editBaseline: null,
     holder: "Служба",
     openCode: "lead",
     reportRoot: "lead",
@@ -2844,6 +2845,7 @@ button.count-toggle {
     state.positions = {};
     state.editing = null;
     state.pending = null;
+    state.editBaseline = null;
     state.draft = null;
     state.confirm = null;
     projectCardsToLiveDay();
@@ -5057,7 +5059,9 @@ button.count-toggle {
     var shown = box.querySelector(".pick-current span");
     if (shown) shown.textContent = label;
     closePick(box);
-    if (!applyDraftField(box)) rememberPending(box);
+    if (applyDraftField(box)) return;
+    if (liveAutosaveEditNode(box)) return;
+    rememberPending(box);
   }
 
   function editAttrs(kind, id, fieldName) {
@@ -9139,6 +9143,8 @@ button.count-toggle {
     var changed = false;
     Array.from(state.open).forEach(function (id) {
       if (!isEntityCardOpenId(id)) return;
+      // ZS-139: закриття оверлея зберігає правки без окремої «Зберегти».
+      if (state.editing === id) commitCard(id);
       state.open.delete(id);
       if (state.editing === id) discardEdits();
       changed = true;
@@ -9148,6 +9154,7 @@ button.count-toggle {
 
   function toggle(id) {
     if (state.open.has(id)) {
+      if (state.editing === id) commitCard(id);
       state.open.delete(id);
       if (state.editing === id) discardEdits();
       if (isEntityCardOpenId(id)) {
@@ -9395,8 +9402,38 @@ button.count-toggle {
     return overlay;
   }
 
+  // ZS-139: чи є в чернетці хоч одне заповнене поле (порожнє закриття не створює картку).
+  function draftHasContent(draft) {
+    if (!draft) return false;
+    if (draft.kind === "machine") {
+      if (String(draft.name || "").trim()) return true;
+      if (String(draft.type || "").trim()) return true;
+      if (String(draft.board || "").trim()) return true;
+      if (String(draft.unit || "").trim()) return true;
+      if (String(draft.service || "").trim()) return true;
+      if (draft.mileage != null && draft.mileage !== "") return true;
+      if (draft.hours != null && draft.hours !== "") return true;
+      return false;
+    }
+    if (String(draft.surname || "").trim()) return true;
+    if (String(draft.givenName || "").trim()) return true;
+    if (String(draft.patronymic || "").trim()) return true;
+    if (String(draft.name || "").trim()) return true;
+    if (String(draft.rank || "").trim()) return true;
+    if (String(draft.callsign || "").trim()) return true;
+    if (String(draft.unit || "").trim()) return true;
+    if (String(draft.position || "").trim()) return true;
+    return false;
+  }
+
   function closeCardOverlay() {
     if (state.draft) {
+      syncDraftFromDom();
+      // Автозбереження: заповнену чернетку пишемо без кнопки «Зберегти»; порожню — відкидаємо.
+      if (draftHasContent(state.draft)) {
+        saveDraft();
+        return;
+      }
       discardDraft();
       return;
     }
@@ -9565,6 +9602,42 @@ button.count-toggle {
   function discardEdits() {
     state.editing = null;
     state.pending = null;
+    state.editBaseline = null;
+  }
+
+  function captureEditBaseline(kind, id) {
+    var fields = kind === "machine"
+      ? ["name", "type", "board", "unit", "duty", "accounting", "mileage", "hours", "service"]
+      : ["surname", "givenName", "patronymic", "rank", "unit", "callsign", "position", "duty", "accounting"];
+    var base = {};
+    fields.forEach(function (fieldName) {
+      base[fieldName] = currentFieldValue(kind, id, fieldName);
+    });
+    return base;
+  }
+
+  // ZS-139: під час вводу одразу пишемо поле в модель + локальний кеш (без повного render).
+  function liveAutosaveEditNode(node) {
+    if (!node || !node.getAttribute || !state.editing) return false;
+    var kind = node.getAttribute("data-edit-kind");
+    var id = node.getAttribute("data-edit-id");
+    var fieldName = node.getAttribute("data-edit-field");
+    if (!kind && node.getAttribute("data-position-for")) {
+      kind = "person";
+      id = node.getAttribute("data-position-for");
+      fieldName = "position";
+    }
+    if (!kind || !id || !fieldName) return false;
+    if (state.editing !== kind + ":" + id) return false;
+    rememberPending(node);
+    if (fieldName === "position" && node.getAttribute("data-position-for")) {
+      state.positions[id] = String(node.value || "").slice(0, 80);
+    } else {
+      applyFieldEdit(node);
+    }
+    syncLiveOverlaysIntoCards();
+    save();
+    return true;
   }
 
   function discardDraft() {
@@ -9688,14 +9761,22 @@ button.count-toggle {
     var kind = parts[0];
     var id = parts.slice(1).join(":");
     var root = document.getElementById(panelDomId(kind + ":" + id));
+    var baseline = state.editBaseline || {};
     if (root) {
       root.querySelectorAll("[data-edit-kind]").forEach(function (node) {
-        noteChange(node.getAttribute("data-edit-field"), currentFieldValue(kind, id, node.getAttribute("data-edit-field")), controlValue(node));
+        var fieldName = node.getAttribute("data-edit-field");
+        var before = Object.prototype.hasOwnProperty.call(baseline, fieldName)
+          ? baseline[fieldName]
+          : currentFieldValue(kind, id, fieldName);
+        noteChange(fieldName, before, controlValue(node));
         applyFieldEdit(node);
       });
       var post = root.querySelector("[data-position-for]");
       if (post) {
-        noteChange("position", currentFieldValue("person", id, "position"), controlValue(post));
+        var beforePost = Object.prototype.hasOwnProperty.call(baseline, "position")
+          ? baseline.position
+          : currentFieldValue("person", id, "position");
+        noteChange("position", beforePost, controlValue(post));
         state.positions[post.getAttribute("data-position-for")] = String(post.value || "").slice(0, 80);
       }
     }
@@ -10132,6 +10213,8 @@ button.count-toggle {
       if (editKey && editKey !== "draft") {
         state.editing = editKey;
         if (!state.pending || state.pending.key !== editKey) state.pending = { key: editKey, fields: {} };
+        var editParts = String(editKey).split(":");
+        state.editBaseline = captureEditBaseline(editParts[0], editParts.slice(1).join(":"));
         render();
       }
       return;
@@ -10630,6 +10713,7 @@ button.count-toggle {
 
   function onChange(event) {
     if (applyDraftField(event.target)) return;
+    if (liveAutosaveEditNode(event.target)) return;
     if (rememberPending(event.target)) return;
     var accessUser = event.target.closest("[data-access-user]");
     if (accessUser) {
@@ -10670,6 +10754,7 @@ button.count-toggle {
 
   function onInput(event) {
     if (applyDraftField(event.target)) return;
+    if (liveAutosaveEditNode(event.target)) return;
     var node = event.target;
     if (node.id === "unit-name") {
       state.unitNameDraft = node.value.slice(0, 80);
@@ -10731,6 +10816,9 @@ button.count-toggle {
     state.added = { people: [], machines: [] };
     state.confirm = null;
     state.draft = null;
+    state.editing = null;
+    state.pending = null;
+    state.editBaseline = null;
     state.holder = "Служба";
     state.openCode = "lead";
     state.reportRoot = "lead";
@@ -11688,9 +11776,10 @@ button.count-toggle {
     pipTry.value = "Чужий";
     pipTry.dispatchEvent(new Event("input", { bubbles: true }));
     toggle("person:p4");
-    check(!state.edits.people.p4 || state.edits.people.p4.surname !== "Чужий", "закриття без галочки не пише");
+    // ZS-139: закриття оверлея / ввід зберігають без окремої галочки.
+    check(state.edits.people.p4 && state.edits.people.p4.surname === "Чужий", "закриття зберігає прізвище без галочки");
     toggle("person:p4");
-    check(document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор", "поля повернулись");
+    check(document.getElementById("surname-p4").value === "Чужий" && document.getElementById("given-p4").value === "Ігор", "поля лишились після автосейву");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     chooseRank("rank-p4", "Капітан");
     var post = document.getElementById("post-p4");
@@ -11699,8 +11788,8 @@ button.count-toggle {
     var pip = document.getElementById("surname-p4");
     pip.value = "Тестов";
     pip.dispatchEvent(new Event("input", { bubbles: true }));
-    check(!state.edits.people.p4 || state.edits.people.p4.rank !== "Капітан", "до галочки звання не записане");
-    check(!state.positions.p4, "до галочки посада не записана");
+    check(state.edits.people.p4 && state.edits.people.p4.rank === "Капітан", "під час вводу звання вже в edits");
+    check(state.positions.p4 === "Водій групи", "під час вводу посада вже записана");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     check(state.edits.people.p4 && state.edits.people.p4.rank === "Капітан", "звання зберігається");
     check(document.getElementById("day-nav") && document.getElementById("changes-title") && document.getElementById("changes-title").textContent.indexOf("Що змінено") !== -1, "після запису дата лишається і з’являється що змінено");
@@ -11907,14 +11996,11 @@ button.count-toggle {
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     chooseRank("rank-p4", "Майор");
     toggle("person:p4");
-    check(state.changes.length === journalBefore, "закриття без галочки не додає запис");
+    // ZS-139: закриття оверлея = збереження + запис у журнал (ранг лишаємо Майор для подальших перевірок).
+    check(state.changes.length === journalBefore + 1, "закриття зберігає і додає запис");
     toggle("person:p4");
-    check(document.getElementById("rank-p4").getAttribute("data-value") === "Капітан", "звання лишилось попереднім");
-    document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
-    chooseRank("rank-p4", "Майор");
-    document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
+    check(document.getElementById("rank-p4").getAttribute("data-value") === "Майор", "звання збережене закриттям");
     var serviceLine = "Служба. Звання. Було: Капітан. Стало: Майор.";
-    check(state.changes.length === journalBefore + 1, "галочка додає один запис");
     document.querySelector("[data-open-changes]").click();
     check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceLine) !== -1, "запис видно у вікні журналу");
     document.querySelector("[data-close-changes]").click();
@@ -12228,25 +12314,79 @@ button.count-toggle {
     checkTitleIcons(document.getElementById("card-overlay"), "Картка військовослужбовця");
     checkOverlayFrame();
     checkWorkWidth("картка");
-    var newCall = document.getElementById("call-draft");
-    newCall.value = "Тимчасовий";
-    newCall.dispatchEvent(new Event("input", { bubbles: true }));
+    // Порожня чернетка: потяг вниз не створює картку.
     document.querySelector("#card-overlay .overlay-sheet").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 40, clientY: 16, pointerId: 3, button: 0 }));
     document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 42, clientY: 140, pointerId: 3, button: 0 }));
     document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 42, clientY: 140, pointerId: 3, button: 0 }));
     var afterPull = document.querySelector("#people .frac");
-    check(!document.getElementById("card-overlay") && state.added.people.length === 0, "потяг вниз закриває без запису");
-    check(afterPull && afterPull.getAttribute("data-plus") === "14" && afterPull.getAttribute("data-total") === "18", "потяг вниз лишає 18");
+    check(!document.getElementById("card-overlay") && state.added.people.length === 0, "потяг порожньої чернетки без запису");
+    check(afterPull && afterPull.getAttribute("data-plus") === "14" && afterPull.getAttribute("data-total") === "18", "потяг порожньої лишає 18");
     document.querySelector("#people [data-add='person']").click();
     document.getElementById("call-draft").value = "Тимчасовий";
     document.getElementById("call-draft").dispatchEvent(new Event("input", { bubbles: true }));
     document.querySelector("#card-overlay [data-discard-draft]").click();
     var afterDismiss = document.querySelector("#people .frac");
     check(!document.getElementById("card-overlay") && state.added.people.length === 0, "хрестик без запису");
-    check(afterDismiss && afterDismiss.getAttribute("data-plus") === "14" && afterDismiss.getAttribute("data-total") === "18", "закриття без галочки лишає 18");
-    check(!localStorage.getItem("zvitnist.lead.v1"), "закриття не пише в пам’ять браузера");
+    check(afterDismiss && afterDismiss.getAttribute("data-plus") === "14" && afterDismiss.getAttribute("data-total") === "18", "хрестик відкидає чернетку");
+    check(!localStorage.getItem("zvitnist.lead.v1"), "хрестик не пише в пам’ять браузера");
+    // ZS-139: заповнив → закрив оверлей без «Зберегти» → картка лишається + кеш.
     document.querySelector("#people [data-add='person']").click();
-    newCall = document.getElementById("call-draft");
+    var autoCall = document.getElementById("call-draft");
+    autoCall.value = "Автосейв";
+    autoCall.dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("post-draft").value = "Стрілець";
+    document.getElementById("post-draft").dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("card-overlay").click();
+    var afterAutoClose = document.querySelector("#people .frac");
+    check(!document.getElementById("card-overlay") && state.added.people.length === 1 && state.added.people[0].callsign === "Автосейв", "закриття оверлея зберігає без кнопки");
+    check(afterAutoClose && afterAutoClose.getAttribute("data-plus") === "15" && afterAutoClose.getAttribute("data-total") === "19", "після автосейву дріб більший");
+    check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Автосейв") !== -1, "автосейв пише zvitnist.cache.v1");
+    var autoSavedPerson = state.added.people[0];
+    check(state.peopleCards[autoSavedPerson.id] && state.positions[autoSavedPerson.id] === "Стрілець", "автосейв у peopleCards і посаді");
+    // Імітація reload з кешу (після projectCardsToLiveDay людина може бути в unit, не в added).
+    var autoCache = loadReportCache();
+    state.added = { people: [], machines: [] };
+    state.peopleCards = {};
+    state.positions = {};
+    function hasAutosaveCall(mark) {
+      if ((state.added.people || []).some(function (p) { return p && p.callsign === mark; })) return true;
+      var dayKey = state.viewDay || todayISO();
+      return Object.keys(state.peopleCards || {}).some(function (id) {
+        var card = state.peopleCards[id];
+        return !!(card && card.days && card.days[dayKey] && card.days[dayKey].callsign === mark);
+      }) || JSON.stringify(state.report || {}).indexOf(mark) !== -1;
+    }
+    check(applyReportCache(autoCache) && hasAutosaveCall("Автосейв"), "reload з кешу повертає автосейв");
+    render();
+    if (!state.open.has("unit:v1")) toggle("unit:v1");
+    if (!state.open.has("unit:s1")) toggle("unit:s1");
+    check(document.getElementById("people").textContent.indexOf("Автосейв") !== -1, "після reload автосейв у списку");
+    // Прибрати автосейв-картку, далі сценарій з явною дискетою.
+    var autoId = "";
+    var dayForAuto = state.viewDay || todayISO();
+    Object.keys(state.peopleCards || {}).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (card && card.days && card.days[dayForAuto] && card.days[dayForAuto].callsign === "Автосейв") autoId = id;
+    });
+    if (!autoId && state.added.people[0]) autoId = state.added.people[0].id;
+    if (autoId) {
+      // Жорстко прибираємо тестову картку з карток/added (без syncLive — інакше bake знову підніме її з unit).
+      state.open.delete("person:" + autoId);
+      state.added.people = (state.added.people || []).filter(function (p) { return p.id !== autoId; });
+      delete state.peopleCards[autoId];
+      delete state.removed.people[autoId];
+      if (state.removedAt && state.removedAt.people) delete state.removedAt.people[autoId];
+      delete state.positions[autoId];
+      if (state.edits && state.edits.people) delete state.edits.people[autoId];
+      projectCardsToLiveDay();
+      save();
+      render();
+      if (!state.open.has("unit:v1")) toggle("unit:v1");
+      if (!state.open.has("unit:s1")) toggle("unit:s1");
+    }
+    check(document.querySelector("#people .frac").getAttribute("data-total") === "18" && !hasAutosaveCall("Автосейв"), "автосейв прибрано перед дискетою");
+    document.querySelector("#people [data-add='person']").click();
+    var newCall = document.getElementById("call-draft");
     newCall.value = "Буревій";
     newCall.dispatchEvent(new Event("input", { bubbles: true }));
     document.querySelector("#card-overlay [data-save-card='draft']").click();
@@ -12284,10 +12424,42 @@ button.count-toggle {
     check(!!state.removed.people[createdPerson.id] && document.querySelector("#people .frac").getAttribute("data-total") === "18", "повторне архівування знову ховає з дробу");
     document.querySelector("#equipment [data-add='machine']").click();
     var machineHeld = document.querySelector("#equipment .frac");
-    check(!!document.getElementById("card-overlay") && state.added.machines.length === 0 && machineHeld && machineHeld.getAttribute("data-total") === "8", "машина не з’являється до дискети");
+    check(!!document.getElementById("card-overlay") && state.added.machines.length === 0 && machineHeld && machineHeld.getAttribute("data-total") === "8", "машина не з’являється до закриття/дискети");
     checkTitleIcons(document.getElementById("card-overlay"), "Картка машини");
     check(!document.querySelector("#card-overlay .icon-gear"), "у вікні машини немає шестерні");
     check(document.getElementById("mname-draft") && document.getElementById("mtype-draft") && document.getElementById("mboard-draft") && document.getElementById("munit-draft") && document.getElementById("mduty-draft") && document.getElementById("maccount-draft") && document.getElementById("mmile-draft") && document.getElementById("mhours-draft") && document.getElementById("mservice-draft"), "повна картка машини");
+    // ZS-139: ОВТ — той самий шлях автосейву при закритті оверлея.
+    document.getElementById("mname-draft").value = "АвтоОВТ";
+    document.getElementById("mname-draft").dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("card-overlay").click();
+    check(!document.getElementById("card-overlay") && state.added.machines.some(function (m) { return m.name === "АвтоОВТ"; }), "ОВТ автосейв при закритті без кнопки");
+    check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("АвтоОВТ") !== -1, "ОВТ автосейв у кеші");
+    var autoMachine = state.added.machines.filter(function (m) { return m.name === "АвтоОВТ"; })[0];
+    if (!autoMachine) {
+      Object.keys(state.machineCards || {}).forEach(function (id) {
+        var card = state.machineCards[id];
+        var dayM = state.viewDay || todayISO();
+        if (card && card.days && card.days[dayM] && card.days[dayM].name === "АвтоОВТ") autoMachine = { id: id };
+      });
+    }
+    if (autoMachine) {
+      state.open.delete("machine:" + autoMachine.id);
+      state.added.machines = (state.added.machines || []).filter(function (m) { return m.id !== autoMachine.id; });
+      delete state.machineCards[autoMachine.id];
+      delete state.removed.machines[autoMachine.id];
+      if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[autoMachine.id];
+      if (state.edits && state.edits.machines) delete state.edits.machines[autoMachine.id];
+      projectCardsToLiveDay();
+      save();
+      render();
+    }
+    check(document.querySelector("#equipment .frac").getAttribute("data-total") === "8", "дріб ОВТ після зняття автосейву");
+    check(!Object.keys(state.machineCards || {}).some(function (id) {
+      var card = state.machineCards[id];
+      var dayM = state.viewDay || todayISO();
+      return !!(card && card.days && card.days[dayM] && card.days[dayM].name === "АвтоОВТ");
+    }) && !(state.added.machines || []).some(function (m) { return m && m.name === "АвтоОВТ"; }), "автосейв ОВТ знято з карток");
+    document.querySelector("#equipment [data-add='machine']").click();
     var newMachineName = document.getElementById("mname-draft");
     newMachineName.value = "Вихор";
     newMachineName.dispatchEvent(new Event("input", { bubbles: true }));
