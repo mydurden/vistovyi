@@ -655,6 +655,84 @@ h2 {
 .pill.planned { background: var(--amber-soft); color: var(--amber-ink); }
 .pill.doing { background: var(--green-soft); color: var(--green-ink); }
 .pill.done { background: var(--done-soft); color: var(--done-ink); }
+.pill.link-person { background: #e7eefc; color: #1a4fbf; }
+.pill.link-machine { background: var(--green-soft); color: var(--green-ink); }
+.pill.link-task { background: var(--amber-soft); color: var(--amber-ink); }
+
+.events .event-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.events .event-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.events .event-row.is-open { border-color: #1a4fbf; }
+.events .event-main { flex: 1 1 auto; min-width: 0; }
+.events .event-time {
+  display: inline-block;
+  min-width: 3.2rem;
+  font-weight: 700;
+  margin-right: 8px;
+}
+.events .event-desc { font-weight: 500; overflow-wrap: break-word; }
+.events .event-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.events .event-tools { display: flex; gap: 4px; flex: 0 0 auto; }
+.events .event-panel {
+  margin: 0 0 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.events .event-panel textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  resize: vertical;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+.events .event-pick {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  max-height: 12rem;
+  overflow: auto;
+}
+.events .event-pick button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+}
+.events .event-pick button:last-child { border-bottom: 0; }
+.events .event-add-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
 .panel {
   margin: 0 0 8px 10px;
@@ -1425,7 +1503,8 @@ button.count-toggle {
   var DATA = {
     unit: { id: "root", name: "", people: [] },
     machines: [],
-    tasks: []
+    tasks: [],
+    events: []
   };
 
   var RESTRICTED_KEYS = { id: true, restricted: true, name: true, peopleCount: true, status: true };
@@ -1474,6 +1553,7 @@ button.count-toggle {
     editing: null,
     pending: null,
     editBaseline: null,
+    eventLinkPick: null,
     holder: "Служба",
     openCode: "lead",
     reportRoot: "lead",
@@ -2520,7 +2600,7 @@ button.count-toggle {
   }
 
   // Зріз дня для архіву/Drive: о/с і ОВТ з карток; завдання — як були.
-  function daySliceFromCards(day, tasks, changes) {
+  function daySliceFromCards(day, tasks, changes, events) {
     ensureCardStores();
     var unit = state.report && state.report.unit
       ? cloneData(state.report.unit)
@@ -2569,7 +2649,8 @@ button.count-toggle {
       machines: machines,
       tasks: Array.isArray(tasks) ? tasks : [],
       people: [],
-      changes: Array.isArray(changes) ? changes : []
+      changes: Array.isArray(changes) ? changes : [],
+      events: Array.isArray(events) ? events : []
     });
   }
 
@@ -2699,7 +2780,8 @@ button.count-toggle {
       machines: machines,
       tasks: cloneData(Array.isArray(report.tasks) ? report.tasks : []),
       people: cloneData(Array.isArray(report.people) ? report.people : []),
-      changes: cloneData(Array.isArray(state.changes) ? state.changes : [])
+      changes: cloneData(Array.isArray(state.changes) ? state.changes : []),
+      events: cloneData(Array.isArray(report.events) ? report.events : [])
     };
   }
 
@@ -2718,6 +2800,7 @@ button.count-toggle {
       unit: baked.unit,
       machines: baked.machines,
       tasks: baked.tasks,
+      events: baked.events || [],
       people: baked.people
     };
     state.added = {
@@ -2741,7 +2824,8 @@ button.count-toggle {
         machines: [],
         tasks: [],
         people: [],
-        changes: []
+        changes: [],
+        events: []
       };
     }
     return {
@@ -2749,7 +2833,8 @@ button.count-toggle {
       machines: Array.isArray(raw.machines) ? cloneData(raw.machines) : [],
       tasks: Array.isArray(raw.tasks) ? cloneData(raw.tasks) : [],
       people: Array.isArray(raw.people) ? cloneData(raw.people) : [],
-      changes: Array.isArray(raw.changes) ? cloneData(raw.changes) : []
+      changes: Array.isArray(raw.changes) ? cloneData(raw.changes) : [],
+      events: Array.isArray(raw.events) ? cloneData(raw.events) : []
     };
   }
 
@@ -2761,7 +2846,8 @@ button.count-toggle {
       machines: slice.machines,
       tasks: slice.tasks,
       people: slice.people,
-      changes: []
+      changes: [],
+      events: slice.events
     };
   }
 
@@ -2782,7 +2868,8 @@ button.count-toggle {
       machines: [],
       tasks: Array.isArray(slice.tasks) ? cloneData(slice.tasks) : [],
       people: [],
-      changes: []
+      changes: [],
+      events: []
     };
   }
 
@@ -2803,6 +2890,7 @@ button.count-toggle {
     if (Array.isArray(normalized.people) && normalized.people.length > 0) return true;
     if (Array.isArray(normalized.machines) && normalized.machines.length > 0) return true;
     if (Array.isArray(normalized.tasks) && normalized.tasks.length > 0) return true;
+    if (Array.isArray(normalized.events) && normalized.events.length > 0) return true;
     return false;
   }
 
@@ -2819,9 +2907,10 @@ button.count-toggle {
     syncLiveOverlaysIntoCards();
     var tasks = state.report && Array.isArray(state.report.tasks) ? state.report.tasks : [];
     var changes = Array.isArray(state.changes) ? state.changes : [];
-    var slice = daySliceFromCards(state.viewDay, tasks, changes);
+    var events = state.report && Array.isArray(state.report.events) ? state.report.events : [];
+    var slice = daySliceFromCards(state.viewDay, tasks, changes, events);
     // Порожній зріз від самого лише відкриття дати в архів не кладемо.
-    if (daySliceHasReport(slice) || (Array.isArray(tasks) && tasks.length) || (Array.isArray(changes) && changes.length)) {
+    if (daySliceHasReport(slice) || (Array.isArray(tasks) && tasks.length) || (Array.isArray(changes) && changes.length) || (Array.isArray(events) && events.length)) {
       state.daysArchive[state.viewDay] = slice;
     } else delete state.daysArchive[state.viewDay];
   }
@@ -2837,6 +2926,7 @@ button.count-toggle {
       unit: base.unit || { id: "root", name: base.name || "", people: [] },
       machines: Array.isArray(base.machines) ? base.machines : [],
       tasks: normalized.tasks,
+      events: Array.isArray(normalized.events) ? normalized.events : [],
       people: []
     };
     state.changes = Array.isArray(normalized.changes) ? normalized.changes.slice(-100) : [];
@@ -2848,6 +2938,7 @@ button.count-toggle {
     state.editBaseline = null;
     state.draft = null;
     state.confirm = null;
+    state.eventLinkPick = null;
     projectCardsToLiveDay();
   }
 
@@ -2910,7 +3001,8 @@ button.count-toggle {
           state.daysArchive[state.fileDay] = daySliceFromCards(
             state.fileDay,
             state.report && state.report.tasks,
-            state.changes
+            state.changes,
+            state.report && state.report.events
           );
         } else {
           ensureDaySliceIn(state.daysArchive, state.fileDay);
@@ -3008,7 +3100,7 @@ button.count-toggle {
       var base = state.daysArchive[target]
         ? normalizeDaySlice(state.daysArchive[target])
         : blankStaffDaySlice(daySliceFromState());
-      var painted = daySliceFromCards(target, base.tasks, base.changes);
+      var painted = daySliceFromCards(target, base.tasks, base.changes, base.events || []);
       state.daysArchive[target] = painted;
       if (!state.fileDay || target > state.fileDay) state.fileDay = target;
     }
@@ -3039,7 +3131,7 @@ button.count-toggle {
       dayKeys[liveKey] = true;
       liveKey = shiftISODate(liveKey, 1);
     }
-    var viewSlice = daySliceFromCards(viewKey, state.report && state.report.tasks, state.changes);
+    var viewSlice = daySliceFromCards(viewKey, state.report && state.report.tasks, state.changes, state.report && state.report.events);
     dayKeys[viewKey] = true;
     dayKeys[liveKey] = true;
     if (liveKey !== viewKey && daySliceHasReport(viewSlice)) {
@@ -3053,11 +3145,12 @@ button.count-toggle {
       var prev = state.daysArchive[key] ? normalizeDaySlice(state.daysArchive[key]) : null;
       var tasks = key === viewKey ? (state.report && state.report.tasks) : (prev && prev.tasks);
       var changes = key === viewKey ? state.changes : (prev && prev.changes);
-      days[key] = daySliceFromCards(key, tasks, changes);
+      var events = key === viewKey ? (state.report && state.report.events) : (prev && prev.events);
+      days[key] = daySliceFromCards(key, tasks, changes, events);
     });
     var live = liveKey === viewKey
       ? viewSlice
-      : daySliceFromCards(liveKey, state.report && state.report.tasks, state.changes);
+      : daySliceFromCards(liveKey, state.report && state.report.tasks, state.changes, state.report && state.report.events);
     var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
       var code = String(unit.code || "");
@@ -3095,6 +3188,7 @@ button.count-toggle {
       tasks: live.tasks,
       people: live.people,
       changes: live.changes || [],
+      events: live.events || [],
       days: days,
       children: children,
       removedPeople: removedPeople,
@@ -3123,7 +3217,8 @@ button.count-toggle {
       machines: report && report.machines,
       tasks: report && report.tasks,
       people: report && report.people,
-      changes: changes
+      changes: changes,
+      events: report && report.events
     });
     if (fromArchive && daySliceHasReport(fromArchive)) return fromArchive;
     if (daySliceHasReport(fromReport)) return fromReport;
@@ -3158,6 +3253,7 @@ button.count-toggle {
       tasks: live.tasks,
       people: live.people,
       changes: live.changes || [],
+      events: live.events || [],
       days: days,
       children: subordinatesFor(unitKey).map(function (unit) {
         var code = String(unit.code || "");
@@ -3179,6 +3275,7 @@ button.count-toggle {
       unit: raw.unit && typeof raw.unit === "object" ? raw.unit : { id: "root", name: String(raw.name || "").slice(0, 80), people: [] },
       machines: Array.isArray(raw.machines) ? raw.machines : [],
       tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
+      events: Array.isArray(raw.events) ? raw.events : [],
       people: Array.isArray(raw.people) ? raw.people : []
     };
     return doc;
@@ -3198,7 +3295,8 @@ button.count-toggle {
       machines: raw && raw.machines,
       tasks: raw && raw.tasks,
       people: raw && raw.people,
-      changes: raw && raw.changes
+      changes: raw && raw.changes,
+      events: raw && raw.events
     });
     state.daysArchive = next;
     state.fileDay = day;
@@ -4048,6 +4146,7 @@ button.count-toggle {
       unit: { id: "root", name: "", people: [] },
       machines: [],
       tasks: [],
+      events: [],
       people: []
     };
   }
@@ -4062,6 +4161,7 @@ button.count-toggle {
       unit: { id: "root", name: name, people: [] },
       machines: [],
       tasks: [],
+      events: [],
       people: []
     };
   }
@@ -5493,6 +5593,338 @@ button.count-toggle {
     viewTasks().forEach(function (task) {
       if (!grantAllowsTask(task.id)) return;
       section.append(renderTask(task));
+    });
+    return section;
+  }
+
+  // ZS-141: розділ «Події» під Завданнями — записи відкритого дня.
+  function viewEvents() {
+    if (state.report && Array.isArray(state.report.events)) return state.report.events;
+    return [];
+  }
+
+  function ensureReportEvents() {
+    if (!state.report) state.report = sampleReportDocument();
+    if (!Array.isArray(state.report.events)) state.report.events = [];
+    return state.report.events;
+  }
+
+  function findEvent(id) {
+    var list = viewEvents();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  function eventLinkLabel(link) {
+    if (!link || !link.kind || !link.id) return "";
+    if (link.kind === "person") {
+      var personItem = findPerson(link.id) || addedPerson(link.id);
+      if (!personItem) return String(link.id);
+      var call = personCallsign(personItem);
+      return call || personPipShort(personItem) || personItem.name || link.id;
+    }
+    if (link.kind === "machine") {
+      var machine = findMachine(link.id) || addedMachine(link.id);
+      return machine ? (machineName(machine) || machine.board || link.id) : String(link.id);
+    }
+    if (link.kind === "task") {
+      var tasks = viewTasks();
+      for (var t = 0; t < tasks.length; t++) {
+        if (tasks[t] && tasks[t].id === link.id) return tasks[t].name || link.id;
+      }
+      return String(link.id);
+    }
+    return String(link.id);
+  }
+
+  function eventLinkPillClass(kind) {
+    if (kind === "person") return "pill wrap link-person";
+    if (kind === "machine") return "pill wrap link-machine";
+    return "pill wrap link-task";
+  }
+
+  function blankEvent() {
+    return { id: newId("ne"), time: "", description: "", links: [] };
+  }
+
+  function addEventRecord() {
+    if (!canDelete()) return;
+    var list = ensureReportEvents();
+    var row = blankEvent();
+    list.push(row);
+    state.eventLinkPick = null;
+    state.open.add("event:" + row.id);
+    save();
+    render();
+  }
+
+  function copyEventRecord(id) {
+    if (!canDelete()) return;
+    var src = findEvent(id);
+    if (!src) return;
+    var list = ensureReportEvents();
+    list.push({
+      id: newId("ne"),
+      time: String(src.time || "").slice(0, 16),
+      description: String(src.description || "").slice(0, 500),
+      links: Array.isArray(src.links) ? cloneData(src.links) : []
+    });
+    save();
+    render();
+  }
+
+  function removeEventRecord(id) {
+    if (!canDelete()) return;
+    var list = ensureReportEvents();
+    state.report.events = list.filter(function (row) { return !(row && row.id === id); });
+    state.open.delete("event:" + id);
+    if (state.eventLinkPick && state.eventLinkPick.eventId === id) state.eventLinkPick = null;
+    state.confirm = null;
+    save();
+    render();
+  }
+
+  function askRemoveEvent(id) {
+    if (!canDelete()) return;
+    if (state.confirm && state.confirm.kind === "event" && state.confirm.id === id) {
+      state.confirm = null;
+      render();
+      return;
+    }
+    state.confirm = { kind: "event", id: id };
+    render();
+  }
+
+  function openEventLink(link) {
+    if (!link || !link.kind || !link.id) return;
+    if (link.kind === "person") toggle("person:" + link.id);
+    else if (link.kind === "machine") toggle("machine:" + link.id);
+    else if (link.kind === "task") toggle("task:" + link.id);
+  }
+
+  function addEventLink(eventId, kind, targetId) {
+    var row = findEvent(eventId);
+    if (!row || !kind || !targetId) return;
+    if (!Array.isArray(row.links)) row.links = [];
+    var exists = row.links.some(function (link) {
+      return link && link.kind === kind && link.id === targetId;
+    });
+    if (!exists) row.links.push({ kind: kind, id: targetId });
+    state.eventLinkPick = null;
+    save();
+    render();
+  }
+
+  function removeEventLink(eventId, kind, targetId) {
+    var row = findEvent(eventId);
+    if (!row || !Array.isArray(row.links)) return;
+    row.links = row.links.filter(function (link) {
+      return !(link && link.kind === kind && link.id === targetId);
+    });
+    save();
+    render();
+  }
+
+  function eventPeopleChoices() {
+    return staffPeopleList().filter(function (item) {
+      return item && item.id && !state.removed.people[item.id];
+    });
+  }
+
+  function eventMachineChoices() {
+    var out = [];
+    var seen = {};
+    function push(item) {
+      if (!item || !item.id || state.removed.machines[item.id] || seen[item.id]) return;
+      seen[item.id] = true;
+      out.push(item);
+    }
+    (state.report && Array.isArray(state.report.machines) ? state.report.machines : []).forEach(push);
+    (state.added.machines || []).forEach(push);
+    Object.keys(state.machineCards || {}).forEach(function (id) {
+      var card = state.machineCards[id];
+      if (!card || card.archived) return;
+      var day = state.viewDay || todayISO();
+      if (card.days && card.days[day]) push(machineItemFromCard(card, day));
+    });
+    return out;
+  }
+
+  function renderEventLinkPick(eventId, kind) {
+    var list = el("ul", { className: "event-pick", attrs: { "data-event-pick-list": eventId } });
+    var choices = [];
+    if (kind === "person") {
+      eventPeopleChoices().forEach(function (item) {
+        choices.push({ id: item.id, label: eventLinkLabel({ kind: "person", id: item.id }) });
+      });
+    } else if (kind === "machine") {
+      eventMachineChoices().forEach(function (item) {
+        choices.push({ id: item.id, label: machineName(item) || item.board || item.id });
+      });
+    } else if (kind === "task") {
+      viewTasks().forEach(function (task) {
+        if (!task || !task.id) return;
+        if (!grantAllowsTask(task.id)) return;
+        choices.push({ id: task.id, label: task.name || task.id });
+      });
+    }
+    if (!choices.length) {
+      list.append(el("li", { text: "Немає записів для зв’язку" }));
+      return list;
+    }
+    choices.forEach(function (choice) {
+      var item = el("li");
+      item.append(el("button", {
+        text: choice.label,
+        attrs: {
+          type: "button",
+          "data-event-link-choose": eventId + ":" + kind + ":" + choice.id
+        }
+      }));
+      list.append(item);
+    });
+    return list;
+  }
+
+  function renderEventPanel(row) {
+    var panel = el("div", { className: "event-panel", attrs: { id: panelDomId("event:" + row.id) } });
+    if (state.confirm && state.confirm.kind === "event" && state.confirm.id === row.id) {
+      panel.append(renderConfirmBox());
+    }
+    panel.append(fieldEditor("Час", textInput("event-time-" + row.id, row.time || "", {
+      "data-event-field": "time",
+      "data-event-id": row.id,
+      placeholder: "гг:хх",
+      maxlength: "16"
+    })));
+    var descWrap = el("div", { className: "field" });
+    descWrap.append(el("label", { className: "label", text: "Опис", attrs: { for: "event-desc-" + row.id } }));
+    var area = el("textarea", {
+      attrs: {
+        id: "event-desc-" + row.id,
+        "data-event-field": "description",
+        "data-event-id": row.id,
+        maxlength: "500",
+        placeholder: "Що сталось"
+      }
+    });
+    area.value = row.description || "";
+    descWrap.append(area);
+    panel.append(descWrap);
+    var linksField = el("div", { className: "field" });
+    linksField.append(el("div", { className: "label", text: "Зв’язки" }));
+    var chips = el("div", { className: "event-links" });
+    (Array.isArray(row.links) ? row.links : []).forEach(function (link) {
+      var chip = el("button", {
+        className: eventLinkPillClass(link.kind),
+        text: eventLinkLabel(link),
+        attrs: {
+          type: "button",
+          "data-event-open-link": link.kind + ":" + link.id,
+          "aria-label": "Відкрити " + eventLinkLabel(link)
+        }
+      });
+      chips.append(chip);
+      if (canDelete()) {
+        chips.append(iconButton("x", "Прибрати зв’язок", {
+          "data-event-unlink": row.id + ":" + link.kind + ":" + link.id
+        }));
+      }
+    });
+    linksField.append(chips);
+    if (canDelete()) {
+      var addRow = el("div", { className: "event-add-links" });
+      addRow.append(el("button", {
+        className: "issue",
+        text: "+ о/с",
+        attrs: { type: "button", "data-event-link-pick": row.id + ":person" }
+      }));
+      addRow.append(el("button", {
+        className: "issue",
+        text: "+ ОВТ",
+        attrs: { type: "button", "data-event-link-pick": row.id + ":machine" }
+      }));
+      addRow.append(el("button", {
+        className: "issue",
+        text: "+ завдання",
+        attrs: { type: "button", "data-event-link-pick": row.id + ":task" }
+      }));
+      addRow.append(el("button", {
+        className: "issue",
+        text: "+ місце (пізніше)",
+        attrs: { type: "button", disabled: "disabled" }
+      }));
+      linksField.append(addRow);
+      if (state.eventLinkPick && state.eventLinkPick.eventId === row.id) {
+        linksField.append(renderEventLinkPick(row.id, state.eventLinkPick.kind));
+      }
+    }
+    panel.append(linksField);
+    return panel;
+  }
+
+  function renderEventRow(row, index) {
+    var openId = "event:" + row.id;
+    var open = state.open.has(openId);
+    var frag = document.createDocumentFragment();
+    var rowBtn = el("button", {
+      className: "event-row" + (open ? " is-open" : ""),
+      attrs: {
+        type: "button",
+        "data-toggle": openId,
+        "aria-expanded": open ? "true" : "false"
+      }
+    });
+    var main = el("div", { className: "event-main" });
+    var title = el("div");
+    title.append(el("span", { className: "meta", text: String(index + 1) + ". " }));
+    title.append(el("span", { className: "event-time", text: row.time || "—:—" }));
+    title.append(el("span", { className: "event-desc", text: row.description || "Нова подія" }));
+    main.append(title);
+    if (Array.isArray(row.links) && row.links.length) {
+      var chips = el("div", { className: "event-links" });
+      row.links.forEach(function (link) {
+        chips.append(el("span", {
+          className: eventLinkPillClass(link.kind),
+          text: eventLinkLabel(link)
+        }));
+      });
+      main.append(chips);
+    }
+    rowBtn.append(main);
+    var item = el("div", { className: "event-item" });
+    item.append(rowBtn);
+    var tools = el("div", { className: "event-tools" });
+    if (canDelete()) {
+      tools.append(iconButton("copy", "Копіювати в кінець списку", { "data-event-copy": row.id }));
+      tools.append(iconButton("x", "Видалити подію", { "data-remove": "event:" + row.id }));
+    }
+    item.append(tools);
+    frag.append(item);
+    if (open) frag.append(renderEventPanel(row));
+    return frag;
+  }
+
+  function renderEvents() {
+    var section = el("section", { className: "block events", attrs: { id: "events", "aria-labelledby": "events-title" } });
+    var top = el("div", { className: "block-top" });
+    top.append(el("h2", { text: "Події", attrs: { id: "events-title" } }));
+    if (canDelete()) {
+      var tools = el("div", { className: "block-tools" });
+      var addBtn = el("button", {
+        className: "tool",
+        attrs: { type: "button", "data-add-event": "1", "aria-label": "Додати подію" }
+      });
+      addBtn.append(icon("plus"));
+      tools.append(addBtn);
+      top.append(tools);
+    }
+    section.append(top);
+    viewEvents().forEach(function (row, index) {
+      if (!row || !row.id) return;
+      section.append(renderEventRow(row, index));
     });
     return section;
   }
@@ -6976,7 +7408,8 @@ button.count-toggle {
       machines: machines.list,
       tasks: (local.tasks && local.tasks.length ? local.tasks : remote.tasks) || [],
       people: [],
-      changes: (local.changes && local.changes.length ? local.changes : remote.changes) || []
+      changes: (local.changes && local.changes.length ? local.changes : remote.changes) || [],
+      events: (local.events && local.events.length ? local.events : remote.events) || []
     });
   }
 
@@ -7080,6 +7513,7 @@ button.count-toggle {
       tasks: Array.isArray(local.tasks) && local.tasks.length ? cloneData(local.tasks) : cloneData(remote.tasks || []),
       people: [],
       changes: Array.isArray(local.changes) && local.changes.length ? cloneData(local.changes) : cloneData(remote.changes || []),
+      events: Array.isArray(local.events) && local.events.length ? cloneData(local.events) : cloneData(remote.events || []),
       days: days,
       children: Object.keys(childMap).map(function (code) { return childMap[code]; }),
       removedPeople: peopleMerge.removed,
@@ -9046,6 +9480,7 @@ button.count-toggle {
     if (state.scope === "all" || state.scope === "people" || (state.scope === "grant" && grantHasPeople(state.activeGrant) && grantPeriodOk(state.viewDay))) main.append(renderPeople());
     if (state.scope === "all" || state.scope === "equipment" || (state.scope === "grant" && grantHasMachines(state.activeGrant) && grantPeriodOk(state.viewDay))) main.append(renderEquipment());
     if (state.scope === "all" || state.scope === "tasks" || (state.scope === "grant" && grantHasTasks(state.activeGrant) && grantPeriodOk(state.viewDay))) main.append(renderTasks());
+    if (state.scope === "all" || state.scope === "tasks" || (state.scope === "grant" && grantHasTasks(state.activeGrant) && grantPeriodOk(state.viewDay))) main.append(renderEvents());
     main.append(renderGlossary());
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
@@ -9319,6 +9754,11 @@ button.count-toggle {
       var personItem = findPerson(id);
       var who = personItem ? (personCallsign(personItem) || personName(personItem)) : "";
       return "В архів картку «" + who + "»?";
+    }
+    if (kind === "event") {
+      var eventRow = findEvent(id);
+      var label = eventRow ? (eventRow.time ? eventRow.time + " · " : "") + (eventRow.description || "подію") : "подію";
+      return "Видалити «" + String(label).slice(0, 80) + "»?";
     }
     var machine = findMachine(id);
     var what = machine ? (machineName(machine) || machineBoard(machine)) : "";
@@ -9928,6 +10368,10 @@ button.count-toggle {
       deleteType(state.confirm.id);
       return;
     }
+    if (state.confirm.kind === "event") {
+      removeEventRecord(state.confirm.id);
+      return;
+    }
     if (!canDelete()) return;
     var ts = stampNow();
     var day = state.viewDay || todayISO();
@@ -10195,6 +10639,53 @@ button.count-toggle {
       var swiped = blockToggleRow;
       blockToggleRow = null;
       if (swiped.contains(event.target) && !event.target.closest("[data-remove]")) return;
+    }
+    var addEventBtn = event.target.closest("[data-add-event]");
+    if (addEventBtn) {
+      addEventRecord();
+      return;
+    }
+    var eventCopy = event.target.closest("[data-event-copy]");
+    if (eventCopy) {
+      copyEventRecord(eventCopy.getAttribute("data-event-copy"));
+      return;
+    }
+    var eventLinkPick = event.target.closest("[data-event-link-pick]");
+    if (eventLinkPick) {
+      var pickRaw = String(eventLinkPick.getAttribute("data-event-link-pick") || "");
+      var pickParts = pickRaw.split(":");
+      var pickEventId = pickParts[0];
+      var pickKind = pickParts[1];
+      if (pickEventId && pickKind) {
+        if (state.eventLinkPick && state.eventLinkPick.eventId === pickEventId && state.eventLinkPick.kind === pickKind) {
+          state.eventLinkPick = null;
+        } else {
+          state.eventLinkPick = { eventId: pickEventId, kind: pickKind };
+        }
+        render();
+      }
+      return;
+    }
+    var eventLinkChoose = event.target.closest("[data-event-link-choose]");
+    if (eventLinkChoose) {
+      var chooseRaw = String(eventLinkChoose.getAttribute("data-event-link-choose") || "");
+      var chooseParts = chooseRaw.split(":");
+      addEventLink(chooseParts[0], chooseParts[1], chooseParts.slice(2).join(":"));
+      return;
+    }
+    var eventUnlink = event.target.closest("[data-event-unlink]");
+    if (eventUnlink) {
+      var unlinkRaw = String(eventUnlink.getAttribute("data-event-unlink") || "");
+      var unlinkParts = unlinkRaw.split(":");
+      removeEventLink(unlinkParts[0], unlinkParts[1], unlinkParts.slice(2).join(":"));
+      return;
+    }
+    var eventOpenLink = event.target.closest("[data-event-open-link]");
+    if (eventOpenLink) {
+      var openRaw = String(eventOpenLink.getAttribute("data-event-open-link") || "");
+      var openParts = openRaw.split(":");
+      openEventLink({ kind: openParts[0], id: openParts.slice(1).join(":") });
+      return;
     }
     var discard = event.target.closest("[data-discard-draft]");
     if (discard) {
@@ -10756,6 +11247,17 @@ button.count-toggle {
     if (applyDraftField(event.target)) return;
     if (liveAutosaveEditNode(event.target)) return;
     var node = event.target;
+    var eventField = node.getAttribute && node.getAttribute("data-event-field");
+    var eventId = node.getAttribute && node.getAttribute("data-event-id");
+    if (eventField && eventId) {
+      var eventRow = findEvent(eventId);
+      if (eventRow) {
+        if (eventField === "time") eventRow.time = String(node.value || "").slice(0, 16);
+        if (eventField === "description") eventRow.description = String(node.value || "").slice(0, 500);
+        save();
+      }
+      return;
+    }
     if (node.id === "unit-name") {
       state.unitNameDraft = node.value.slice(0, 80);
       return;
@@ -10819,6 +11321,7 @@ button.count-toggle {
     state.editing = null;
     state.pending = null;
     state.editBaseline = null;
+    state.eventLinkPick = null;
     state.holder = "Служба";
     state.openCode = "lead";
     state.reportRoot = "lead";
@@ -12624,6 +13127,44 @@ button.count-toggle {
       var sameWidth = workWidths[0];
       check(workWidths.every(function (n) { return n === sameWidth; }), "ширина вікна однакова в усіх станах");
     }
+
+    // ZS-141: розділ «Події» під Завданнями.
+    applyCode("lead");
+    check(!!document.getElementById("tasks") && !!document.getElementById("events"), "блок Події під Завданнями на екрані");
+    var eventsBlock = document.getElementById("events");
+    var tasksBlock = document.getElementById("tasks");
+    check(tasksBlock && eventsBlock && tasksBlock.compareDocumentPosition(eventsBlock) & Node.DOCUMENT_POSITION_FOLLOWING, "Події йдуть після Завдань");
+    check(text("events-title") === "Події" && !!document.querySelector("#events [data-add-event]"), "шапка Події з плюсом");
+    document.querySelector("#events [data-add-event]").click();
+    check(state.report.events && state.report.events.length === 1 && !!document.getElementById("card-overlay") === false, "плюс додає подію без оверлея картки");
+    var firstEventId = state.report.events[0].id;
+    check(state.open.has("event:" + firstEventId) && !!document.getElementById("event-time-" + firstEventId), "нова подія відкрита для вводу");
+    document.getElementById("event-time-" + firstEventId).value = "06:40";
+    document.getElementById("event-time-" + firstEventId).dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("event-desc-" + firstEventId).value = "Вихід групи";
+    document.getElementById("event-desc-" + firstEventId).dispatchEvent(new Event("input", { bubbles: true }));
+    check(state.report.events[0].time === "06:40" && state.report.events[0].description === "Вихід групи", "час і опис зберігаються");
+    check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Вихід групи") !== -1, "подія в локальному кеші");
+    document.querySelector("#events [data-event-link-pick='" + firstEventId + ":person']").click();
+    var linkChoice = document.querySelector("#events [data-event-link-choose]");
+    check(!!linkChoice, "є список о/с для зв’язку");
+    if (linkChoice) linkChoice.click();
+    check(state.report.events[0].links && state.report.events[0].links.length === 1 && state.report.events[0].links[0].kind === "person", "зв’язок о/с додано");
+    document.querySelector("#events [data-event-copy='" + firstEventId + "']").click();
+    check(state.report.events.length === 2 && state.report.events[1].description === "Вихід групи" && state.report.events[1].id !== firstEventId, "копія в кінець списку");
+    check(state.report.events[1].links && state.report.events[1].links.length === 1, "копія несе зв’язки");
+    var copyId = state.report.events[1].id;
+    document.querySelector("#events [data-remove='event:" + copyId + "']").click();
+    check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("Видалити") !== -1, "видалення події питає");
+    document.querySelector("[data-confirm-delete]").click();
+    check(state.report.events.length === 1 && state.report.events[0].id === firstEventId, "підтвердження прибирає копію");
+    var nextDayEvents = shiftISODate(state.viewDay || todayISO(), 1);
+    openViewDay(nextDayEvents);
+    render();
+    check(!(state.report.events && state.report.events.some(function (row) { return row && row.description === "Вихід групи"; })), "інший день без автокопії подій");
+    openViewDay(shiftISODate(nextDayEvents, -1));
+    render();
+    check(state.report.events && state.report.events.some(function (row) { return row && row.description === "Вихід групи"; }), "подія лишилась на своєму дні");
 
     function finishSelfTest() {
       var report = el("pre", { attrs: { id: "test-result" } });
