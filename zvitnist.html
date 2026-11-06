@@ -2938,10 +2938,9 @@ button.count-toggle {
   }
 
   function canOpenUnitReport(code) {
+    // Завжди можна відкрити вкладку підрозділу (подивитись що вже є), навіть без «нового звіту».
     if (!code) return false;
-    if (unitReportStatus(code) !== "missing") return true;
-    // Локально створена ланка ще без файлу з Диска — відкрити порожній звіт можна.
-    return !!bundles[code];
+    return !!findUnitByCode(code) || !!bundles[code];
   }
 
   function openReportChoice(value) {
@@ -2953,7 +2952,7 @@ button.count-toggle {
       render();
       return;
     }
-    if (!canOpenUnitReport(value)) return;
+    if (!value || !findUnitByCode(value)) return;
     applyCode(value);
     state.reportRoot = root;
     save();
@@ -4079,14 +4078,9 @@ button.count-toggle {
             text: unitReportStatusLabel(status),
             attrs: { "data-unit-status": code }
           }));
-          if (status === "missing" && !canOpenUnitReport(code)) {
-            opt.classList.add("is-disabled");
-            opt.setAttribute("aria-disabled", "true");
-            opt.setAttribute("data-report-blocked", code);
-          } else {
-            opt.setAttribute("data-pick-value", code);
-            opt.setAttribute("data-open-unit", code);
-          }
+          // Статус («Відсутній звіт» тощо) лишається візуально; вкладку не блокуємо.
+          opt.setAttribute("data-pick-value", code);
+          opt.setAttribute("data-open-unit", code);
         }
         list.append(opt);
       });
@@ -8698,12 +8692,10 @@ button.count-toggle {
       }
       return;
     }
-    var blockedReport = event.target.closest("[data-report-blocked]");
-    if (blockedReport) return;
     var openUnit = event.target.closest("[data-open-unit]");
     if (openUnit) {
       var openCode = openUnit.getAttribute("data-open-unit");
-      if (!canOpenUnitReport(openCode)) return;
+      if (!openCode || !findUnitByCode(openCode)) return;
       var keepRoot = reportRootCode();
       applyCode(openCode);
       state.reportRoot = keepRoot;
@@ -10225,7 +10217,9 @@ button.count-toggle {
     var greenColor = getComputedStyle(mergedMark).color;
     check(clayColor !== redColor && clayColor !== greenColor && redColor !== greenColor, "три різні кольори статусів");
     check(!document.querySelector("[data-merge-unit]"), "немає кнопки додано поруч зі статусом");
-    check(!!document.querySelector("#report-switch [data-open-unit='" + state.units[0].code + "']") && !!document.querySelector("#report-switch [data-report-blocked='" + second.code + "']") && !!document.querySelector("#report-switch [data-open-unit='" + third.code + "']"), "отримані й додані відкриваються, відсутній ні");
+    check(!!document.querySelector("#report-switch [data-open-unit='" + state.units[0].code + "']") && !!document.querySelector("#report-switch [data-open-unit='" + second.code + "']") && !!document.querySelector("#report-switch [data-open-unit='" + third.code + "']") && !document.querySelector("#report-switch [data-report-blocked]"), "усі вкладки підрозділів клікабельні, статус лише візуальний");
+    choosePick(reportList, second.code);
+    check(state.openCode === second.code && state.reportRoot === "lead", "вкладка без нового звіту все одно відкривається");
     setUnitReportStatus(state.units[0].code, "merged");
     save();
     render();
