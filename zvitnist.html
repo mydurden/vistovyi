@@ -2321,6 +2321,8 @@ button.count-toggle {
   // Overlay added/edits/removed → картки поточного дня.
   function syncLiveOverlaysIntoCards() {
     ensureCardStores();
+    // ZS-137b: спочатку зняти stale removed з живих карток — інакше archived знесе локальні правки.
+    syncRemovedFlagsFromCards();
     var day = state.viewDay || todayISO();
     var baked = buildBakedDayParts();
     flattenPeopleFromUnit(baked.unit).forEach(function (person) {
@@ -6840,12 +6842,22 @@ button.count-toggle {
       var localEntity = localMap[id];
       var remoteEntity = remoteMap[id];
       var baseEntity = baseMap[id];
-      var localTomb = tombLocal[id] || cardTombMeta(localCards, id);
+      var localAliveCard = cardAlive(localCards, id);
+      var remoteAliveCard = cardAlive(remoteCards, id);
+      // ZS-137b: жива локальна картка переважає stale removedPeople — не delete-conflict і не tomb.
+      var localTomb = localAliveCard ? null : (tombLocal[id] || cardTombMeta(localCards, id));
       var remoteTomb = tombRemote[id] || cardTombMeta(remoteCards, id);
       var localTombAt = localTomb && localTomb.updatedAt ? String(localTomb.updatedAt) : "";
       var remoteTombAt = remoteTomb && remoteTomb.updatedAt ? String(remoteTomb.updatedAt) : "";
-      var localAliveCard = cardAlive(localCards, id);
-      var remoteAliveCard = cardAlive(remoteCards, id);
+      if (localAliveCard) {
+        if (localEntity && remoteEntity) {
+          out.push(mergeEntityRecord(kind, localEntity, remoteEntity, baseEntity, fields, labels, conflicts));
+        } else if (localEntity) {
+          out.push(cloneData(localEntity));
+        }
+        // Немає рядка в цьому денному зрізі — картку не чіпаємо.
+        return;
+      }
       // ZS-132: локально видалили (tomb/архів), на Диску ще є — питати.
       if (localTomb && (remoteEntity || remoteAliveCard) && !remoteTomb) {
         var remoteForAsk = remoteEntity || null;
@@ -7133,16 +7145,30 @@ button.count-toggle {
 
   function applyMergedRemovals(snapshot) {
     if (!snapshot) return;
+    ensureCardStores();
     if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
     if (!state.removedAt.people) state.removedAt.people = {};
     if (!state.removedAt.machines) state.removedAt.machines = {};
     (Array.isArray(snapshot.removedPeople) ? snapshot.removedPeople : []).forEach(function (item) {
       if (!item || !item.id) return;
+      // ZS-137b: жива локальна картка — зняти stale removed, не архівувати.
+      var personCard = state.peopleCards[item.id];
+      if (personCard && !personCard.archived) {
+        delete state.removed.people[item.id];
+        if (state.removedAt.people) delete state.removedAt.people[item.id];
+        return;
+      }
       state.removed.people[item.id] = true;
       state.removedAt.people[item.id] = item.updatedAt || stampNow();
     });
     (Array.isArray(snapshot.removedMachines) ? snapshot.removedMachines : []).forEach(function (item) {
       if (!item || !item.id) return;
+      var machineCard = state.machineCards[item.id];
+      if (machineCard && !machineCard.archived) {
+        delete state.removed.machines[item.id];
+        if (state.removedAt.machines) delete state.removedAt.machines[item.id];
+        return;
+      }
       state.removed.machines[item.id] = true;
       state.removedAt.machines[item.id] = item.updatedAt || stampNow();
     });
@@ -7236,7 +7262,16 @@ button.count-toggle {
             // інакше наступний snapshotFromStoredBundle може лишитись без tomb.
             captureBundle(canonicalOwnBundleKey(key));
             state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
-            state.mergeDeletes = Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts.slice() : [];
+            state.mergeDeletes = (Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts : []).filter(function (item) {
+              if (!item || !item.id) return false;
+              ensureCardStores();
+              if (item.kind === "machine") {
+                var mc = state.machineCards[item.id];
+                return !(mc && !mc.archived);
+              }
+              var pc = state.peopleCards[item.id];
+              return !(pc && !pc.archived);
+            });
             queuePersonDuplicatePrompts(merged.snapshot);
           } else {
             // Відкрита вкладка unit: конфлікти lead тут нерелевантні — їх покаже merge файлу unit.
@@ -8153,6 +8188,25 @@ button.count-toggle {
     var ts = stampNow();
     if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
     ensureCardStores();
+    var aliveCard = item.kind === "machine" ? state.machineCards[item.id] : state.peopleCards[item.id];
+    // ZS-137b: будь-яка кнопка не зносить живі локальні правки/картки.
+    if (aliveCard && !aliveCard.archived) {
+      if (item.kind === "machine") {
+        delete state.removed.machines[item.id];
+        if (state.removedAt.machines) delete state.removedAt.machines[item.id];
+      } else {
+        delete state.removed.people[item.id];
+        if (state.removedAt.people) delete state.removedAt.people[item.id];
+      }
+      aliveCard.archived = false;
+      aliveCard.archivedAt = null;
+      state.mergeDeletes = list.slice(1);
+      projectCardsToLiveDay();
+      captureBundle(state.reportKey);
+      save();
+      render();
+      return;
+    }
     if (action === "keep-removed") {
       if (item.kind === "machine") {
         if (!state.removedAt.machines) state.removedAt.machines = {};
@@ -8202,7 +8256,9 @@ button.count-toggle {
           var hasMachine = state.report.machines.some(function (row) { return row && row.id === item.id; });
           if (!hasMachine) state.report.machines.push(cloneData(item.entity));
           var dayM = state.viewDay || todayISO();
-          upsertMachineCardDay(item.id, dayM, item.entity);
+          if (!(state.machineCards[item.id] && state.machineCards[item.id].days && state.machineCards[item.id].days[dayM])) {
+            upsertMachineCardDay(item.id, dayM, item.entity);
+          }
           if (state.machineCards[item.id]) {
             state.machineCards[item.id].archived = false;
             state.machineCards[item.id].archivedAt = null;
@@ -8223,7 +8279,9 @@ button.count-toggle {
             if (!hasPerson) root.people.push(cloneData(item.entity));
           }
           var dayP = state.viewDay || todayISO();
-          upsertPersonCardDay(item.id, dayP, item.entity);
+          if (!(state.peopleCards[item.id] && state.peopleCards[item.id].days && state.peopleCards[item.id].days[dayP])) {
+            upsertPersonCardDay(item.id, dayP, item.entity);
+          }
           if (state.peopleCards[item.id]) {
             state.peopleCards[item.id].archived = false;
             state.peopleCards[item.id].archivedAt = null;
@@ -13497,6 +13555,110 @@ button.count-toggle {
       check(ids137.indexOf("p137new") !== -1, "ZS-137: новий з телефону лишається");
       check(ids137.indexOf("p132b") !== -1, "ZS-137: з Диска підтягується без діалогу");
       check(!(merged137.snapshot.removedPeople || []).some(function (row) { return row && row.id === "p137new"; }), "ZS-137: новий не в tomb");
+      // ZS-137b: stale removedPeople + жива картка з правками телефону — без діалогу; кнопки не зносять.
+      var day137b = todayISO();
+      var person137bPc = {
+        id: "p137b",
+        name: "Мельник Ігор",
+        surname: "Мельник",
+        givenName: "Ігор",
+        patronymic: "В.",
+        rank: "Солдат",
+        callsign: "Сокіл",
+        accounting: "official",
+        duty: "in",
+        position: "",
+        updatedAt: "2026-11-05T10:00:00.000Z"
+      };
+      var person137bPhone = cloneData(person137bPc);
+      person137bPhone.callsign = "Мобіла";
+      person137bPhone.position = "Водій";
+      person137bPhone.updatedAt = "2026-11-06T09:00:00.000Z";
+      var local137b = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: day137b,
+        unit: { id: "root", name: "Служба", people: [cloneData(person137bPhone)] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [{ id: "p137b", removed: true, updatedAt: "2026-11-05T12:00:00.000Z" }],
+        removedMachines: [],
+        peopleCards: {
+          p137b: {
+            id: "p137b",
+            archived: false,
+            archivedAt: null,
+            place: "root",
+            ownerKey: "lead",
+            days: {}
+          }
+        }
+      };
+      local137b.peopleCards.p137b.days[day137b] = cloneData(person137bPhone);
+      var remote137b = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: day137b,
+        unit: { id: "root", name: "Служба", people: [cloneData(person137bPc)] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {},
+        children: [],
+        removedPeople: [],
+        removedMachines: [],
+        peopleCards: {}
+      };
+      var merged137b = mergeUnitSnapshots(local137b, remote137b, cloneData(remote137b));
+      check(!merged137b.deleteConflicts || !merged137b.deleteConflicts.length, "ZS-137b: stale removed + жива картка — без delete-conflict");
+      check(flattenPeopleFromUnit(merged137b.snapshot.unit).some(function (row) {
+        return row.id === "p137b" && row.callsign === "Мобіла";
+      }), "ZS-137b: правки телефону в merge");
+      state.removed = { people: { p137b: true }, machines: {} };
+      state.removedAt = { people: { p137b: "2026-11-05T12:00:00.000Z" }, machines: {} };
+      state.peopleCards = cloneData(local137b.peopleCards);
+      state.machineCards = {};
+      state.report = {
+        name: "Служба",
+        code: "lead",
+        unit: { id: "root", name: "Служба", people: [cloneData(person137bPhone)] },
+        machines: [],
+        tasks: [],
+        people: []
+      };
+      state.viewDay = day137b;
+      state.fileDay = day137b;
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.positions = {};
+      state.mergeDeletes = [{
+        kind: "person",
+        id: "p137b",
+        direction: "local-removed",
+        entity: cloneData(person137bPc),
+        label: "Сокіл"
+      }];
+      applyMergedRemovals({ removedPeople: [{ id: "p137b", removed: true }], removedMachines: [] });
+      check(!state.removed.people.p137b, "ZS-137b: applyMergedRemovals не чіпає живу картку");
+      syncLiveOverlaysIntoCards();
+      check(!state.peopleCards.p137b.archived && state.peopleCards.p137b.days[day137b].callsign === "Мобіла", "ZS-137b: syncLive не архівує живі правки");
+      applyMergeDeleteChoice("keep-removed");
+      check(!state.peopleCards.p137b.archived && state.peopleCards.p137b.days[day137b].callsign === "Мобіла" && state.peopleCards.p137b.days[day137b].position === "Водій", "ZS-137b: keep не зносить телефон");
+      state.mergeDeletes = [{
+        kind: "person",
+        id: "p137b",
+        direction: "local-removed",
+        entity: cloneData(person137bPc),
+        label: "Сокіл"
+      }];
+      applyMergeDeleteChoice("restore");
+      check(!state.peopleCards.p137b.archived && state.peopleCards.p137b.days[day137b].callsign === "Мобіла" && state.peopleCards.p137b.days[day137b].position === "Водій", "ZS-137b: restore не затирає day з Диска");
+      state.mergeDeletes = [];
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125 && unit.code !== child128;
       });
