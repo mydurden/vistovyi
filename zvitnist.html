@@ -1416,6 +1416,7 @@ button.count-toggle {
     changesOpen: false,
     mergeConflicts: [],
     mergeDupes: [],
+    mergeDeletes: [],
     removedAt: { people: {}, machines: {} }
   };
 
@@ -2187,7 +2188,7 @@ button.count-toggle {
     };
     state.changes = Array.isArray(normalized.changes) ? normalized.changes.slice(-100) : [];
     state.edits = { people: {}, machines: {} };
-    state.removed = { people: {}, machines: {} };
+    // ZS-132: не зкидати tombstone при зміні дня — інакше видалені знову видимі.
     state.added = { people: [], machines: [] };
     state.positions = {};
     state.editing = null;
@@ -2427,6 +2428,12 @@ button.count-toggle {
       if (key === day) return;
       days[key] = normalizeDaySlice(b.daysArchive[key]);
     });
+    var removedFlags = b.removed || { people: {}, machines: {} };
+    function tombsFromFlags(map) {
+      return Object.keys(map || {}).filter(function (id) { return !!map[id]; }).map(function (id) {
+        return { id: id, removed: true, updatedAt: stampNow() };
+      });
+    }
     return {
       version: 2,
       name: String(b.report.name || "").slice(0, 80),
@@ -2443,7 +2450,9 @@ button.count-toggle {
         var label = preferUnitName(unit.name, unitNameFromBundle(code));
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: code };
-      }).filter(function (item) { return !!item.code; })
+      }).filter(function (item) { return !!item.code; }),
+      removedPeople: Array.isArray(b.removedPeople) ? cloneData(b.removedPeople) : tombsFromFlags(removedFlags.people),
+      removedMachines: Array.isArray(b.removedMachines) ? cloneData(b.removedMachines) : tombsFromFlags(removedFlags.machines)
     };
   }
 
@@ -5800,7 +5809,7 @@ button.count-toggle {
     return out;
   }
 
-  function mergeEntityLists(kind, localList, remoteList, baseList, tombLocal, tombRemote, fields, labels, conflicts) {
+  function mergeEntityLists(kind, localList, remoteList, baseList, tombLocal, tombRemote, fields, labels, conflicts, deleteConflicts) {
     var localMap = entityMapById(localList);
     var remoteMap = entityMapById(remoteList);
     var baseMap = entityMapById(baseList);
@@ -5808,8 +5817,11 @@ button.count-toggle {
     Object.keys(localMap).forEach(function (id) { ids[id] = true; });
     Object.keys(remoteMap).forEach(function (id) { ids[id] = true; });
     Object.keys(baseMap).forEach(function (id) { ids[id] = true; });
+    Object.keys(tombLocal || {}).forEach(function (id) { ids[id] = true; });
+    Object.keys(tombRemote || {}).forEach(function (id) { ids[id] = true; });
     var out = [];
     var removed = [];
+    var askDeletes = Array.isArray(deleteConflicts);
     Object.keys(ids).forEach(function (id) {
       var localEntity = localMap[id];
       var remoteEntity = remoteMap[id];
@@ -5818,15 +5830,48 @@ button.count-toggle {
       var remoteTomb = tombRemote[id];
       var localTombAt = localTomb && localTomb.updatedAt ? String(localTomb.updatedAt) : "";
       var remoteTombAt = remoteTomb && remoteTomb.updatedAt ? String(remoteTomb.updatedAt) : "";
-      var localAt = localEntity && localEntity.updatedAt ? String(localEntity.updatedAt) : "";
-      var remoteAt = remoteEntity && remoteEntity.updatedAt ? String(remoteEntity.updatedAt) : "";
-      if (localTomb && (!remoteEntity || (localTombAt && (!remoteAt || localTombAt >= remoteAt)))) {
-        if (!remoteTomb || localTombAt >= remoteTombAt) removed.push({ id: id, removed: true, updatedAt: localTombAt || stampNow() });
-        else removed.push({ id: id, removed: true, updatedAt: remoteTombAt || stampNow() });
+      // ZS-132: локально видалили, на Диску ще є — не тихо; питати (якщо збираємо deleteConflicts).
+      if (localTomb && remoteEntity && !remoteTomb) {
+        if (askDeletes) {
+          deleteConflicts.push({
+            kind: kind,
+            id: id,
+            direction: "local-removed",
+            entity: cloneData(remoteEntity),
+            label: kind === "machine"
+              ? (machineName(remoteEntity) || machineBoard(remoteEntity) || id)
+              : (personCallsign(remoteEntity) || personName(remoteEntity) || id)
+          });
+        }
+        removed.push({ id: id, removed: true, updatedAt: localTombAt || stampNow() });
         return;
       }
-      if (remoteTomb && (!localEntity || (remoteTombAt && (!localAt || remoteTombAt >= localAt)))) {
+      // На Диску видалили, локально ще є — не тихо воскрешати/стирати.
+      if (remoteTomb && localEntity && !localTomb) {
+        if (askDeletes) {
+          deleteConflicts.push({
+            kind: kind,
+            id: id,
+            direction: "remote-removed",
+            entity: cloneData(localEntity),
+            label: kind === "machine"
+              ? (machineName(localEntity) || machineBoard(localEntity) || id)
+              : (personCallsign(localEntity) || personName(localEntity) || id)
+          });
+          out.push(cloneData(localEntity));
+          return;
+        }
         removed.push({ id: id, removed: true, updatedAt: remoteTombAt || stampNow() });
+        return;
+      }
+      if (localTomb || remoteTomb) {
+        removed.push({
+          id: id,
+          removed: true,
+          updatedAt: (localTombAt && remoteTombAt)
+            ? (localTombAt >= remoteTombAt ? localTombAt : remoteTombAt)
+            : (localTombAt || remoteTombAt || stampNow())
+        });
         return;
       }
       if (localEntity && !remoteEntity) {
@@ -5842,7 +5887,7 @@ button.count-toggle {
     return { list: out.filter(Boolean), removed: removed };
   }
 
-  function mergeDaySliceContent(localSlice, remoteSlice, baseSlice, conflicts) {
+  function mergeDaySliceContent(localSlice, remoteSlice, baseSlice, conflicts, peopleTombs, machineTombs) {
     var local = normalizeDaySlice(localSlice);
     var remote = normalizeDaySlice(remoteSlice);
     var base = baseSlice ? normalizeDaySlice(baseSlice) : null;
@@ -5851,22 +5896,24 @@ button.count-toggle {
       flattenPeopleFromUnit(local.unit),
       flattenPeopleFromUnit(remote.unit),
       base ? flattenPeopleFromUnit(base.unit) : [],
-      {},
-      {},
+      (peopleTombs && peopleTombs.local) || {},
+      (peopleTombs && peopleTombs.remote) || {},
       PERSON_MERGE_FIELDS,
       PERSON_FIELD_LABELS,
-      conflicts
+      conflicts,
+      null
     );
     var machines = mergeEntityLists(
       "machine",
       local.machines,
       remote.machines,
       base ? base.machines : [],
-      {},
-      {},
+      (machineTombs && machineTombs.local) || {},
+      (machineTombs && machineTombs.remote) || {},
       MACHINE_MERGE_FIELDS,
       MACHINE_FIELD_LABELS,
-      conflicts
+      conflicts,
+      null
     );
     var unitName = local.unit && local.unit.name ? local.unit.name : (remote.unit && remote.unit.name ? remote.unit.name : "");
     return normalizeDaySlice({
@@ -5891,27 +5938,38 @@ button.count-toggle {
     var localPeople = flattenPeopleFromUnit(local.unit);
     var remotePeople = flattenPeopleFromUnit(remote.unit);
     var basePeople = base ? flattenPeopleFromUnit(base.unit) : [];
+    var peopleTombs = {
+      local: tombstoneMap(local.removedPeople),
+      remote: tombstoneMap(remote.removedPeople)
+    };
+    var machineTombs = {
+      local: tombstoneMap(local.removedMachines),
+      remote: tombstoneMap(remote.removedMachines)
+    };
+    var deleteConflicts = [];
     var peopleMerge = mergeEntityLists(
       "person",
       localPeople,
       remotePeople,
       basePeople,
-      tombstoneMap(local.removedPeople),
-      tombstoneMap(remote.removedPeople),
+      peopleTombs.local,
+      peopleTombs.remote,
       PERSON_MERGE_FIELDS,
       PERSON_FIELD_LABELS,
-      conflicts
+      conflicts,
+      deleteConflicts
     );
     var machinesMerge = mergeEntityLists(
       "machine",
       local.machines,
       remote.machines,
       base ? base.machines : [],
-      tombstoneMap(local.removedMachines),
-      tombstoneMap(remote.removedMachines),
+      machineTombs.local,
+      machineTombs.remote,
       MACHINE_MERGE_FIELDS,
       MACHINE_FIELD_LABELS,
-      conflicts
+      conflicts,
+      deleteConflicts
     );
 
     var day = local.day || remote.day || todayISO();
@@ -5927,7 +5985,9 @@ button.count-toggle {
         local.days && local.days[key],
         remote.days && remote.days[key],
         base && base.days ? base.days[key] : null,
-        conflicts
+        conflicts,
+        peopleTombs,
+        machineTombs
       );
     });
 
@@ -5955,7 +6015,7 @@ button.count-toggle {
       removedPeople: peopleMerge.removed,
       removedMachines: machinesMerge.removed
     };
-    return { snapshot: snapshot, conflicts: conflicts };
+    return { snapshot: snapshot, conflicts: conflicts, deleteConflicts: deleteConflicts };
   }
 
   function localOwnSnapshotForMerge(encryptKey) {
@@ -6078,6 +6138,7 @@ button.count-toggle {
           if (!driveChildWriteCode()) {
             applyMergedRemovals(merged.snapshot);
             state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
+            state.mergeDeletes = Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts.slice() : [];
             queuePersonDuplicatePrompts(merged.snapshot);
           } else {
             // Відкрита вкладка unit: конфлікти lead тут нерелевантні — їх покаже merge файлу unit.
@@ -6087,6 +6148,7 @@ button.count-toggle {
               bundles[ownKey].removedMachines = cloneData(merged.snapshot.removedMachines || []);
             }
             state.mergeConflicts = [];
+            state.mergeDeletes = [];
             state.mergeDupes = [];
           }
           return {
@@ -6478,6 +6540,7 @@ button.count-toggle {
     var openChild = String(driveChildWriteCode() || "").trim();
     // Конфлікти/схожі для вкладки unit — лише з її файлу; інакше лишаємо конфлікти lead.
     var conflictAcc = openChild ? [] : (Array.isArray(state.mergeConflicts) ? state.mergeConflicts.slice() : []);
+    var deleteAcc = openChild ? [] : (Array.isArray(state.mergeDeletes) ? state.mergeDeletes.slice() : []);
     var chain = Promise.resolve();
     list.forEach(function (unit) {
       chain = chain.then(function () {
@@ -6522,6 +6585,9 @@ button.count-toggle {
               if (isOpenTab && Array.isArray(mergedResult.conflicts) && mergedResult.conflicts.length) {
                 conflictAcc = conflictAcc.concat(mergedResult.conflicts);
               }
+              if (isOpenTab && Array.isArray(mergedResult.deleteConflicts) && mergedResult.deleteConflicts.length) {
+                deleteAcc = deleteAcc.concat(mergedResult.deleteConflicts);
+              }
               if (!ingestChildUnit(code, mergedResult.snapshot)) {
                 missing += 1;
                 setUnitReportStatus(code, "missing");
@@ -6555,6 +6621,7 @@ button.count-toggle {
     });
     return chain.then(function () {
       state.mergeConflicts = conflictAcc;
+      if (openChild) state.mergeDeletes = deleteAcc;
       var openNow = String(state.openCode || "").trim();
       if (openNow && bundles[openNow]) applyOpenUnitFromBundle(openNow);
       return {
@@ -6562,6 +6629,7 @@ button.count-toggle {
         missing: missing,
         merged: merged,
         conflicts: openChild ? conflictAcc.length : 0,
+        deletes: openChild ? deleteAcc.length : 0,
         dupes: openChild ? (state.mergeDupes || []).length : 0
       };
     });
@@ -6877,10 +6945,126 @@ button.count-toggle {
     render();
   }
 
+  function renderMergeDeleteOverlay() {
+    var list = Array.isArray(state.mergeDeletes) ? state.mergeDeletes : [];
+    if (!list.length) return null;
+    if (state.mergeConflicts && state.mergeConflicts.length) return null;
+    var item = list[0];
+    var overlay = el("div", { className: "overlay", attrs: { id: "merge-delete-overlay", role: "dialog", "aria-label": "Видалення після sync" } });
+    var sheet = el("div", { className: "overlay-sheet is-compact" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Розбіжність після sync" }));
+    sheet.append(head);
+    var who = item.label || item.id;
+    var kindLabel = item.kind === "machine" ? "ОВТ" : "о/с";
+    if (item.direction === "local-removed") {
+      sheet.append(el("p", {
+        className: "hint",
+        text: "На цьому пристрої «" + who + "» (" + kindLabel + ") видалено, а на Диску запис ще є. Що зробити?"
+      }));
+    } else {
+      sheet.append(el("p", {
+        className: "hint",
+        text: "На Диску «" + who + "» (" + kindLabel + ") уже немає, а на цьому пристрої картка ще є. Що зробити?"
+      }));
+    }
+    if (list.length > 1) {
+      sheet.append(el("p", { className: "hint", text: "Ще таких: " + (list.length - 1) }));
+    }
+    var form = el("div", { className: "unit-create" });
+    if (item.direction === "local-removed") {
+      form.append(el("button", {
+        text: "Лишити видаленим",
+        attrs: { type: "button", "data-merge-delete": "keep-removed" }
+      }));
+      form.append(el("button", {
+        text: "Повернути з хмари",
+        attrs: { type: "button", "data-merge-delete": "restore" }
+      }));
+    } else {
+      form.append(el("button", {
+        text: "Видалити як на Диску",
+        attrs: { type: "button", "data-merge-delete": "keep-removed" }
+      }));
+      form.append(el("button", {
+        text: "Лишити на цьому пристрої",
+        attrs: { type: "button", "data-merge-delete": "restore" }
+      }));
+    }
+    sheet.append(form);
+    overlay.append(sheet);
+    return overlay;
+  }
+
+  function applyMergeDeleteChoice(action) {
+    var list = Array.isArray(state.mergeDeletes) ? state.mergeDeletes : [];
+    if (!list.length) return;
+    var item = list[0];
+    var ts = stampNow();
+    if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+    if (action === "keep-removed") {
+      if (item.kind === "machine") {
+        if (!state.removedAt.machines) state.removedAt.machines = {};
+        state.removed.machines[item.id] = true;
+        state.removedAt.machines[item.id] = ts;
+        if (state.report && Array.isArray(state.report.machines)) {
+          state.report.machines = state.report.machines.filter(function (row) {
+            return !(row && row.id === item.id);
+          });
+        }
+        stripMachineFromDaysArchive(item.id);
+        state.added.machines = (state.added.machines || []).filter(function (row) {
+          return !(row && row.id === item.id);
+        });
+        delete state.edits.machines[item.id];
+      } else {
+        if (!state.removedAt.people) state.removedAt.people = {};
+        state.removed.people[item.id] = true;
+        state.removedAt.people[item.id] = ts;
+        removePersonFromUnitTree(viewUnit(), item.id);
+        stripPersonFromDaysArchive(item.id);
+        state.added.people = (state.added.people || []).filter(function (row) {
+          return !(row && row.id === item.id);
+        });
+        delete state.edits.people[item.id];
+        delete state.positions[item.id];
+      }
+    } else if (action === "restore") {
+      if (item.kind === "machine") {
+        delete state.removed.machines[item.id];
+        if (state.removedAt.machines) delete state.removedAt.machines[item.id];
+        if (item.entity) {
+          if (!state.report) state.report = sampleReportDocument();
+          if (!Array.isArray(state.report.machines)) state.report.machines = [];
+          var hasMachine = state.report.machines.some(function (row) { return row && row.id === item.id; });
+          if (!hasMachine) state.report.machines.push(cloneData(item.entity));
+        }
+      } else {
+        delete state.removed.people[item.id];
+        if (state.removedAt.people) delete state.removedAt.people[item.id];
+        if (item.entity) {
+          var root = viewUnit();
+          if (root) {
+            if (!Array.isArray(root.people)) root.people = [];
+            var hasPerson = root.people.some(function (row) { return row && row.id === item.id; });
+            if (!hasPerson) root.people.push(cloneData(item.entity));
+          }
+        }
+      }
+    }
+    state.mergeDeletes = list.slice(1);
+    materializeOverlays();
+    captureBundle(state.reportKey);
+    save();
+    render();
+  }
+
   function renderMergeDupeOverlay() {
     var list = Array.isArray(state.mergeDupes) ? state.mergeDupes : [];
     if (!list.length) return null;
     if (state.mergeConflicts && state.mergeConflicts.length) return null;
+    if (state.mergeDeletes && state.mergeDeletes.length) return null;
     var dupe = list[0];
     var keep = findPerson(dupe.keepId);
     var drop = findPerson(dupe.dropId);
@@ -7606,6 +7790,9 @@ button.count-toggle {
     if (state.mergeConflicts && state.mergeConflicts.length) {
       var mergeOverlay = renderMergeConflictOverlay();
       if (mergeOverlay) parts.push(mergeOverlay);
+    } else if (state.mergeDeletes && state.mergeDeletes.length) {
+      var deleteOverlay = renderMergeDeleteOverlay();
+      if (deleteOverlay) parts.push(deleteOverlay);
     } else if (state.mergeDupes && state.mergeDupes.length) {
       var dupeOverlay = renderMergeDupeOverlay();
       if (dupeOverlay) parts.push(dupeOverlay);
@@ -8282,6 +8469,24 @@ button.count-toggle {
     render();
   }
 
+  function stripPersonFromDaysArchive(personId) {
+    Object.keys(state.daysArchive || {}).forEach(function (key) {
+      var slice = state.daysArchive[key];
+      if (!slice || !slice.unit) return;
+      removePersonFromUnitTree(slice.unit, personId);
+    });
+  }
+
+  function stripMachineFromDaysArchive(machineId) {
+    Object.keys(state.daysArchive || {}).forEach(function (key) {
+      var slice = state.daysArchive[key];
+      if (!slice || !Array.isArray(slice.machines)) return;
+      slice.machines = slice.machines.filter(function (item) {
+        return !(item && item.id === machineId);
+      });
+    });
+  }
+
   function confirmRemoval() {
     if (!state.confirm) return;
     if (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty") {
@@ -8293,17 +8498,23 @@ button.count-toggle {
       return;
     }
     if (!canDelete()) return;
+    var ts = stampNow();
+    // М’яке видалення: прапорець + архів у профілі; з days[] прибираємо, щоб sync не воскресив.
     if (state.confirm.kind === "person") {
-      state.removed.people[state.confirm.id] = true;
+      var personId = state.confirm.id;
+      state.removed.people[personId] = true;
       if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
       if (!state.removedAt.people) state.removedAt.people = {};
-      state.removedAt.people[state.confirm.id] = stampNow();
+      state.removedAt.people[personId] = ts;
+      stripPersonFromDaysArchive(personId);
     }
     if (state.confirm.kind === "machine") {
-      state.removed.machines[state.confirm.id] = true;
+      var machineId = state.confirm.id;
+      state.removed.machines[machineId] = true;
       if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
       if (!state.removedAt.machines) state.removedAt.machines = {};
-      state.removedAt.machines[state.confirm.id] = stampNow();
+      state.removedAt.machines[machineId] = ts;
+      stripMachineFromDaysArchive(machineId);
     }
     state.confirm = null;
     save();
@@ -8519,6 +8730,11 @@ button.count-toggle {
     var mergePick = event.target.closest("[data-merge-pick]");
     if (mergePick) {
       applyMergeConflictChoice(mergePick.getAttribute("data-merge-pick"));
+      return;
+    }
+    var mergeDelete = event.target.closest("[data-merge-delete]");
+    if (mergeDelete) {
+      applyMergeDeleteChoice(mergeDelete.getAttribute("data-merge-delete"));
       return;
     }
     var mergeDupe = event.target.closest("[data-merge-dupe]");
@@ -11579,6 +11795,85 @@ button.count-toggle {
       check(!!kept127 && kept127.rank === "Сержант" && personCallsign(kept127) === "Схід", "ZS-127: об’єднана картка зібрала звання і позивний");
       check(!document.getElementById("merge-dupe-overlay"), "ZS-127: діалог дублікатів закрито");
       state.mergeDupes = [];
+      // ZS-132: локально видалили, на Диску ще є — питати, не воскрешати тихо; days[] з tombstone.
+      var local132 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {
+          "2026-11-01": {
+            unit: { id: "root", name: "Служба", people: [
+              { id: "p132", name: "Видалений Тест", surname: "Видалений", givenName: "Тест", patronymic: "", rank: "Солдат", callsign: "Тінь", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-01T10:00:00.000Z" }
+            ] },
+            machines: [],
+            tasks: [],
+            people: [],
+            changes: []
+          }
+        },
+        children: [],
+        removedPeople: [{ id: "p132", removed: true, updatedAt: "2026-11-06T12:00:00.000Z" }],
+        removedMachines: []
+      };
+      var remote132 = {
+        version: 2,
+        name: "Служба",
+        code: "lead",
+        day: todayISO(),
+        unit: { id: "root", name: "Служба", people: [
+          { id: "p132", name: "Видалений Тест", surname: "Видалений", givenName: "Тест", patronymic: "", rank: "Солдат", callsign: "Тінь", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-05T10:00:00.000Z" }
+        ] },
+        machines: [],
+        tasks: [],
+        people: [],
+        days: {
+          "2026-11-01": {
+            unit: { id: "root", name: "Служба", people: [
+              { id: "p132", name: "Видалений Тест", surname: "Видалений", givenName: "Тест", patronymic: "", rank: "Солдат", callsign: "Тінь", accounting: "official", duty: "in", position: "", updatedAt: "2026-11-01T10:00:00.000Z" }
+            ] },
+            machines: [],
+            tasks: [],
+            people: [],
+            changes: []
+          }
+        },
+        children: [],
+        removedPeople: [],
+        removedMachines: []
+      };
+      var merged132 = mergeUnitSnapshots(local132, remote132, null);
+      check(!!merged132.snapshot && Array.isArray(merged132.deleteConflicts) && merged132.deleteConflicts.length === 1, "ZS-132: конфлікт видалення vs Диск");
+      check(flattenPeopleFromUnit(merged132.snapshot.unit).length === 0, "ZS-132: до вибору людина не в живому списку");
+      check((merged132.snapshot.removedPeople || []).some(function (row) { return row.id === "p132"; }), "ZS-132: tombstone у знімку");
+      check(flattenPeopleFromUnit(merged132.snapshot.days["2026-11-01"].unit).length === 0, "ZS-132: days[] без видаленої людини");
+      state.driveEncryptKey = "секрет-132";
+      state.openCode = "lead";
+      state.reportRoot = "lead";
+      state.scope = "all";
+      state.removed = { people: {}, machines: {} };
+      state.mergeConflicts = [];
+      state.mergeDupes = [];
+      check(!!applyOwnUnitSnapshot(merged132.snapshot, "секрет-132"), "ZS-132: застосовуємо знімок");
+      applyMergedRemovals(merged132.snapshot);
+      state.mergeDeletes = merged132.deleteConflicts.slice();
+      render();
+      check(!!document.getElementById("merge-delete-overlay"), "ZS-132: діалог видалення на екрані");
+      applyMergeDeleteChoice("keep-removed");
+      check(!!state.removed.people.p132 && !findPerson("p132"), "ZS-132: лишити видаленим");
+      check(!document.getElementById("merge-delete-overlay"), "ZS-132: діалог закрито");
+      var merged132b = mergeUnitSnapshots(local132, remote132, null);
+      state.mergeDeletes = merged132b.deleteConflicts.slice();
+      applyOwnUnitSnapshot(merged132b.snapshot, "секрет-132");
+      applyMergedRemovals(merged132b.snapshot);
+      render();
+      applyMergeDeleteChoice("restore");
+      check(!state.removed.people.p132 && !!findPerson("p132"), "ZS-132: повернути з хмари");
+      state.mergeDeletes = [];
       state.units = (state.units || []).filter(function (unit) {
         return unit.code !== child107 && unit.code !== child103 && unit.code !== child109 && unit.code !== child125 && unit.code !== child128;
       });
