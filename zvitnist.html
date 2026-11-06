@@ -516,6 +516,7 @@ h2 {
 
 .icon-gear svg,
 .icon-plus svg,
+.icon-copy svg,
 .icon-x svg,
 .icon-check svg,
 .icon-pencil svg,
@@ -1411,6 +1412,7 @@ button.count-toggle {
     daysArchive: {},
     calendarOpen: false,
     calendarMonth: "",
+    calendarCopyKind: "",
     changesOpen: false,
     mergeConflicts: [],
     mergeDupes: [],
@@ -1445,7 +1447,7 @@ button.count-toggle {
   }
 
   function extraPeople(node) {
-    return state.added.people.filter(function (item) {
+    return (state.added.people || []).filter(function (item) {
       return item.place === node.id && !state.removed.people[item.id];
     });
   }
@@ -2106,7 +2108,7 @@ button.count-toggle {
     };
   }
 
-  // Правило rollover: плани лишаються планами, о/с і ОВТ як були.
+  // Повна копія зрізу (для ручного копіювання о/с або ОВТ у обраний день).
   function rolloverDaySlice(raw) {
     var slice = normalizeDaySlice(raw);
     return {
@@ -2114,6 +2116,25 @@ button.count-toggle {
       machines: slice.machines,
       tasks: slice.tasks,
       people: slice.people,
+      changes: []
+    };
+  }
+
+  // ZS-131: новий календарний день — без автокопії о/с і ОВТ; плани (завдання) лишаються.
+  function blankStaffDaySlice(raw) {
+    var slice = normalizeDaySlice(raw);
+    var unit = cloneData(slice.unit || { id: "root", name: "", people: [] });
+    function clearPeople(node) {
+      if (!node || typeof node !== "object") return;
+      node.people = [];
+      (Array.isArray(node.children) ? node.children : []).forEach(clearPeople);
+    }
+    clearPeople(unit);
+    return {
+      unit: unit,
+      machines: [],
+      tasks: Array.isArray(slice.tasks) ? cloneData(slice.tasks) : [],
+      people: [],
       changes: []
     };
   }
@@ -2197,8 +2218,8 @@ button.count-toggle {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) target = todayISO();
     if (state.viewDay === target && state.report) return;
     stashViewDay();
-    // Навігація по датах: без rollover чужого дня. Порожня дата = порожній зріз.
-    // Автокопію вчора→сьогодні лишає лише ensureDayRollover через ensureDaySliceIn.
+    // Навігація по датах: без підстановки чужого дня. Порожня дата = порожній зріз.
+    // Автокопії о/с/ОВТ на новий день немає (ZS-131); сіє лише ensureDayRollover → blankStaffDaySlice.
     if (state.daysArchive[target]) {
       var slice = state.daysArchive[target];
       delete state.daysArchive[target];
@@ -2228,10 +2249,14 @@ button.count-toggle {
     }
     stashViewDay();
     while (state.fileDay < today) {
+      // Зафіксувати минулий день в архіві (як є), новий — без автокопії о/с/ОВТ.
+      if (!state.daysArchive[state.fileDay] && viewDayHasReport() && state.viewDay === state.fileDay) {
+        state.daysArchive[state.fileDay] = daySliceFromState();
+      }
       ensureDaySliceIn(state.daysArchive, state.fileDay);
       var next = shiftISODate(state.fileDay, 1);
       if (!state.daysArchive[next]) {
-        state.daysArchive[next] = rolloverDaySlice(state.daysArchive[state.fileDay]);
+        state.daysArchive[next] = blankStaffDaySlice(state.daysArchive[state.fileDay]);
       }
       state.fileDay = next;
     }
@@ -2240,8 +2265,13 @@ button.count-toggle {
   }
 
   function hasDaySnapshot(iso) {
-    if (iso === state.viewDay) return viewDayHasReport();
-    return daySliceHasReport(state.daysArchive[iso]);
+    var key = String(iso || "");
+    if (!key) return false;
+    if (key === state.viewDay) return viewDayHasReport();
+    if (daySliceHasReport(state.daysArchive[key])) return true;
+    // Живий день ще може лежати лише в report (після openViewDay з архіву).
+    if (key === state.fileDay && state.report && daySliceHasReport(daySliceFromState())) return true;
+    return false;
   }
 
   function allDaysMap() {
@@ -2250,17 +2280,61 @@ button.count-toggle {
       archive[key] = normalizeDaySlice(state.daysArchive[key]);
     });
     var viewKey = state.viewDay || todayISO();
-    archive[viewKey] = daySliceFromState();
+    var viewSlice = daySliceFromState();
+    archive[viewKey] = viewSlice;
     var today = todayISO();
     var liveKey = state.fileDay || viewKey;
+    // Підтягнути архів лише до сьогодні: нові дні без автокопії о/с/ОВТ (ZS-131).
     while (liveKey < today) {
-      ensureDaySliceIn(archive, liveKey);
+      if (!archive[liveKey]) ensureDaySliceIn(archive, liveKey);
       var next = shiftISODate(liveKey, 1);
-      if (!archive[next]) archive[next] = rolloverDaySlice(archive[liveKey]);
+      if (!archive[next]) archive[next] = blankStaffDaySlice(archive[liveKey]);
       liveKey = next;
     }
-    ensureDaySliceIn(archive, liveKey);
+    archive[viewKey] = viewSlice;
+    if (!archive[liveKey]) archive[liveKey] = blankStaffDaySlice(viewSlice);
+    // Не ховати вміст екрана в days[], якщо «живий» ключ — порожнє майбутнє.
+    if (liveKey !== viewKey && daySliceHasReport(viewSlice) && !daySliceHasReport(archive[liveKey])) {
+      liveKey = viewKey;
+    }
     return { archive: archive, liveKey: liveKey, viewKey: viewKey };
+  }
+
+  // ZS-131: скопіювати поточний зріз о/с або ОВТ у обраний день (не обов’язково сьогодні).
+  function copyCurrentStaffToDay(kind, targetIso) {
+    var target = String(targetIso || "").trim();
+    var mode = kind === "machines" || kind === "machine" ? "machines" : "people";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(target)) return false;
+    var source = daySliceFromState();
+    function paint(slice) {
+      var next = normalizeDaySlice(slice);
+      if (mode === "people") {
+        next.unit = cloneData(source.unit);
+        next.people = cloneData(source.people || []);
+      } else {
+        next.machines = cloneData(source.machines || []);
+      }
+      return next;
+    }
+    if (target === state.viewDay) {
+      if (!state.report) state.report = sampleReportDocument();
+      if (mode === "people") {
+        state.report.unit = cloneData(source.unit);
+        state.report.people = cloneData(source.people || []);
+      } else {
+        state.report.machines = cloneData(source.machines || []);
+      }
+      state.edits = { people: {}, machines: {} };
+      state.removed = { people: {}, machines: {} };
+      state.added = { people: [], machines: [] };
+      return true;
+    }
+    var base = state.daysArchive[target]
+      ? normalizeDaySlice(state.daysArchive[target])
+      : blankStaffDaySlice(source);
+    state.daysArchive[target] = paint(base);
+    if (!state.fileDay || target > state.fileDay) state.fileDay = target;
+    return true;
   }
 
   function currentUnitSnapshot() {
@@ -3220,6 +3294,7 @@ button.count-toggle {
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
     state.calendarOpen = false;
+    state.calendarCopyKind = "";
     state.calendarMonth = monthKeyFromISO(state.viewDay);
     state.changesOpen = false;
     bundles = {};
@@ -3753,6 +3828,7 @@ button.count-toggle {
     chev: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
     gear: '<svg viewBox="0 0 24 24" width="36" height="36" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.2 7.2 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.64.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.58-.22 1.12-.54 1.63-.94l2.39.96c.24.1.51 0 .64-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>',
     plus: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 16V6a2 2 0 0 1 2-2h10"/></svg>',
     x: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     check: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l5 5L19 7"/></svg>',
     pencil: '<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l4.2-1.1L19.5 7.6a2 2 0 0 0 0-2.8l-.3-.3a2 2 0 0 0-2.8 0L5.1 15.8 4 20z"/><path d="M13.5 6.5l4 4"/></svg>',
@@ -3834,9 +3910,27 @@ button.count-toggle {
     return btn;
   }
 
+  // ZS-131: символ копіювання лівіше «+» — обрати день у календарі.
+  function copyDayButton(kind) {
+    var mode = kind === "machine" ? "machines" : "people";
+    var btn = el("button", {
+      className: "tool",
+      attrs: {
+        type: "button",
+        "data-copy-day": mode,
+        "aria-label": mode === "people" ? "Копіювати особовий склад у день" : "Копіювати ОВТ у день"
+      }
+    });
+    btn.append(icon("copy"));
+    return btn;
+  }
+
   function sectionTools(gearId, gearLabel, addKind) {
     var tools = el("div", { className: "block-tools" });
-    if (canDelete() && addKind) tools.append(plusButton(addKind));
+    if (canDelete() && addKind) {
+      tools.append(copyDayButton(addKind));
+      tools.append(plusButton(addKind));
+    }
     tools.append(gearButton(gearId, gearLabel));
     return tools;
   }
@@ -4497,7 +4591,7 @@ button.count-toggle {
 
   function renderTask(task) {
     var id = "task:" + task.id;
-    var count = task.restricted ? task.peopleCount : task.peopleIds.filter(function (id) { return peopleById.has(id); }).length;
+    var count = task.restricted ? task.peopleCount : (Array.isArray(task.peopleIds) ? task.peopleIds : []).filter(function (id) { return peopleById.has(id); }).length;
     var main = el("span", { className: "grow" });
     main.append(el("span", { className: "call", text: task.name }));
     var meta = task.restricted ? String(count) : count + " в/сл · здав " + task.author.split(" · ")[0];
@@ -7444,11 +7538,15 @@ button.count-toggle {
     var first = new Date(year, month - 1, 1);
     var startWeekday = first.getDay();
     var daysInMonth = new Date(year, month, 0).getDate();
-    var overlay = el("div", { className: "overlay", attrs: { id: "calendar-overlay", role: "dialog", "aria-label": "Календар" } });
+    var copyKind = String(state.calendarCopyKind || "");
+    var title = copyKind === "people"
+      ? "Куди копіювати о/с"
+      : (copyKind === "machines" ? "Куди копіювати ОВТ" : "Календар");
+    var overlay = el("div", { className: "overlay", attrs: { id: "calendar-overlay", role: "dialog", "aria-label": title } });
     var sheet = el("div", { className: "overlay-sheet is-compact" });
     sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
     var head = el("div", { className: "card-head" });
-    head.append(el("h2", { text: "Календар" }));
+    head.append(el("h2", { text: title }));
     head.append(iconButton("x", "Закрити", { "data-close-calendar": "1" }));
     sheet.append(head);
     var monthRow = el("div", { className: "calendar-month" });
@@ -8397,6 +8495,7 @@ button.count-toggle {
     }
     if (event.target.id === "calendar-overlay") {
       state.calendarOpen = false;
+      state.calendarCopyKind = "";
       render();
       return;
     }
@@ -8462,6 +8561,15 @@ button.count-toggle {
     var openCalendar = event.target.closest("[data-open-calendar]");
     if (openCalendar) {
       state.calendarOpen = true;
+      state.calendarCopyKind = "";
+      state.calendarMonth = monthKeyFromISO(state.viewDay || todayISO());
+      render();
+      return;
+    }
+    var openCopyDay = event.target.closest("[data-copy-day]");
+    if (openCopyDay) {
+      state.calendarOpen = true;
+      state.calendarCopyKind = openCopyDay.getAttribute("data-copy-day") === "machines" ? "machines" : "people";
       state.calendarMonth = monthKeyFromISO(state.viewDay || todayISO());
       render();
       return;
@@ -8469,6 +8577,7 @@ button.count-toggle {
     var closeCalendar = event.target.closest("[data-close-calendar]");
     if (closeCalendar) {
       state.calendarOpen = false;
+      state.calendarCopyKind = "";
       render();
       return;
     }
@@ -8495,8 +8604,19 @@ button.count-toggle {
     }
     var pickDay = event.target.closest("[data-pick-day]");
     if (pickDay) {
-      openViewDay(pickDay.getAttribute("data-pick-day"));
+      var picked = pickDay.getAttribute("data-pick-day");
+      var copyKind = String(state.calendarCopyKind || "");
+      if (copyKind === "people" || copyKind === "machines") {
+        copyCurrentStaffToDay(copyKind, picked);
+        state.calendarOpen = false;
+        state.calendarCopyKind = "";
+        save();
+        render();
+        return;
+      }
+      openViewDay(picked);
       state.calendarOpen = false;
+      state.calendarCopyKind = "";
       save();
       render();
       return;
@@ -8944,6 +9064,7 @@ button.count-toggle {
     state.fileDay = todayISO();
     state.viewDay = state.fileDay;
     state.calendarOpen = false;
+    state.calendarCopyKind = "";
     state.calendarMonth = monthKeyFromISO(state.viewDay);
     state.driveFolderOpen = false;
     state.driveGoogleEmail = "";
@@ -11598,18 +11719,28 @@ button.count-toggle {
           });
         });
       })().then(function () {
-        // Rollover: вчора → архів, новий день копіює о/с і плани.
+        // ZS-131: rollover — вчора в архіві; сьогодні без автокопії о/с/ОВТ; плани лишаються.
         var yesterday = shiftISODate(todayISO(), -1);
+        state.scope = "all";
+        state.openCode = "lead";
+        state.reportRoot = "lead";
+        state.reportKey = "lead";
         state.daysArchive = {};
         state.fileDay = yesterday;
         state.viewDay = "";
+        state.edits = { people: {}, machines: {} };
+        state.removed = { people: {}, machines: {} };
+        state.added = { people: [], machines: [] };
+        state.positions = {};
+        state.calendarOpen = false;
+        state.calendarCopyKind = "";
         state.report = {
           name: "Тест",
           code: "lead",
           file: SAMPLE_FILE,
           unit: { id: "root", name: "Тест", people: [{ id: "px", name: "A", rank: "Солдат", callsign: "X", accounting: "official", duty: "in", position: "" }] },
           machines: [{ id: "mx", name: "M", type: "lat", board: "1", accounting: "official", duty: "in" }],
-          tasks: [{ id: "tx", title: "План", status: "plan", people: [] }],
+          tasks: [{ id: "tx", name: "План", status: "plan", peopleIds: [], author: "Тест · офіційний облік", restricted: false, description: "", time: "", start: "" }],
           people: []
         };
         state.changes = [];
@@ -11618,7 +11749,28 @@ button.count-toggle {
         check(state.fileDay === todayISO() && state.viewDay === todayISO(), "rollover відкриває сьогодні");
         check(state.daysArchive[yesterday] && state.daysArchive[yesterday].unit && (state.daysArchive[yesterday].unit.people || []).length === 1, "вчорашній зріз в архіві");
         check(state.report.tasks && state.report.tasks[0] && state.report.tasks[0].status === "plan", "плани лишаються планами");
-        check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ОВТ як були");
+        check(!(state.report.machines && state.report.machines.length), "сьогодні без автокопії ОВТ");
+        check(countPeopleInUnit(state.report.unit) === 0, "сьогодні без автокопії о/с");
+        check(hasDaySnapshot(yesterday), "календар бачить вчорашній звіт");
+        try {
+          render();
+          check(!!document.querySelector("#people [data-copy-day='people']") && !!document.querySelector("#equipment [data-copy-day='machines']"), "кнопки копіювання о/с і ОВТ");
+          document.querySelector("#people [data-copy-day='people']").click();
+          check(state.calendarOpen && state.calendarCopyKind === "people", "копіювання о/с відкриває календар");
+          var yCell = document.querySelector("#calendar-overlay [data-pick-day='" + yesterday + "']");
+          check(yCell && yCell.classList.contains("has-report"), "день зі звітом замальований у календарі");
+          state.calendarOpen = false;
+          state.calendarCopyKind = "";
+          openViewDay(yesterday);
+          copyCurrentStaffToDay("people", todayISO());
+          copyCurrentStaffToDay("machines", todayISO());
+          openViewDay(todayISO());
+          check(countPeopleInUnit(state.report.unit) === 1, "ручне копіювання о/с на сьогодні");
+          check(state.report.machines && state.report.machines[0] && state.report.machines[0].board === "1", "ручне копіювання ОВТ на сьогодні");
+          check(state.daysArchive[yesterday] && (state.daysArchive[yesterday].unit.people || []).length === 1, "після копіювання вчора лишається");
+        } catch (err131) {
+          check(false, "ZS-131 UI: " + (err131 && err131.message ? err131.message : err131));
+        }
         finishSelfTest();
       });
       });
@@ -11682,6 +11834,7 @@ button.count-toggle {
           closeAccessChange();
         } else if (current.el.closest("#calendar-overlay")) {
           state.calendarOpen = false;
+          state.calendarCopyKind = "";
           render();
         } else if (state.draft) discardDraft();
         else {
