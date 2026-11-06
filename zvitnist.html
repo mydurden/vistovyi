@@ -5154,12 +5154,13 @@ button.count-toggle {
     var rank = draftMode ? (item.rank || "") : pendingValue("person", item.id, "rank", personRank(item));
     var unit = draftMode ? (item.unit || "") : pendingValue("person", item.id, "unit", personUnit(item));
     var call = draftMode ? (item.callsign || "") : pendingValue("person", item.id, "callsign", personCallsign(item));
+    // ZS-138: позивний першим полем у картці о/с (оверлей).
+    card.append(fieldEditor("Позивний", lockControl(textInput("call-" + item.id, call, draftMode ? { "data-draft-field": "callsign" } : editAttrs("person", item.id, "callsign")), editable)));
     card.append(fieldEditor("Прізвище", lockControl(textInput("surname-" + item.id, surname, draftMode ? { "data-draft-field": "surname" } : editAttrs("person", item.id, "surname")), editable)));
     card.append(fieldEditor("Ім’я", lockControl(textInput("given-" + item.id, givenName, draftMode ? { "data-draft-field": "givenName" } : editAttrs("person", item.id, "givenName")), editable)));
     card.append(fieldEditor("По батькові", lockControl(textInput("patronym-" + item.id, patronymic, draftMode ? { "data-draft-field": "patronymic" } : editAttrs("person", item.id, "patronymic")), editable)));
     card.append(fieldEditor("Звання", lockControl(rankPick("rank-" + item.id, rank, draftMode ? { "data-draft-field": "rank" } : editAttrs("person", item.id, "rank")), editable)));
     card.append(fieldEditor("Підрозділ", lockControl(textInput("unitp-" + item.id, unit, draftMode ? { "data-draft-field": "unit" } : editAttrs("person", item.id, "unit")), editable)));
-    card.append(fieldEditor("Позивний", lockControl(textInput("call-" + item.id, call, draftMode ? { "data-draft-field": "callsign" } : editAttrs("person", item.id, "callsign")), editable)));
     var post = el("div", { className: "field" });
     var postLabel = el("label", { className: "label", text: "Посада або умовна посада", attrs: { for: "post-" + item.id } });
     var postAttrs = {
@@ -11621,6 +11622,9 @@ button.count-toggle {
     check(!!document.getElementById("card-overlay") && !!document.querySelector("#card-overlay #panel-person-p4") && !document.querySelector("#people #panel-person-p4"), "картка о/с у вікні поверх екрана");
     var personCard = text("panel-person-p4");
     check(personCard.includes("Прізвище") && personCard.includes("Ім’я") && personCard.includes("По батькові") && personCard.includes("Звання") && personCard.includes("Підрозділ") && personCard.includes("Позивний") && personCard.includes("Посада"), "поля картки");
+    var callField = document.getElementById("call-p4");
+    var surnameField = document.getElementById("surname-p4");
+    check(!!callField && !!surnameField && !!(callField.compareDocumentPosition(surnameField) & Node.DOCUMENT_POSITION_FOLLOWING), "ZS-138: позивний вище прізвища");
     check(document.getElementById("surname-p4") && document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор" && document.getElementById("patronym-p4").value === "Васильович", "картка розкладає ПІП на три поля");
     var rank = document.getElementById("rank-p4");
     var rankNext = document.getElementById("unitp-p4");
