@@ -1,20 +1,37 @@
 # ZS-132: видалення о/с після sync знову з хмари
 
-Дата: 2026-11-06. **Зроблено** — `main`, SW `vistovyi-v47`.
+Дата: 2026-11-06. **Зроблено** — `main`, SW `vistovyi-v48` (v47 мав діру).
 
-## Симптом
+## Симптом (повтор на v47)
 
-Користувач видаляє військовослужбовця → після sync знову з’являється з Диска.
+Видалив о/с на телефоні → sync → люди знову з хмари, **діалог вибору не показало**.
 
-## Що змінилось
+## Діагноз регресії v47
 
-1. **Не тиха перемога tombstone і не тихе воскресіння.** При sync, якщо локально видалили, а на Диску людина ще є (або навпаки) — оверлей вибору (як конфлікти полів): «лишити видаленим» / «повернути з хмари».
-2. **Merge днів** передає `removedPeople` / `removedMachines` у `mergeDaySliceContent` (tombstone більше не губиться в `days[]`).
-3. **`removed` не обнуляється** при зміні дня; tombstone лишається між датами.
-4. **Видалення** чистить людину/техніку з усіх зрізів `daysArchive`; у профілі — м’який архів (прапорець + «Повернути»).
-5. **`snapshotFromStoredBundle`** кладе `removedPeople` / `removedMachines` у знімок.
-6. Self-test: конфлікт delete↔Drive → `keep-removed` / `restore`.
+Оверлей будується лише з `deleteConflicts`. Вони з’являлись, коли в **local snap** був tombstone (`removedPeople`), а на Диску людина ще є.
 
-## Діагноз (коротко)
+Якщо tombstone **не потрапив** у local snap (прапорець `removed` злетів / bundle без `removedPeople` / `removedAt` не зберігався), а людини вже немає в локальному `unit`, merge робив:
 
-Ламалось через: (1) merge `days[]` без tombstone; (2) скидання `removed` при відкритті дати; (3) слабкий/порожній `removedAt` проти remote `updatedAt`. Деталі — у попередній версії цього файлу (діагноз без коду).
+`remoteEntity && !localEntity → out.push(remote)` — **тихе воскресіння без діалогу**.
+
+Навіть із 3-way base (останній sync) ця гілка спрацьовувала так само — база не питала.
+
+Інші фактори:
+- `mergeDaySliceContent` раніше не збирав `deleteConflicts` (days[] могли розійтись окремо).
+- `mergeUnitIntoGeneral` міг знову вкинути о/с з файлу підлеглої, ігноруючи tombstone Загального.
+- `captureBundle` / localStorage не зберігали `removedPeople` / `removedAt`.
+
+Не підтвердилось як причина цього кейсу: upsert до pull (порядок sync лишається pull → children → upsert).
+
+## Що змінилось у v48
+
+1. **Base-aware delete:** немає локально + є на Диску + була в base → діалог («лишити видаленим» / «повернути з хмари»), не тихе `push(remote)`.
+2. Tombstone / `removedAt` / `removedPeople` персистяться в bundle і report cache.
+3. Merge днів теж збирає delete-конфлікти (з дедупом по id).
+4. `mergeUnitIntoGeneral` не повертає видалених з tombstone.
+5. Після pull — `captureBundle` з актуальними tomb; lead delete-конфлікти не затираються, коли відкрита вкладка unit.
+
+## Self-test
+
+- ZS-132: tomb + Drive → overlay → keep/restore.
+- ZS-132b: **без tomb, з base** → overlay (не тихе воскресіння); без base нова з Диска — прийняти.
