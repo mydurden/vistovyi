@@ -583,7 +583,7 @@ h2 {
 
 .overlay-sheet .card {
   border: 0;
-  background: transparent;
+  background: var(--paper);
   margin: 0;
   padding: 4px 0 12px;
   border-radius: 0;
@@ -4862,10 +4862,8 @@ button.count-toggle {
       trailing,
       "Картка військовослужбовця: " + personCallsign(item) + ", " + personName(item) + (dutyName ? ", " + dutyName : "")
     );
-    var frag = document.createDocumentFragment();
-    frag.append(withSwipe("person", item.id, btn));
-    if (state.open.has(id)) frag.append(renderPersonCard(item));
-    return frag;
+    // ZS-136: картка о/с відкривається в оверлеї, не розгортає рядок у списку.
+    return withSwipe("person", item.id, btn);
   }
 
   function textInput(id, value, extra) {
@@ -5383,10 +5381,8 @@ button.count-toggle {
       main.append(el("span", { className: "pname", text: extra }));
     }
     var btn = rowButton(id, main, rows.duty && duty ? pill(duty.label, duty.plus ? "plus" : "minus") : null, "Картка машини: " + machineName(machine) + ", борт " + machineBoard(machine));
-    var frag = document.createDocumentFragment();
-    frag.append(withSwipe("machine", machine.id, btn));
-    if (state.open.has(id)) frag.append(renderMachineCard(machine));
-    return frag;
+    // ZS-136: картка ОВТ відкривається в оверлеї, не розгортає рядок у списку.
+    return withSwipe("machine", machine.id, btn);
   }
 
   function renderType(type) {
@@ -8951,6 +8947,10 @@ button.count-toggle {
       if (dupeOverlay) parts.push(dupeOverlay);
     }
     if (state.draft && canDelete()) parts.push(renderDraftOverlay());
+    else {
+      var entityCardOverlay = renderEntityCardOverlay();
+      if (entityCardOverlay) parts.push(entityCardOverlay);
+    }
     root.replaceChildren.apply(root, parts);
     if (pendingScroll) {
       var target = document.getElementById(pendingScroll);
@@ -9009,11 +9009,48 @@ button.count-toggle {
     setTimeout(function () { finish(); }, 280);
   }
 
+  function isEntityCardOpenId(id) {
+    var key = String(id || "");
+    return key.indexOf("person:") === 0 || key.indexOf("machine:") === 0;
+  }
+
+  function openEntityCardId() {
+    var found = "";
+    state.open.forEach(function (id) {
+      if (isEntityCardOpenId(id)) found = id;
+    });
+    return found;
+  }
+
+  function closeOpenEntityCards() {
+    var changed = false;
+    Array.from(state.open).forEach(function (id) {
+      if (!isEntityCardOpenId(id)) return;
+      state.open.delete(id);
+      if (state.editing === id) discardEdits();
+      changed = true;
+    });
+    return changed;
+  }
+
   function toggle(id) {
     if (state.open.has(id)) {
       state.open.delete(id);
       if (state.editing === id) discardEdits();
+      if (isEntityCardOpenId(id)) {
+        render();
+        return;
+      }
       collapseThen(document.getElementById(panelDomId(id)), render);
+      return;
+    }
+    if (isEntityCardOpenId(id)) {
+      // Одна картка о/с/ОВТ за раз — у вікні поверх екрана (як нова картка).
+      closeOpenEntityCards();
+      state.draft = null;
+      state.open.add(id);
+      justOpened = id;
+      render();
       return;
     }
     state.open.add(id);
@@ -9219,10 +9256,48 @@ button.count-toggle {
     return overlay;
   }
 
+  // ZS-136: існуюча картка о/с або ОВТ — те саме вікно, що й нова (поверх екрана).
+  function renderEntityCardOverlay() {
+    var openId = openEntityCardId();
+    if (!openId) return null;
+    var body = null;
+    if (openId.indexOf("machine:") === 0) {
+      var machineId = openId.slice("machine:".length);
+      var machine = findMachine(machineId) || addedMachine(machineId);
+      if (machine) body = renderMachineCard(machine);
+    } else {
+      var personId = openId.slice("person:".length);
+      var person = findPerson(personId) || addedPerson(personId);
+      if (person) body = renderPersonCard(person);
+    }
+    if (!body) {
+      state.open.delete(openId);
+      return null;
+    }
+    var overlay = el("div", { className: "overlay", attrs: { id: "card-overlay", role: "dialog" } });
+    var sheet = el("div", { className: "overlay-sheet" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    sheet.append(body);
+    overlay.append(sheet);
+    return overlay;
+  }
+
+  function closeCardOverlay() {
+    if (state.draft) {
+      discardDraft();
+      return;
+    }
+    if (closeOpenEntityCards()) {
+      state.confirm = null;
+      render();
+    }
+  }
+
   function openDraft(kind) {
     if (!canDelete()) return;
     if (state.draft && state.draft.kind === kind) return;
     state.confirm = null;
+    closeOpenEntityCards();
     state.draft = blankDraft(kind);
     render();
   }
@@ -9695,6 +9770,7 @@ button.count-toggle {
     // Не projectCardsToLiveDay: лишаємо запис у дереві/added для архіву в профілі (як раніше).
     syncRemovedFlagsFromCards();
     state.confirm = null;
+    closeOpenEntityCards();
     save();
     render();
   }
@@ -9953,7 +10029,7 @@ button.count-toggle {
       return;
     }
     if (event.target.id === "card-overlay") {
-      discardDraft();
+      closeCardOverlay();
       return;
     }
     if (event.target.id === "profile-overlay") {
@@ -10326,6 +10402,9 @@ button.count-toggle {
           return;
         }
         state.confirm = { kind: kind, id: id };
+        // Підтвердження архіву — у вікні картки; інші о/с/ОВТ закриваємо.
+        closeOpenEntityCards();
+        state.draft = null;
         state.open.add(kind + ":" + id);
         render();
       }
@@ -11427,6 +11506,7 @@ button.count-toggle {
     check(bondar && bondar.textContent.indexOf("1 відділення 1 взвод Служба · офіційний облік") !== -1, "підрозділ і облік через крапку");
     check(bondar && bondar.textContent.indexOf("відділення ·") === -1 && bondar.textContent.indexOf("взвод ·") === -1, "без крапок між ланками");
     toggle("person:p4");
+    check(!!document.getElementById("card-overlay") && !!document.querySelector("#card-overlay #panel-person-p4") && !document.querySelector("#people #panel-person-p4"), "картка о/с у вікні поверх екрана");
     var personCard = text("panel-person-p4");
     check(personCard.includes("Прізвище") && personCard.includes("Ім’я") && personCard.includes("По батькові") && personCard.includes("Звання") && personCard.includes("Підрозділ") && personCard.includes("Позивний") && personCard.includes("Посада"), "поля картки");
     check(document.getElementById("surname-p4") && document.getElementById("surname-p4").value === "Мельник" && document.getElementById("given-p4").value === "Ігор" && document.getElementById("patronym-p4").value === "Васильович", "картка розкладає ПІП на три поля");
@@ -11480,7 +11560,7 @@ button.count-toggle {
     check(paint(document.getElementById("people")) === paperPaint, "блок списку #fbf8f3");
     check(paint(pipNode) === paperPaint && paint(callNode) === paperPaint && paint(rank.querySelector(".pick-current")) === paperPaint, "до правки прізвище, позивний і звання #fbf8f3");
     check(paint(pipNode) !== "rgb(231, 225, 214)" && !brightYellow(paint(pipNode)), "поле не #e7e1d6 і не яскраво-жовте");
-    check(whitePaint(paint(personPanel)), "до правки картка біла");
+    check(paint(personPanel) === paperPaint, "до правки картка в оверлеї на папері");
     check(paint(personPanel.querySelector(".tool-pencil")) !== paperPaint && paint(document.querySelector("#people [data-add='person']")) !== paperPaint && paint(document.querySelector("#people [data-toggle='gear:people']")) !== paperPaint, "іконки без паперу");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     pipNode = document.getElementById("surname-p4");
@@ -11555,6 +11635,7 @@ button.count-toggle {
     check(document.getElementById("app").textContent.indexOf("Коротка характеристика") === -1, "немає короткої характеристики");
     check(dozerRow && dozerRow.textContent.indexOf("Степ") !== -1, "у списку є Степ");
     toggle("machine:m8");
+    check(!!document.getElementById("card-overlay") && !!document.querySelector("#card-overlay #panel-machine-m8") && !document.querySelector("#equipment #panel-machine-m8"), "картка ОВТ у вікні поверх екрана");
     var machineCard = text("panel-machine-m8");
     check(machineCard.includes("Пробіг") && machineCard.includes("Мотогодини") && machineCard.includes("Останнє ТО") && machineCard.includes("немає даних"), "картка бульдозера після рядка");
     check(document.querySelector("#panel-machine-m8 h3") && document.querySelector("#panel-machine-m8 h3").textContent === "Степ", "заголовок машини — її назва");
@@ -11575,7 +11656,7 @@ button.count-toggle {
     var boardNode = document.getElementById("mboard-m8");
     var machinePanel = document.getElementById("panel-machine-m8");
     check(paint(boardNode) === paperPaint && paint(document.getElementById("mname-m8")) === paperPaint && paint(boardNode) !== "rgb(231, 225, 214)", "до правки поля машини #fbf8f3");
-    check(whitePaint(paint(machinePanel)), "до правки картка машини біла");
+    check(paint(machinePanel) === paperPaint, "до правки картка машини в оверлеї на папері");
     document.querySelector("#panel-machine-m8 [data-edit-card='machine:m8']").click();
     check(whitePaint(paint(document.getElementById("mboard-m8"))) && whitePaint(paint(document.getElementById("mname-m8"))), "після початку правки поля машини білі");
     check(paint(document.getElementById("panel-machine-m8")) === paperPaint && paint(document.getElementById("panel-machine-m8")) !== "rgb(231, 225, 214)", "після початку правки картка машини #fbf8f3");
@@ -13599,7 +13680,7 @@ button.count-toggle {
           state.calendarOpen = false;
           state.calendarCopyKind = "";
           render();
-        } else if (state.draft) discardDraft();
+        } else if (state.draft || openEntityCardId()) closeCardOverlay();
         else {
           discardEdits();
           render();
