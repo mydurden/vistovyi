@@ -773,11 +773,28 @@ h2 {
   min-width: 0;
 }
 
+.card-head h2,
 .card-head h3 {
   margin: 0;
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+  line-height: 1.2;
+}
+
+.card-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.profile-build {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  white-space: nowrap;
   line-height: 1.2;
 }
 
@@ -2090,8 +2107,18 @@ button.count-toggle {
     });
   }
 
+  // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
+  var APP_BUILD_AT = "2026-11-10T13:31:00.000Z";
+
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
+  }
+
+  function buildVersionLabel(at) {
+    var d = new Date(at || APP_BUILD_AT);
+    if (isNaN(d.getTime())) return "Версія від —";
+    return "Версія від " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + " " +
+      pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + "." + String(d.getFullYear()).slice(-2);
   }
 
   function todayISO() {
@@ -9375,7 +9402,14 @@ button.count-toggle {
     sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
     var head = el("div", { className: "card-head" });
     head.append(el("h2", { text: "Профіль" }));
-    head.append(iconButton("x", "Закрити", { "data-close-profile": "1" }));
+    var tools = el("div", { className: "card-head-tools" });
+    tools.append(el("span", {
+      className: "hint profile-build",
+      text: buildVersionLabel(),
+      attrs: { "data-profile-build": "1" }
+    }));
+    tools.append(iconButton("x", "Закрити", { "data-close-profile": "1" }));
+    head.append(tools);
     sheet.append(head);
     sheet.append(profilePaneButton("people", "Редагування статусів військовослужбовців"));
     if (state.profilePane === "people" && canEditCatalogs()) sheet.append(renderStatusCreate());
@@ -12074,6 +12108,18 @@ button.count-toggle {
     check(profileCss.borderTopWidth === "0px" && (profileCss.backgroundColor === "rgba(0, 0, 0, 0)" || profileCss.backgroundColor === "transparent") && profileBtn.textContent.indexOf("Профіль") === -1, "профіль без рамки і підпису");
     profileBtn.click();
     check(document.getElementById("profile-overlay") && !document.getElementById("main").contains(document.getElementById("profile-overlay")), "профіль окремо від звіту");
+    var profileBuild = document.querySelector("#profile-overlay [data-profile-build]");
+    var profileClose = document.querySelector("#profile-overlay [data-close-profile]");
+    check(
+      profileBuild && /^Версія від \d{2}:\d{2} \d{2}\.\d{2}\.\d{2}$/.test(String(profileBuild.textContent || "").trim()) &&
+      profileBuild.textContent.trim() === buildVersionLabel(),
+      "версія збірки в шапці профілю"
+    );
+    check(
+      profileBuild && profileClose &&
+      profileBuild.getBoundingClientRect().right <= profileClose.getBoundingClientRect().left + 2,
+      "версія зліва від ✕ у шапці профілю"
+    );
     check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
     check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "без ключа lead у профілі має доступ для користувачів, створює ланку і бачить архів");
     document.querySelector("[data-profile-pane='people']").click();
