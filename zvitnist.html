@@ -2108,7 +2108,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-10T14:01:00.000Z";
+  var APP_BUILD_AT = "2026-11-10T14:45:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -2363,10 +2363,48 @@ button.count-toggle {
   }
 
   // Живий екран ← картки за обраний день (завдання не чіпаємо; дерево підрозділів лишається).
+  function findUnitTreeNode(root, id) {
+    if (!root || id == null || id === "") return null;
+    var want = String(id);
+    if (want === "root" && root.id) want = String(root.id);
+    function walk(node) {
+      if (!node) return null;
+      if (String(node.id) === want) return node;
+      var kids = Array.isArray(node.children) ? node.children : [];
+      var i;
+      for (i = 0; i < kids.length; i++) {
+        var found = walk(kids[i]);
+        if (found) return found;
+      }
+      return null;
+    }
+    return walk(root);
+  }
+
+  // ZS-146: після flatten sync place може лишитись на зниклій гілці — перенести на живий вузол / root.
+  function remapPeopleCardPlacesToLiveTree() {
+    ensureCardStores();
+    var root = state.report && state.report.unit;
+    if (!root) return;
+    var rootId = root.id || "root";
+    Object.keys(state.peopleCards || {}).forEach(function (id) {
+      var card = state.peopleCards[id];
+      if (!card || card.archived) return;
+      var place = card.place != null && card.place !== "" ? String(card.place) : rootId;
+      if (place === "root") place = rootId;
+      if (findUnitTreeNode(root, place)) {
+        card.place = place;
+        return;
+      }
+      card.place = rootId;
+    });
+  }
+
   function projectCardsToLiveDay() {
     ensureCardStores();
     var day = state.viewDay || todayISO();
     if (!state.report) state.report = sampleReportDocument();
+    remapPeopleCardPlacesToLiveTree();
     var unit = cloneData(state.report.unit || { id: "root", name: state.report.name || "" });
     if (!unit.id) unit.id = "root";
     function clearPeople(node) {
@@ -2378,17 +2416,6 @@ button.count-toggle {
       kids.forEach(clearPeople);
     }
     clearPeople(unit);
-    function findNodeById(node, id) {
-      if (!node) return null;
-      if (String(node.id) === String(id)) return node;
-      var kids = Array.isArray(node.children) ? node.children : [];
-      var i;
-      for (i = 0; i < kids.length; i++) {
-        var found = findNodeById(kids[i], id);
-        if (found) return found;
-      }
-      return null;
-    }
     var orphanPeople = [];
     Object.keys(state.peopleCards).forEach(function (id) {
       var card = state.peopleCards[id];
@@ -2397,9 +2424,13 @@ button.count-toggle {
       var person = personItemFromCard(card, day);
       var place = card.place || person.place || unit.id;
       if (place === "root") place = unit.id;
-      var node = findNodeById(unit, place);
-      // Чужі place (картки іншої вкладки) не звалюємо на чужий корінь.
-      if (!node) return;
+      var node = findUnitTreeNode(unit, place);
+      // ZS-146: немає вузла place (flatten) — на root, не мовчки ховати.
+      if (!node) {
+        card.place = unit.id;
+        place = unit.id;
+        node = unit;
+      }
       // Не садити людей на гілку з дітьми — інакше зникає дерево в UI.
       if (Array.isArray(node.children) && node.children.length) {
         person.place = node.id;
@@ -2623,12 +2654,15 @@ button.count-toggle {
       state.machineCards[id].archived = true;
       state.machineCards[id].archivedAt = (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || state.machineCards[id].archivedAt || stampNow();
     });
+    // ZS-146: після ingest зі старим place на зниклій гілці — remap на живе дерево.
+    remapPeopleCardPlacesToLiveTree();
     syncRemovedFlagsFromCards();
   }
 
   // Зріз дня для архіву/Drive: о/с і ОВТ з карток; завдання — як були.
   function daySliceFromCards(day, tasks, changes, events) {
     ensureCardStores();
+    remapPeopleCardPlacesToLiveTree();
     var unit = state.report && state.report.unit
       ? cloneData(state.report.unit)
       : { id: "root", name: (state.report && state.report.name) || "" };
@@ -2641,25 +2675,18 @@ button.count-toggle {
       kids.forEach(clearPeople);
     }
     clearPeople(unit);
-    function findNodeById(node, id) {
-      if (!node) return null;
-      if (String(node.id) === String(id)) return node;
-      var kids = Array.isArray(node.children) ? node.children : [];
-      var i;
-      for (i = 0; i < kids.length; i++) {
-        var found = findNodeById(kids[i], id);
-        if (found) return found;
-      }
-      return null;
-    }
     Object.keys(state.peopleCards).forEach(function (id) {
       var card = state.peopleCards[id];
       if (!card || card.archived || !cardBelongsHere(card) || !card.days || !card.days[day]) return;
       var person = personItemFromCard(card, day);
       var place = card.place || person.place || unit.id;
       if (place === "root") place = unit.id;
-      var node = findNodeById(unit, place);
-      if (!node) return;
+      var node = findUnitTreeNode(unit, place);
+      if (!node) {
+        card.place = unit.id;
+        place = unit.id;
+        node = unit;
+      }
       if (Array.isArray(node.children) && node.children.length) return;
       if (!Array.isArray(node.people)) node.people = [];
       node.people.push(person);
@@ -15182,6 +15209,132 @@ button.count-toggle {
           }).catch(function (errEnc144) {
             check(false, "ZS-144 encrypt: " + (errEnc144 && errEnc144.message ? errEnc144.message : errEnc144));
           });
+        }).then(function () {
+          // ZS-146: phone add на гілці → sync flatten → людина лишається видимою (remap place).
+          try {
+            var day146 = todayISO();
+            var code146 = "AAAA-BBBB-CCCC-DDDD-146T";
+            rememberCanonUnitName(code146, "ІСР");
+            state.driveEncryptKey = code146;
+            state.openCode = code146;
+            state.reportRoot = code146;
+            state.reportKey = code146;
+            state.scope = "all";
+            state.holder = "ІСР";
+            state.units = [{ id: "u146", name: "ІСР", code: code146, parent: "lead" }];
+            bundles = {};
+            state.peopleCards = {};
+            state.machineCards = {};
+            state.added = { people: [], machines: [] };
+            state.edits = { people: {}, machines: {} };
+            state.removed = { people: {}, machines: {} };
+            state.removedAt = { people: {}, machines: {} };
+            state.viewDay = day146;
+            state.fileDay = day146;
+            state.daysArchive = {};
+            var pc146 = {
+              id: "pPC146",
+              surname: "ПК",
+              givenName: "А",
+              name: "ПК А",
+              callsign: "ПК146",
+              rank: "Солдат",
+              accounting: "official",
+              duty: "in",
+              position: ""
+            };
+            state.report = {
+              name: "ІСР",
+              code: code146,
+              unit: {
+                id: "root",
+                name: "ІСР",
+                children: [{ id: "v1", name: "1 відділення", people: [pc146] }]
+              },
+              machines: [],
+              tasks: [],
+              people: [],
+              events: []
+            };
+            state.peopleCards = {
+              pPC146: {
+                id: "pPC146",
+                archived: false,
+                ownerKey: code146,
+                callsign: "ПК146",
+                place: "v1",
+                days: {}
+              }
+            };
+            state.peopleCards.pPC146.days[day146] = Object.assign({ id: "pPC146" }, pc146);
+            projectCardsToLiveDay();
+            state.draft = {
+              kind: "person",
+              surname: "Тел",
+              givenName: "Нова",
+              patronymic: "",
+              callsign: "Тел146",
+              unit: "",
+              accounting: "official",
+              duty: "in",
+              position: "",
+              rank: "Солдат",
+              name: ""
+            };
+            saveDraft();
+            var id146 = Object.keys(state.peopleCards).find(function (id) {
+              return state.peopleCards[id] && state.peopleCards[id].callsign === "Тел146";
+            });
+            check(!!id146 && state.peopleCards[id146].place === "v1", "ZS-146: до sync нова людина на гілці v1");
+            var local146 = localOwnSnapshotForMerge(code146);
+            var remote146 = {
+              version: 2,
+              name: "ІСР",
+              code: code146,
+              day: day146,
+              unit: {
+                id: "root",
+                name: "ІСР",
+                children: [{ id: "v1", name: "1 відділення", people: [pc146] }]
+              },
+              machines: [],
+              tasks: [],
+              people: [],
+              days: {},
+              children: [],
+              peopleCards: {
+                pPC146: {
+                  id: "pPC146",
+                  archived: false,
+                  ownerKey: code146,
+                  callsign: "ПК146",
+                  place: "v1",
+                  days: {}
+                }
+              },
+              machineCards: {}
+            };
+            remote146.peopleCards.pPC146.days[day146] = Object.assign({ id: "pPC146" }, pc146);
+            var merged146 = mergeUnitSnapshots(local146, remote146, cloneData(remote146));
+            check(
+              !!(merged146.snapshot && merged146.snapshot.unit && !merged146.snapshot.unit.children) &&
+              flattenPeopleFromUnit(merged146.snapshot.unit).some(function (p) { return p && p.callsign === "Тел146"; }),
+              "ZS-146: merge flatten + людина в списку"
+            );
+            applyOwnUnitSnapshot(merged146.snapshot, code146);
+            var visible146 = flattenPeopleFromUnit(state.report && state.report.unit).some(function (p) {
+              return p && p.callsign === "Тел146";
+            }) || (state.added.people || []).some(function (p) {
+              return p && p.callsign === "Тел146";
+            });
+            check(visible146, "ZS-146: phone add→sync→видно");
+            check(
+              !!(id146 && state.peopleCards[id146] && (state.peopleCards[id146].place === "root" || state.peopleCards[id146].place === (state.report.unit && state.report.unit.id))),
+              "ZS-146: place remap на root після flatten"
+            );
+          } catch (err146) {
+            check(false, "ZS-146: " + (err146 && err146.message ? err146.message : err146));
+          }
         }).then(function () {
           finishSelfTest();
         }).catch(function (errDone142) {
