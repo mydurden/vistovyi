@@ -2108,7 +2108,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-10T14:45:00.000Z";
+  var APP_BUILD_AT = "2026-11-10T15:00:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -4495,6 +4495,9 @@ button.count-toggle {
       restoreFromReportCache();
       return;
     }
+    // ZS-148: після reload/boot підняти живе з пристрою перед мережевим sync
+    // (інакше merge йде з порожнього installSample і локальний кеш губиться).
+    if (applyReportCache(loadReportCache())) render();
     state.refreshFallback = true;
     startDriveSync();
   }
@@ -13518,6 +13521,50 @@ button.count-toggle {
       try { localStorage.removeItem(CACHE_KEY); } catch (err105b) {}
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
+      // ZS-148: онлайн refresh піднімає zvitnist.cache.v1 у live перед startDriveSync.
+      try { localStorage.removeItem(CACHE_KEY); } catch (err148a) {}
+      state.reportKey = "lead";
+      state.report = emptyUnitReport({ name: "Авто148", code: "lead" });
+      state.added = {
+        people: [{ id: "np148", name: "Кеш Збереженко", surname: "Збереженко", givenName: "Кеш", patronymic: "", rank: "Солдат", callsign: "Кеш148", accounting: "official", duty: "in", position: "", place: "root" }],
+        machines: []
+      };
+      state.edits = { people: {}, machines: {} };
+      save();
+      check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Кеш148") !== -1, "ZS-148 save пише кеш");
+      bundles = {};
+      state.added = { people: [], machines: [] };
+      state.report = emptyUnitReport({ name: "", code: "lead" });
+      state.driveFolder = "https://drive.google.com/drive/folders/zs148Folder";
+      state.driveEncryptKey = "lead";
+      state.refreshFallback = false;
+      var sync148 = 0;
+      var saw148 = false;
+      var realSync148 = startDriveSync;
+      startDriveSync = function () {
+        sync148 += 1;
+        saw148 = (state.added.people || []).some(function (item) { return item && item.callsign === "Кеш148"; })
+          || JSON.stringify(state.report || {}).indexOf("Кеш148") !== -1
+          || JSON.stringify(bundles["lead"] || {}).indexOf("Кеш148") !== -1;
+      };
+      var online148 = navigator.onLine;
+      try {
+        Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return true; } });
+      } catch (errOnline148) {}
+      refreshFromNetworkOrCache();
+      startDriveSync = realSync148;
+      try {
+        Object.defineProperty(navigator, "onLine", { configurable: true, get: function () { return online148; } });
+      } catch (errOnline148b) {}
+      check(sync148 === 1, "ZS-148 онлайн refresh викликає startDriveSync");
+      check(saw148, "ZS-148 перед sync live з пристрою (кеш)");
+      try { localStorage.removeItem(CACHE_KEY); } catch (err148b) {}
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.refreshFallback = false;
+      state.driveFolder = "";
+      state.driveEncryptKey = "";
+      state.driveNote = "";
       // ZS-103: видавець відкрив unit — знімок/ключ для Диска = код unit.
       var child103 = "CHILD103EDIT";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child103; });

@@ -1,5 +1,5 @@
 /* Вістовий — service worker: network-first для сторінки й app assets; Google/Drive лише мережа. */
-var CACHE = "vistovyi-v61";
+var CACHE = "vistovyi-v62";
 var PRECACHE = [
   "./zvitnist.html",
   "./manifest.webmanifest",
