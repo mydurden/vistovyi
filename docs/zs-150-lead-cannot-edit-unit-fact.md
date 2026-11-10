@@ -1,48 +1,82 @@
-# ZS-150: lead не править unit + «Мережа не відповіла…» — факт (без правок)
+# ZS-150: lead не править unit + «Мережа… / розшифрувався» — факт (без правок)
 
 **Автор:** lead не може правити звіти unit. Під назвою: «Мережа не відповіла або файл не розшифрувався.» Prefs і код доступу — не причина.  
 **База:** `main` @ `2abd21c`, SW **`vistovyi-v62`**. Лише фіксація; змін у коді немає.  
-**Скрін:** повідомлення під шапкою «Вістовий» / перемикачем звіту (шлях ассета в чаті; розбір за текстом підпису).
+**Уточнення автора (++):** на **vistovyi-v62** у факті **відокремити мережу** від **decrypt `unit.code` для lead**. Без правок.
 
-## Де береться повідомлення
+## Підпис під назвою — один рядок, дві різні ідеї
 
-Текст виставляється **лише** в `catch` успішного старту `runDriveSync` (`zvitnist.html` ~8512–8520):
+Текст ставиться лише в `catch` `runDriveSync` (~8512–8520), якщо не `nocode` / не `noname`:
 
-| `err.message` | `state.driveNote` |
-|---------------|-------------------|
-| `nocode` | «Впишіть код доступу.» |
-| `noname` | «Помилка: немає назви підрозділу…» |
-| **будь-що інше** (або без message) | **«Мережа не відповіла або файл не розшифрувався.»** |
+> «Мережа не відповіла або файл не розшифрувався.»
 
-Далі ZS-111: `isVisibleDriveNote` пропускає саме цей рядок; `appendDriveSyncStatus` малює його під title-row як `.hint[data-drive-note]` (~6348–6364, ~6125). Тому автор бачить його **під назвою**, а не «тихий» підсумок sync.
+ZS-111 показує його під title-row (`isVisibleDriveNote` + `appendDriveSyncStatus`). Prefs тут ні при чому: без folder/key sync до цього catch з цим текстом не доходить.
 
-Це **не** діагностика prefs: без folder/key `refreshFromNetworkOrCache` / `startDriveSync` навіть не доходять до цього `catch` з мережевим текстом. Prefs уже є → sync стартує → якийсь крок **кидає** (мережа Drive, HTTP !ok, збій upload/settings, необроблений reject decrypt/`format` тощо) → універсальний підпис. Окремі тихі шляхи (`pullOwnUnitFile` `.catch` → `{pulled:false}`, збій child у `syncChildUnits`) **не** ставлять цей текст.
+У UI **склеєно «або»** дві різні відмови. У коді на **vistovyi-v62** вони **не** один шлях.
 
-## Два файли, два ключі шифрування
+---
 
-| Роль | Файл на Диску | Пароль AES |
-|------|---------------|------------|
-| Lead / «Загальний звіт» | `vu-lead.bin` (канон від `lead`) | `state.driveEncryptKey` (код доступу lead) |
-| Підрозділ (unit) | `vu-<slug-назви>.bin` | **код unit**, не пароль lead |
+## A. Мережа (те, що реально ставить цей підпис)
 
-`unitDriveFileName` / `canonUnitDriveName`: ім’я unit-файлу — від назви, яку задав lead (units / інвайт / settings). Без канонічної назви upsert unit дає `noname` (інший видимий текст), не цей catch-all.
+До `runDriveSync.catch` долітають **необроблені reject** кроків Drive API, наприклад:
 
-Розшифрування unit-файлу в `syncChildUnits` — `decryptWithCode(code, bytes)` з **кодом ланки**. Lead-файл — `decryptWithCode(driveEncryptKey, …)`. Це різні секрети; prefs «ок» не означає, що кожен байт на Диску відкриється lead-ключем.
+- `downloadSettingsFile` / `uploadSettingsFile` → `throw new Error("download"|"update"|"create")` при `!response.ok`;
+- `downloadBinaryFile` / upload lead (`upsertKeyedUnitFile` для `driveEncryptKey`) без локального `.catch`;
+- збій list/resolve на шляху settings / own file, який не проковтнули.
 
-## Чому lead «не править» звіт unit
+Це **мережа / HTTP / OAuth-токен до Google**, не перевірка коду доступу в prefs. Підпис catch-all саме про цей клас збоїв (плюс будь-який інший необроблений reject з іншим `message`).
 
-Задум у коді (не зламані prefs):
+Після такого catch: progress скидається; якщо був `refreshFallback` — спроба `restoreFromReportCache`. Unit-merge / запис unit у цьому sync **не завершуються**.
 
-1. **Вкладка unit** — `canOpenUnitReport`: завжди можна **відкрити подивитись** (~3943–3947). UI з `scope === "all"` дозволяє плюс/олівець локально (`canDelete` тощо).
-2. **Запис на Диск як unit** можливий лише коли `driveChildWriteCode()` / `viewingManagedChild()` бачать відкриту підлеглу відносно `reportRoot` (і fallback з `parent` у `state.units`) (~3830–3857). Тоді `upsertOwnUnitFile` пише файл **ключем = код unit**.
-3. **Пот попадання в «Загальний»** — не «lead править unit-файл як свій», а `ingestChildUnit` → `mergeUnitIntoGeneral` після успішного pull/merge **файлу unit** (~8059+, ~8272–8276): о/с unit копіюється в bundle lead з префіксом id. Порожній звіт unit merge **не** робить (`return false` ~8103–8106).
-4. Якщо sync падає в catch-all («Мережа…»): unit-файл на Диску / merge в загальний **не завершуються**. Локальні правки на вкладці unit для автора виглядають як «lead не може правити unit» — мережевий/крипто збій обриває саме шлях запису unit, хоча prefs і код доступу вже вписані.
+---
 
-Окремо: клік «Вістовий» і reload-sync (див. ZS-147/148/149) крутять той самий `runDriveSync`; цей підпис — симптом **невдалого** sync, не окремої кнопки.
+## B. Decrypt `unit.code` для lead (окремий шлях, не той підпис)
+
+Lead тягне файли підлеглих у `syncChildUnits` (~8301–8365):
+
+1. `resolveUnitDriveFile(..., decryptKey: code)` — `code` = **код unit**;
+2. `downloadBinaryFile`;
+3. **`decryptWithCode(code, bytes)`** — AES пароль = **`unit.code`**, не `driveEncryptKey` lead.
+
+| Подія | Що робить код | Чи ставить «Мережа… розшифрувався» |
+|-------|----------------|-------------------------------------|
+| Немає файлу / resolve порожній | `missing++`, статус `missing` | ні |
+| `decryptWithCode(unit.code)` reject (`format` / AES) | `.catch` на child (~8362–8365): `missing++`, статус `missing` | **ні** |
+| JSON parse fail після decrypt | `missing++` локально | ні |
+| Upsert child після merge fail | `.catch(() => null)` (~8357–8359) | ні |
+
+Тобто для lead **провал розшифрування файлу unit ключем `unit.code` навмисно тихий**: ланка лишається «Відсутній звіт», sync **продовжується**. Це **не** той самий механізм, що видимий catch-all під назвою.
+
+Lead-файл (`vu-lead.bin`) окремо: `pullOwnUnitFile` decrypt’ить **`driveEncryptKey`**; свій `.catch` → `{pulled:false}`, теж **без** цього підпису.
+
+Два ключі:
+
+| Blob | Пароль AES |
+|------|------------|
+| `vu-lead.bin` | `driveEncryptKey` (код lead) |
+| `vu-<slug>.bin` unit | **`unit.code`** |
+
+Prefs «ок» і код lead у формі **не** відкривають unit-blob; для unit потрібен саме код ланки як пароль файлу.
+
+---
+
+## Чому lead «не править» unit (зв’язок із A/B)
+
+1. Вкладку unit можна відкрити (`canOpenUnitReport`); UI `scope === "all"` дозволяє локальні правки.
+2. На Диск unit пишеться з ключем **`unit.code`**, коли `driveChildWriteCode()` / `viewingManagedChild()` бачать підлеглу (~3830–3857, `upsertOwnUnitFile`).
+3. У «Загальний» unit потрапляє через `ingestChildUnit` → `mergeUnitIntoGeneral` після **успішного** pull/merge файлу unit (~8059+, ~8272–8276) — не через правку lead-файлу «як unit».
+4. Якщо впав шлях **A (мережа)** → видимий підпис → sync обірваний → запис/merge unit не доходять.
+5. Якщо впав шлях **B (decrypt `unit.code`)** → підпису немає, статус unit `missing` → merge в загальний з цього файлу теж немає; локальна вкладка для автора все одно «не чепляє» на Диск/загальний.
+
+Спостереження автора (підпис + «не править unit») узгоджується з **A** як причиною видимого тексту; **B** — окрема відмова decrypt unit, яку UI зараз лише плутає словами «або файл не розшифрувався» в тому ж рядку, хоча код lead→unit decrypt у catch-all **не** кладе.
 
 ## Висновок (факт)
 
-У **vistovyi-v62** підпис під назвою — catch-all після винятку в `runDriveSync`, не перевірка prefs. Lead не «править unit» у сенсі єдиного lead-файлу: unit на Диску — окремий blob під кодом unit; загальний звіт наповнюється merge після успішного читання/запису цього blob. Коли sync падає з «Мережа не відповіла або файл не розшифрувався.», цей ланцюг обривається — звідси спостереження автора.
+На **vistovyi-v62**:
 
-**Правок немає.**  
+- **Мережа** → необроблений reject у `runDriveSync` → підпис під назвою.
+- **Decrypt `unit.code` (lead читає unit)** → локальний `missing`, sync іде далі → **інший** контур; підпис сам по собі не ставить.
+- Prefs/код lead не причина жодного з двох; unit-файл шифрується кодом unit.
+- Правок у цьому документі не зроблено (лише розведення фактів A/B).
+
 **Ловити / перевіряти: SW `vistovyi-v62`.**
