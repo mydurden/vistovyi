@@ -2515,10 +2515,10 @@ button.count-toggle {
       Object.keys(src.days || {}).forEach(function (day) {
         if (!cur.days[day]) cur.days[day] = cloneData(src.days[day]);
         else {
-          // Пізніший updatedAt перемагає поля дня.
+          // ZS-142: день без updatedAt не програє incoming лише через відсутність stamp.
           var a = cur.days[day] && cur.days[day].updatedAt ? String(cur.days[day].updatedAt) : "";
           var b = src.days[day] && src.days[day].updatedAt ? String(src.days[day].updatedAt) : "";
-          if (!a || (b && b >= a)) cur.days[day] = cloneData(src.days[day]);
+          if (a && b && b >= a) cur.days[day] = cloneData(src.days[day]);
         }
       });
       if (src.archived && !cur.archived) {
@@ -3262,7 +3262,10 @@ button.count-toggle {
         return { name: String(label || unit.name || "").slice(0, 80), code: code };
       }).filter(function (item) { return !!item.code; }),
       removedPeople: peopleTombs,
-      removedMachines: machineTombs
+      removedMachines: machineTombs,
+      // ZS-142: картки вкладки потрібні для 3-way lead↔файл unit.
+      peopleCards: cloneData(b.peopleCards || {}),
+      machineCards: cloneData(b.machineCards || {})
     };
   }
 
@@ -7291,8 +7294,15 @@ button.count-toggle {
           out.push(mergeEntityRecord(kind, localEntity, remoteEntity, baseEntity, fields, labels, conflicts));
         } else if (localEntity) {
           out.push(cloneData(localEntity));
+        } else {
+          // ZS-142: жива локальна картка без рядка в денному people — не губити правки early return.
+          var aliveCard = localCards && localCards[id];
+          var cardDay = latestCardDayKey(aliveCard) || todayISO();
+          var fromCard = kind === "machine"
+            ? machineItemFromCard(aliveCard, cardDay)
+            : personItemFromCard(aliveCard, cardDay);
+          if (fromCard) out.push(cloneData(fromCard));
         }
-        // Немає рядка в цьому денному зрізі — картку не чіпаємо.
         return;
       }
       // ZS-132: локально видалили (tomb/архів), на Диску ще є — питати.
@@ -7522,6 +7532,7 @@ button.count-toggle {
       machineCards: cloneData((local.machineCards && Object.keys(local.machineCards).length ? local.machineCards : null) || remote.machineCards || {})
     };
     // ZS-133: злити наскрізні картки local∪remote (дні всередині картки).
+    // ZS-142: день без updatedAt не програє remote лише через відсутність stamp.
     function mergeCardMaps(a, b) {
       var out = {};
       [a || {}, b || {}].forEach(function (src) {
@@ -7538,7 +7549,7 @@ button.count-toggle {
             else {
               var leftAt = out[id].days[d].updatedAt ? String(out[id].days[d].updatedAt) : "";
               var rightAt = row.days[d].updatedAt ? String(row.days[d].updatedAt) : "";
-              if (!leftAt || (rightAt && rightAt >= leftAt)) out[id].days[d] = cloneData(row.days[d]);
+              if (leftAt && rightAt && rightAt >= leftAt) out[id].days[d] = cloneData(row.days[d]);
             }
           });
           if (row.archived) {
@@ -7910,9 +7921,9 @@ button.count-toggle {
     normalizeOwnReportKey();
     state.reportKey = ownBundleKey;
     captureBundle(ownBundleKey);
-    // ZS-128: unit без канонічної назви від lead — не створювати файл під вигаданим slug.
+    // ZS-128/142: unit без канонічної назви від lead — не вигадувати slug; явна помилка в sync.
     if (!unitDriveFileName(parentKey) && looksLikeUnitCode(parentKey)) {
-      return Promise.resolve({ ok: false, skipped: true, reason: "noname" });
+      return Promise.resolve({ ok: false, skipped: true, reason: "noname", error: "noname" });
     }
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
@@ -8129,9 +8140,18 @@ button.count-toggle {
       doc.tasks = liveSlice.tasks;
       doc.people = liveSlice.people;
     }
+    // ZS-142: картки з файлу unit — у bundle, інакше вкладка/наступний 3-way без peopleCards.
+    var childPeopleCards = rawJson && rawJson.peopleCards && typeof rawJson.peopleCards === "object"
+      ? cloneData(rawJson.peopleCards)
+      : {};
+    var childMachineCards = rawJson && rawJson.machineCards && typeof rawJson.machineCards === "object"
+      ? cloneData(rawJson.machineCards)
+      : {};
     bundles[code] = {
       edits: { people: {}, machines: {} },
       removed: { people: {}, machines: {} },
+      peopleCards: childPeopleCards,
+      machineCards: childMachineCards,
       added: { people: [], machines: [] },
       positions: {},
       changes: changes,
@@ -8163,13 +8183,12 @@ button.count-toggle {
     list.forEach(function (unit) {
       chain = chain.then(function () {
         var code = String(unit.code || "").trim();
-        if (unit && unit.name) rememberCanonUnitName(code, unit.name);
-        var name = unitDriveFileName(code);
-        if (!name || !code) {
+        if (!code) {
           missing += 1;
-          setUnitReportStatus(code, "missing");
           return;
         }
+        if (unit && unit.name) rememberCanonUnitName(code, unit.name);
+        // ZS-142/128: навіть без канонічного імені — resolve (аліаси + хвіст + hash), не різати одразу missing.
         return resolveUnitDriveFile(token, folderId, code, { kind: "binary", decryptKey: code }).then(function (resolved) {
           var file = resolved && resolved.file;
           if (!file || !file.id) {
@@ -8268,7 +8287,10 @@ button.count-toggle {
       if (pulled.conflicts) parts.push("є поля на вибір: " + pulled.conflicts);
       if (pulled.dupes) parts.push("схожі картки: " + pulled.dupes);
     } else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
-    if (own && own.updated) parts.push("свій файл оновлено");
+    // ZS-142: noname — явна помилка, не тихий «синхронізацію завершено».
+    if (own && (own.reason === "noname" || own.error === "noname" || own.skipped)) {
+      parts.push("помилка: немає назви підрозділу для файлу на Диску — звіт unit не записано");
+    } else if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
       if (looksLikeUnitCode(state.driveEncryptKey) && unitsOwnedHere().length === 0) {
         parts.push("звіт підрозділу записано на Диск");
@@ -8385,6 +8407,7 @@ button.count-toggle {
         if (restoreFromReportCache()) return;
       }
       if (err && err.message === "nocode") state.driveNote = "Впишіть код доступу.";
+      else if (err && err.message === "noname") state.driveNote = "Помилка: немає назви підрозділу для файлу на Диску — звіт unit не записано.";
       else state.driveNote = "Мережа не відповіла або файл не розшифрувався.";
       render();
     });
@@ -14624,7 +14647,211 @@ button.count-toggle {
         } catch (err133) {
           check(false, "ZS-133: " + (err133 && err133.message ? err133.message : err133));
         }
-        finishSelfTest();
+        // ZS-142: wipe на re-sync + lead бачить unit-файл.
+        try {
+          var day142 = todayISO();
+          var code142 = "AAAA-BBBB-CCCC-DDDD-142T";
+          var remote142 = {
+            id: "p142",
+            surname: "Коваль",
+            givenName: "Олег",
+            patronymic: "",
+            name: "Коваль Олег",
+            rank: "Солдат",
+            callsign: "База",
+            accounting: "official",
+            duty: "in",
+            position: "Стрілець",
+            updatedAt: "2026-11-10T10:00:00.000Z",
+            fieldsUpdatedAt: { callsign: "2026-11-10T10:00:00.000Z" }
+          };
+          var localCard142 = {
+            id: "p142",
+            archived: false,
+            ownerKey: code142,
+            surname: "Коваль",
+            givenName: "Олег",
+            patronymic: "",
+            name: "Коваль Олег",
+            callsign: "НовийПоз",
+            place: "root",
+            days: {}
+          };
+          // День без updatedAt — раніше програвав remote.
+          localCard142.days[day142] = {
+            id: "p142",
+            surname: "Коваль",
+            givenName: "Олег",
+            patronymic: "",
+            name: "Коваль Олег",
+            rank: "Солдат",
+            callsign: "НовийПоз",
+            accounting: "official",
+            duty: "in",
+            position: "Водій"
+          };
+          var remoteSnap142 = {
+            version: 2,
+            name: "ІСР",
+            code: code142,
+            day: day142,
+            unit: { id: "root", name: "ІСР", people: [cloneData(remote142)] },
+            machines: [],
+            tasks: [],
+            people: [],
+            changes: [],
+            events: [],
+            days: {},
+            children: [],
+            peopleCards: {
+              p142: {
+                id: "p142",
+                archived: false,
+                ownerKey: code142,
+                surname: "Коваль",
+                givenName: "Олег",
+                patronymic: "",
+                name: "Коваль Олег",
+                callsign: "База",
+                place: "root",
+                days: (function () {
+                  var d = {};
+                  d[day142] = cloneData(remote142);
+                  return d;
+                })()
+              }
+            },
+            machineCards: {}
+          };
+          var localSnap142 = {
+            version: 2,
+            name: "ІСР",
+            code: code142,
+            day: day142,
+            unit: { id: "root", name: "ІСР", people: [] },
+            machines: [],
+            tasks: [],
+            people: [],
+            changes: [],
+            events: [],
+            days: {},
+            children: [],
+            peopleCards: { p142: cloneData(localCard142) },
+            machineCards: {}
+          };
+          var merged142 = mergeUnitSnapshots(localSnap142, remoteSnap142, cloneData(remoteSnap142));
+          var cardDay142 = merged142.snapshot.peopleCards.p142.days[day142];
+          var list142 = flattenPeopleFromUnit(merged142.snapshot.unit);
+          check(cardDay142 && cardDay142.callsign === "НовийПоз", "ZS-142: день без updatedAt не програє remote");
+          check(list142.some(function (p) { return p && p.id === "p142" && p.callsign === "НовийПоз"; }), "ZS-142: жива картка поза денним people лишається в merge");
+          applyOwnUnitSnapshot(merged142.snapshot, code142);
+          check(
+            state.peopleCards.p142 && state.peopleCards.p142.days[day142] && state.peopleCards.p142.days[day142].callsign === "НовийПоз",
+            "ZS-142: після re-sync/applyOwn правка лишається"
+          );
+          // noname → явна помилка в summary
+          var summaryNoname = driveSyncSummary({}, { ok: false, skipped: true, reason: "noname", error: "noname" }, null, null);
+          check(summaryNoname.indexOf("помилка") !== -1 && summaryNoname.indexOf("не записано") !== -1, "ZS-142: noname — явна помилка в sync summary");
+          // ingest кладе peopleCards у bundle
+          var ingestCode = "AAAA-BBBB-CCCC-DDDD-142I";
+          state.units = (state.units || []).filter(function (u) { return u.code !== ingestCode; });
+          state.units.push({ id: "u142i", name: "ІСР", code: ingestCode, parent: "lead" });
+          rememberCanonUnitName(ingestCode, "ІСР");
+          check(unitDriveFileName(ingestCode) === "vu-isr.bin", "ZS-142: unit пише/шукає vu-{slug}.bin від канонічної назви");
+          ingestChildUnit(ingestCode, remoteSnap142);
+          check(
+            !!(bundles[ingestCode] && bundles[ingestCode].peopleCards && bundles[ingestCode].peopleCards.p142),
+            "ZS-142: ingestChildUnit кладе peopleCards у bundles[unit]"
+          );
+          check(
+            !!(snapshotFromStoredBundle(ingestCode) && snapshotFromStoredBundle(ingestCode).peopleCards && snapshotFromStoredBundle(ingestCode).peopleCards.p142),
+            "ZS-142: snapshotFromStoredBundle віддає peopleCards"
+          );
+        } catch (err142) {
+          check(false, "ZS-142: " + (err142 && err142.message ? err142.message : err142));
+        }
+        // ZS-142: syncChildUnits шукає через resolve навіть без канонічного імені (аліас/хвіст).
+        return (function () {
+          var codeAlias = "AAAA-BBBB-CCCC-DDDD-142R";
+          var tailName = "vu-142r.bin";
+          state.units = (state.units || []).filter(function (u) { return u.code !== codeAlias; });
+          state.units.push({ id: "u142r", name: "", code: codeAlias, parent: "lead" });
+          state.driveUnitNames = state.driveUnitNames || {};
+          delete state.driveUnitNames[codeAlias];
+          delete state.driveUnitNames[String(codeAlias).toLowerCase()];
+          check(unitDriveFileName(codeAlias) === "", "ZS-142: без назви канонічне ім’я порожнє");
+          var remoteAlias = {
+            version: 2,
+            name: "Хвіст",
+            code: codeAlias,
+            day: todayISO(),
+            unit: {
+              id: "root",
+              name: "Хвіст",
+              people: [{ id: "p142r", name: "Alias Тест", surname: "Alias", givenName: "Тест", patronymic: "", rank: "Солдат", callsign: "Alias142", accounting: "official", duty: "in", position: "" }]
+            },
+            machines: [],
+            tasks: [],
+            people: [],
+            changes: [],
+            events: [],
+            days: {},
+            children: [],
+            peopleCards: {},
+            machineCards: {}
+          };
+          return encryptWithCode(codeAlias, JSON.stringify(remoteAlias)).then(function (bytesAlias) {
+            var storeAlias = {};
+            storeAlias[tailName] = { id: "file-142r", bytes: bytesAlias };
+            var originalFetchAlias = window.fetch;
+            window.fetch = function (url, opts) {
+              var href = String(url || "");
+              opts = opts || {};
+              if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+                var decoded = decodeURIComponent(href);
+                var list = [];
+                Object.keys(storeAlias).forEach(function (name) {
+                  if (decoded.indexOf("name='" + name + "'") !== -1) list.push({ id: storeAlias[name].id, name: name });
+                });
+                return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ files: list }); } });
+              }
+              if (href.indexOf("/drive/v3/files/file-142r") !== -1 && href.indexOf("alt=media") !== -1) {
+                var b = storeAlias[tailName].bytes;
+                return Promise.resolve({
+                  ok: true,
+                  arrayBuffer: function () {
+                    return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+                  }
+                });
+              }
+              if (href.indexOf("/upload/drive/v3/files") !== -1 || (href.indexOf("/drive/v3/files/") !== -1 && (opts.method === "PATCH" || opts.method === "POST"))) {
+                return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ id: "file-142r", name: tailName }); } });
+              }
+              return originalFetchAlias.apply(this, arguments);
+            };
+            state.driveEncryptKey = "секрет-lead-142";
+            state.openCode = "lead";
+            state.reportRoot = "lead";
+            state.reportKey = "lead";
+            return syncChildUnits("tok-142", "folder142").then(function (sum142) {
+              window.fetch = originalFetchAlias;
+              check(!!(sum142 && sum142.received >= 1), "ZS-142: syncChildUnits знаходить файл через resolve/аліаси без канон-імені");
+              check(unitReportStatus(codeAlias) !== "missing", "ZS-142: після resolve статус не missing");
+              check(
+                !!(bundles[codeAlias] && JSON.stringify(bundles[codeAlias].report || {}).indexOf("Alias142") !== -1),
+                "ZS-142: lead отримав о/с unit у bundle"
+              );
+            }).catch(function (errSync142) {
+              window.fetch = originalFetchAlias;
+              check(false, "ZS-142 syncChildUnits: " + (errSync142 && errSync142.message ? errSync142.message : errSync142));
+            });
+          });
+        })().then(function () {
+          finishSelfTest();
+        }).catch(function (errDone142) {
+          check(false, "ZS-142 finish: " + (errDone142 && errDone142.message ? errDone142.message : errDone142));
+          finishSelfTest();
+        });
       });
       });
       });
