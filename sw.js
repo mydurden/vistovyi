@@ -1,5 +1,5 @@
 /* Вістовий — service worker: network-first для сторінки й app assets; Google/Drive лише мережа. */
-var CACHE = "vistovyi-v59";
+var CACHE = "vistovyi-v60";
 var PRECACHE = [
   "./zvitnist.html",
   "./manifest.webmanifest",
@@ -72,6 +72,12 @@ self.addEventListener("activate", function (event) {
       return self.clients.claim();
     })
   );
+});
+
+self.addEventListener("message", function (event) {
+  if (event && event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("fetch", function (event) {
