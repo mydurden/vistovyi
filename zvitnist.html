@@ -2911,11 +2911,17 @@ button.count-toggle {
     return total;
   }
 
-  function daySliceHasReport(slice) {
+  function daySliceHasStaff(slice) {
     var normalized = normalizeDaySlice(slice);
     if (countPeopleInUnit(normalized.unit) > 0) return true;
     if (Array.isArray(normalized.people) && normalized.people.length > 0) return true;
     if (Array.isArray(normalized.machines) && normalized.machines.length > 0) return true;
+    return false;
+  }
+
+  function daySliceHasReport(slice) {
+    var normalized = normalizeDaySlice(slice);
+    if (daySliceHasStaff(normalized)) return true;
     if (Array.isArray(normalized.tasks) && normalized.tasks.length > 0) return true;
     if (Array.isArray(normalized.events) && normalized.events.length > 0) return true;
     return false;
@@ -3247,9 +3253,54 @@ button.count-toggle {
       changes: changes,
       events: report && report.events
     });
+    // ZS-144: архів «непорожній» лише через tasks/події не б’є report, де вже є о/с чи ОВТ.
+    if (fromArchive && daySliceHasStaff(fromArchive)) return fromArchive;
+    if (daySliceHasStaff(fromReport)) {
+      if (fromArchive) {
+        if ((!fromReport.tasks || !fromReport.tasks.length) && fromArchive.tasks && fromArchive.tasks.length) {
+          fromReport.tasks = cloneData(fromArchive.tasks);
+        }
+        if ((!fromReport.events || !fromReport.events.length) && fromArchive.events && fromArchive.events.length) {
+          fromReport.events = cloneData(fromArchive.events);
+        }
+        if ((!fromReport.changes || !fromReport.changes.length) && fromArchive.changes && fromArchive.changes.length) {
+          fromReport.changes = cloneData(fromArchive.changes);
+        }
+      }
+      return fromReport;
+    }
     if (fromArchive && daySliceHasReport(fromArchive)) return fromArchive;
     if (daySliceHasReport(fromReport)) return fromReport;
     return fromArchive || fromReport;
+  }
+
+  // ZS-133/142/144: злити наскрізні картки local∪remote (дні всередині; порожній remote не зносить local).
+  function mergeCardMaps(a, b) {
+    var out = {};
+    [a || {}, b || {}].forEach(function (src) {
+      Object.keys(src).forEach(function (id) {
+        var row = src[id];
+        if (!row || !row.id) return;
+        if (!out[id]) {
+          out[id] = cloneData(row);
+          if (!out[id].days) out[id].days = {};
+          return;
+        }
+        Object.keys(row.days || {}).forEach(function (d) {
+          if (!out[id].days[d]) out[id].days[d] = cloneData(row.days[d]);
+          else {
+            var leftAt = out[id].days[d].updatedAt ? String(out[id].days[d].updatedAt) : "";
+            var rightAt = row.days[d].updatedAt ? String(row.days[d].updatedAt) : "";
+            if (leftAt && rightAt && rightAt >= leftAt) out[id].days[d] = cloneData(row.days[d]);
+          }
+        });
+        if (row.archived) {
+          out[id].archived = true;
+          out[id].archivedAt = row.archivedAt || out[id].archivedAt || stampNow();
+        }
+      });
+    });
+    return out;
   }
 
   function snapshotFromStoredBundle(unitKey) {
@@ -7558,35 +7609,7 @@ button.count-toggle {
       peopleCards: cloneData((local.peopleCards && Object.keys(local.peopleCards).length ? local.peopleCards : null) || remote.peopleCards || {}),
       machineCards: cloneData((local.machineCards && Object.keys(local.machineCards).length ? local.machineCards : null) || remote.machineCards || {})
     };
-    // ZS-133: злити наскрізні картки local∪remote (дні всередині картки).
-    // ZS-142: день без updatedAt не програє remote лише через відсутність stamp.
-    function mergeCardMaps(a, b) {
-      var out = {};
-      [a || {}, b || {}].forEach(function (src) {
-        Object.keys(src).forEach(function (id) {
-          var row = src[id];
-          if (!row || !row.id) return;
-          if (!out[id]) {
-            out[id] = cloneData(row);
-            if (!out[id].days) out[id].days = {};
-            return;
-          }
-          Object.keys(row.days || {}).forEach(function (d) {
-            if (!out[id].days[d]) out[id].days[d] = cloneData(row.days[d]);
-            else {
-              var leftAt = out[id].days[d].updatedAt ? String(out[id].days[d].updatedAt) : "";
-              var rightAt = row.days[d].updatedAt ? String(row.days[d].updatedAt) : "";
-              if (leftAt && rightAt && rightAt >= leftAt) out[id].days[d] = cloneData(row.days[d]);
-            }
-          });
-          if (row.archived) {
-            out[id].archived = true;
-            out[id].archivedAt = row.archivedAt || out[id].archivedAt || stampNow();
-          }
-        });
-      });
-      return out;
-    }
+    // ZS-133/142/144: злити наскрізні картки local∪remote.
     snapshot.peopleCards = mergeCardMaps(local.peopleCards, remote.peopleCards);
     snapshot.machineCards = mergeCardMaps(local.machineCards, remote.machineCards);
     // Один діалог на id (живий день + days[] можуть обидва поставити ту саму розбіжність).
@@ -7870,18 +7893,33 @@ button.count-toggle {
     var open = String(state.openCode || "").trim();
     var key = String(state.reportKey || "").trim();
     var snap = null;
-    if (open.toLowerCase() === code.toLowerCase() && key.toLowerCase() === code.toLowerCase() && state.report) {
+    // ZS-144: відкрита вкладка unit — завжди живий знімок (і при роз’їзді open/reportKey).
+    if (open.toLowerCase() === code.toLowerCase() && state.report) {
+      if (key.toLowerCase() !== code.toLowerCase()) state.reportKey = code;
+      materializeOverlays();
+      captureBundle(code);
+      snap = currentUnitSnapshot();
+    } else if (key.toLowerCase() === code.toLowerCase() && state.report) {
       materializeOverlays();
       captureBundle(code);
       snap = currentUnitSnapshot();
     } else {
-      if (key.toLowerCase() === code.toLowerCase() && state.report) {
-        materializeOverlays();
-        captureBundle(code);
-      }
       snap = snapshotFromStoredBundle(code);
     }
     if (!snap) return null;
+    // ZS-144: живі peopleCards/machineCards завжди в 3-way, навіть якщо bundle застарів.
+    if (String(state.reportKey || "").toLowerCase() === code.toLowerCase() || open.toLowerCase() === code.toLowerCase()) {
+      snap.peopleCards = mergeCardMaps(state.peopleCards || {}, snap.peopleCards || {});
+      snap.machineCards = mergeCardMaps(state.machineCards || {}, snap.machineCards || {});
+      if (state.report && String(state.reportKey || "").toLowerCase() === code.toLowerCase()) {
+        var liveStaff = daySliceHasStaff({ unit: state.report.unit, machines: state.report.machines });
+        var snapStaff = daySliceHasStaff({ unit: snap.unit, machines: snap.machines });
+        if (liveStaff && !snapStaff) {
+          snap.unit = cloneData(state.report.unit);
+          snap.machines = cloneData(state.report.machines || []);
+        }
+      }
+    }
     snap.code = code;
     snap.children = subordinatesFor(code).map(function (unit) {
       var childCode = String(unit.code || "");
@@ -8106,8 +8144,11 @@ button.count-toggle {
     state.edits = saved.edits || { people: {}, machines: {} };
     state.removed = saved.removed || { people: {}, machines: {} };
     state.removedAt = saved.removedAt || { people: {}, machines: {} };
-    state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
-    state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
+    // ZS-144: не підміняти живі cards порожнім знімком з Диска/bundle.
+    var incomingPeople = saved.peopleCards ? cloneData(saved.peopleCards) : {};
+    var incomingMachines = saved.machineCards ? cloneData(saved.machineCards) : {};
+    state.peopleCards = mergeCardMaps(state.peopleCards || {}, incomingPeople);
+    state.machineCards = mergeCardMaps(state.machineCards || {}, incomingMachines);
     state.added = saved.added || { people: [], machines: [] };
     state.positions = saved.positions || {};
     state.changes = Array.isArray(saved.changes) ? saved.changes : [];
@@ -8127,14 +8168,14 @@ button.count-toggle {
       people: seeded.people
     };
     if (daySliceHasReport(seeded) && Array.isArray(seeded.changes)) state.changes = seeded.changes.slice(-100);
-    migrateSlicesToCards(saved.peopleCards || saved.machineCards ? {
-      peopleCards: saved.peopleCards,
-      machineCards: saved.machineCards,
+    migrateSlicesToCards({
+      peopleCards: state.peopleCards,
+      machineCards: state.machineCards,
       day: liveDay,
       unit: seeded.unit,
       machines: seeded.machines,
       days: saved.daysArchive
-    } : null);
+    });
     ensureDayRollover();
     projectCardsToLiveDay();
     return true;
@@ -8167,13 +8208,24 @@ button.count-toggle {
       doc.tasks = liveSlice.tasks;
       doc.people = liveSlice.people;
     }
-    // ZS-142: картки з файлу unit — у bundle, інакше вкладка/наступний 3-way без peopleCards.
-    var childPeopleCards = rawJson && rawJson.peopleCards && typeof rawJson.peopleCards === "object"
+    // ZS-142/144: картки з merge + попередній bundle + живий state; порожній remote не зносить local.
+    var prevBundle = bundles[code];
+    var incomingPeople = rawJson && rawJson.peopleCards && typeof rawJson.peopleCards === "object"
       ? cloneData(rawJson.peopleCards)
       : {};
-    var childMachineCards = rawJson && rawJson.machineCards && typeof rawJson.machineCards === "object"
+    var incomingMachines = rawJson && rawJson.machineCards && typeof rawJson.machineCards === "object"
       ? cloneData(rawJson.machineCards)
       : {};
+    var prevPeople = prevBundle && prevBundle.peopleCards ? prevBundle.peopleCards : {};
+    var prevMachines = prevBundle && prevBundle.machineCards ? prevBundle.machineCards : {};
+    var livePeople = String(state.reportKey || "").toLowerCase() === String(code || "").toLowerCase()
+      ? (state.peopleCards || {})
+      : {};
+    var liveMachines = String(state.reportKey || "").toLowerCase() === String(code || "").toLowerCase()
+      ? (state.machineCards || {})
+      : {};
+    var childPeopleCards = mergeCardMaps(mergeCardMaps(prevPeople, livePeople), incomingPeople);
+    var childMachineCards = mergeCardMaps(mergeCardMaps(prevMachines, liveMachines), incomingMachines);
     bundles[code] = {
       edits: { people: {}, machines: {} },
       removed: { people: {}, machines: {} },
@@ -14893,6 +14945,237 @@ button.count-toggle {
             });
           });
         })().then(function () {
+          // ZS-144: нова людина → sync з порожнім remote → лишається.
+          try {
+            var day144 = todayISO();
+            var code144 = "AAAA-BBBB-CCCC-DDDD-144T";
+            rememberCanonUnitName(code144, "ІСР");
+            state.driveEncryptKey = code144;
+            state.openCode = code144;
+            state.reportRoot = code144;
+            state.reportKey = code144;
+            state.scope = "all";
+            state.holder = "ІСР";
+            state.units = [{ id: "u144", name: "ІСР", code: code144, parent: "lead" }];
+            bundles = {};
+            state.peopleCards = {};
+            state.machineCards = {};
+            state.added = { people: [], machines: [] };
+            state.edits = { people: {}, machines: {} };
+            state.removed = { people: {}, machines: {} };
+            state.removedAt = { people: {}, machines: {} };
+            state.report = {
+              name: "ІСР",
+              code: code144,
+              unit: { id: "root", name: "ІСР", people: [] },
+              machines: [],
+              tasks: [],
+              people: [],
+              events: []
+            };
+            state.viewDay = day144;
+            state.fileDay = day144;
+            state.daysArchive = {};
+            // Архів «з tasks» без о/с не повинен бити report з людиною.
+            state.daysArchive[day144] = {
+              unit: { id: "root", name: "ІСР", people: [] },
+              machines: [],
+              tasks: [{ id: "t144", name: "План", text: "План", done: false, status: "open" }],
+              people: [],
+              changes: [],
+              events: []
+            };
+            state.draft = {
+              kind: "person",
+              surname: "Нова",
+              givenName: "Людина",
+              patronymic: "",
+              name: "",
+              rank: "Солдат",
+              callsign: "Новак144",
+              unit: "",
+              accounting: "official",
+              duty: "in",
+              position: ""
+            };
+            saveDraft();
+            var id144 = (state.added.people[0] && state.added.people[0].id) ||
+              Object.keys(state.peopleCards).find(function (id) {
+                return state.peopleCards[id] && state.peopleCards[id].callsign === "Новак144";
+              });
+            check(!!id144 && !!(state.peopleCards[id144] || (state.added.people || []).some(function (p) { return p && p.id === id144; })), "ZS-144: після add є нова людина");
+            var seeded144 = daySliceFromReportOrArchive(state.report, state.daysArchive, day144, state.changes);
+            check(
+              daySliceHasStaff(seeded144) && flattenPeopleFromUnit(seeded144.unit).some(function (p) { return p && p.id === id144; }),
+              "ZS-144: архів лише з tasks не б’є report з новою людиною"
+            );
+            var remote144 = {
+              version: 2,
+              name: "ІСР",
+              code: code144,
+              day: day144,
+              unit: { id: "root", name: "ІСР", people: [] },
+              machines: [],
+              tasks: [],
+              people: [],
+              days: {},
+              children: [],
+              peopleCards: {},
+              machineCards: {}
+            };
+            var local144 = localOwnSnapshotForMerge(code144);
+            check(
+              !!(local144 && local144.peopleCards && local144.peopleCards[id144]) ||
+                (local144 && flattenPeopleFromUnit(local144.unit).some(function (p) { return p && p.id === id144; })),
+              "ZS-144: local snap для 3-way бачить нову людину"
+            );
+            var merged144 = mergeUnitSnapshots(local144, remote144, cloneData(remote144));
+            check(
+              flattenPeopleFromUnit(merged144.snapshot.unit).some(function (p) { return p && p.id === id144; }) &&
+                !!(merged144.snapshot.peopleCards && merged144.snapshot.peopleCards[id144]),
+              "ZS-144: merge з порожнім remote лишає нову людину"
+            );
+            // Непорожній remote + локальне нове — злити, не wipe.
+            var remotePerson144 = {
+              id: "p144old",
+              surname: "Старий",
+              givenName: "Звіт",
+              patronymic: "",
+              name: "Старий Звіт",
+              rank: "Солдат",
+              callsign: "Старий",
+              accounting: "official",
+              duty: "in",
+              position: "",
+              updatedAt: "2026-11-10T08:00:00.000Z"
+            };
+            var remoteFull144 = cloneData(remote144);
+            remoteFull144.unit.people = [cloneData(remotePerson144)];
+            remoteFull144.peopleCards = {
+              p144old: {
+                id: "p144old",
+                archived: false,
+                ownerKey: code144,
+                place: "root",
+                surname: "Старий",
+                givenName: "Звіт",
+                callsign: "Старий",
+                days: {}
+              }
+            };
+            remoteFull144.peopleCards.p144old.days[day144] = cloneData(remotePerson144);
+            var mergedBoth144 = mergeUnitSnapshots(local144, remoteFull144, cloneData(remote144));
+            var idsBoth144 = flattenPeopleFromUnit(mergedBoth144.snapshot.unit).map(function (p) { return p && p.id; });
+            check(idsBoth144.indexOf(id144) !== -1 && idsBoth144.indexOf("p144old") !== -1, "ZS-144: непорожній remote — merge local+remote, не wipe");
+            // ingest/open не зносить живі cards порожнім знімком
+            captureBundle(code144);
+            var liveCardsBefore = Object.keys(state.peopleCards || {}).slice();
+            ingestChildUnit(code144, {
+              version: 2,
+              name: "ІСР",
+              code: code144,
+              day: day144,
+              unit: { id: "root", name: "ІСР", people: [] },
+              machines: [],
+              tasks: [],
+              people: [],
+              days: {},
+              children: [],
+              peopleCards: {},
+              machineCards: {}
+            });
+            check(
+              !!(state.peopleCards[id144] && !state.peopleCards[id144].archived) ||
+                flattenPeopleFromUnit(state.report.unit).some(function (p) { return p && p.id === id144; }) ||
+                (state.added.people || []).some(function (p) { return p && p.id === id144; }),
+              "ZS-144: після ingest порожнім remote жива людина лишається"
+            );
+            check(liveCardsBefore.indexOf(id144) !== -1, "ZS-144: до ingest картка була локально");
+          } catch (err144) {
+            check(false, "ZS-144: " + (err144 && err144.message ? err144.message : err144));
+          }
+          return encryptWithCode(code144 || "AAAA-BBBB-CCCC-DDDD-144T", JSON.stringify({
+            version: 2,
+            name: "ІСР",
+            code: "AAAA-BBBB-CCCC-DDDD-144T",
+            day: todayISO(),
+            unit: { id: "root", name: "ІСР", people: [] },
+            machines: [],
+            tasks: [],
+            people: [],
+            days: {},
+            children: [],
+            peopleCards: {},
+            machineCards: {}
+          })).then(function (bytes144) {
+            var store144 = {};
+            var name144 = unitDriveFileName("AAAA-BBBB-CCCC-DDDD-144T") || "vu-isr.bin";
+            store144[name144] = { id: "file-144", bytes: bytes144 };
+            var originalFetch144 = window.fetch;
+            window.fetch = function (url, opts) {
+              var href = String(url || "");
+              opts = opts || {};
+              if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+                var decoded = decodeURIComponent(href);
+                var list = [];
+                Object.keys(store144).forEach(function (name) {
+                  if (decoded.indexOf("name='" + name + "'") !== -1) list.push({ id: store144[name].id, name: name });
+                });
+                return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ files: list }); } });
+              }
+              if (href.indexOf("/drive/v3/files/file-144") !== -1 && href.indexOf("alt=media") !== -1) {
+                var b = store144[name144].bytes;
+                return Promise.resolve({
+                  ok: true,
+                  arrayBuffer: function () {
+                    return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+                  }
+                });
+              }
+              if (href.indexOf("/upload/drive/v3/files") !== -1 || (href.indexOf("/drive/v3/files/") !== -1 && (opts.method === "PATCH" || opts.method === "POST"))) {
+                return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ id: "file-144", name: name144 }); } });
+              }
+              return originalFetch144.apply(this, arguments);
+            };
+            // Відновити живу людину перед pull (ingest вище міг змінити контекст).
+            var codePull = "AAAA-BBBB-CCCC-DDDD-144T";
+            state.driveEncryptKey = codePull;
+            state.openCode = codePull;
+            state.reportKey = codePull;
+            state.reportRoot = codePull;
+            if (!state.peopleCards || !Object.keys(state.peopleCards).length) {
+              state.draft = {
+                kind: "person",
+                surname: "Нова",
+                givenName: "Людина",
+                patronymic: "",
+                callsign: "Новак144",
+                unit: "",
+                accounting: "official",
+                duty: "in",
+                position: "",
+                rank: "Солдат",
+                name: ""
+              };
+              saveDraft();
+            }
+            var pullId = Object.keys(state.peopleCards || {}).find(function (id) {
+              return state.peopleCards[id] && state.peopleCards[id].callsign === "Новак144";
+            }) || ((state.added.people || [])[0] && state.added.people[0].id);
+            return pullOwnUnitFile("tok-144", "folder144").then(function () {
+              window.fetch = originalFetch144;
+              var still = !!(pullId && state.peopleCards[pullId] && !state.peopleCards[pullId].archived) ||
+                flattenPeopleFromUnit(state.report && state.report.unit).some(function (p) { return p && p.callsign === "Новак144"; }) ||
+                (state.added.people || []).some(function (p) { return p && p.callsign === "Новак144"; });
+              check(still, "ZS-144: add→sync(pull)→людина лишається");
+            }).catch(function (errPull144) {
+              window.fetch = originalFetch144;
+              check(false, "ZS-144 pull: " + (errPull144 && errPull144.message ? errPull144.message : errPull144));
+            });
+          }).catch(function (errEnc144) {
+            check(false, "ZS-144 encrypt: " + (errEnc144 && errEnc144.message ? errEnc144.message : errEnc144));
+          });
+        }).then(function () {
           finishSelfTest();
         }).catch(function (errDone142) {
           check(false, "ZS-142 finish: " + (errDone142 && errDone142.message ? errDone142.message : errDone142));
