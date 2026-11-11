@@ -2108,7 +2108,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-10T15:30:00.000Z";
+  var APP_BUILD_AT = "2026-11-11T14:21:24.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -4425,10 +4425,43 @@ button.count-toggle {
     };
   }
 
-  function saveReportCache() {
+  // ZS-151: чи є в знімку кешу змістовний звіт (не порожня оболонка).
+  function reportCachePayloadHasContent(data) {
+    if (!data || !data.bundles || typeof data.bundles !== "object") return false;
+    return Object.keys(data.bundles).some(function (key) {
+      var saved = data.bundles[key];
+      if (!saved || !saved.report) return false;
+      if ((saved.added && saved.added.people || []).some(function (item) {
+        return item && !(saved.removed && saved.removed.people && saved.removed.people[item.id]);
+      })) return true;
+      if ((saved.added && saved.added.machines || []).some(function (item) {
+        return item && !(saved.removed && saved.removed.machines && saved.removed.machines[item.id]);
+      })) return true;
+      var peopleCards = saved.peopleCards || {};
+      if (Object.keys(peopleCards).some(function (id) {
+        return peopleCards[id] && !peopleCards[id].archived;
+      })) return true;
+      var machineCards = saved.machineCards || {};
+      if (Object.keys(machineCards).some(function (id) {
+        return machineCards[id] && !machineCards[id].archived;
+      })) return true;
+      var day = saved.fileDay || saved.viewDay || todayISO();
+      return daySliceHasReport(daySliceFromReportOrArchive(saved.report, saved.daysArchive || {}, day, saved.changes));
+    });
+  }
+
+  function saveReportCache(opts) {
     try {
       if (typeof localStorage === "undefined") return false;
-      localStorage.setItem(CACHE_KEY, JSON.stringify(buildReportCachePayload()));
+      var payload = buildReportCachePayload();
+      // ZS-151: не затирати багатий кеш порожнім live (boot applyCode→save до restore).
+      if (!(opts && opts.force)) {
+        var existing = loadReportCache();
+        if (existing && reportCachePayloadHasContent(existing) && !reportCachePayloadHasContent(payload)) {
+          return false;
+        }
+      }
+      localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
       return true;
     } catch (err) {
       return false;
@@ -4525,8 +4558,9 @@ button.count-toggle {
       restoreFromReportCache();
       return;
     }
-    // ZS-148: після reload/boot підняти живе з пристрою перед мережевим sync
-    // (інакше merge йде з порожнього installSample і локальний кеш губиться).
+    // ZS-148/151: підняти живе з пристрою перед мережевим sync.
+    // Далі pullOwnUnitFile робить 3-way merge; розбіжності → mergeConflicts/Deletes/Dupes (діалоги),
+    // а не тихий overwrite порожнім local.
     if (applyReportCache(loadReportCache())) render();
     state.refreshFallback = true;
     startDriveSync();
@@ -4865,7 +4899,7 @@ button.count-toggle {
     state.changes = next.slice(-100);
   }
 
-  function save() {
+  function save(opts) {
     rememberOpen(state.openCode);
     try {
       if (typeof localStorage !== "undefined") {
@@ -4875,7 +4909,8 @@ button.count-toggle {
     } catch (err) {}
     saveDrivePrefs();
     // ZS-105: кожна зміна лишається локально (офлайн); хмара — лише на sync.
-    saveReportCache();
+    // opts.force — дозволити записати й порожній знімок (reset / після Drive merge).
+    saveReportCache(opts);
   }
 
   function loadDutyOverrides(raw) {
@@ -8622,8 +8657,7 @@ button.count-toggle {
       state.driveNote = driveSyncSummary(bundle.settings, bundle.own, bundle.children, bundle.pulled);
       // ZS-121: після кроку 4 одразу finish-crawl до 100% (без сегмента 5 і без paintPct=100).
       state.refreshFallback = false;
-      save();
-      saveReportCache();
+      save({ force: true });
       render();
       finishDriveProgress(function () {
         render();
@@ -11624,10 +11658,17 @@ button.count-toggle {
     state.driveFolderOpen = false;
     state.driveGoogleEmail = "";
     state.accessChange = null;
+    state.peopleCards = {};
+    state.machineCards = {};
+    state.removedAt = { people: {}, machines: {} };
+    state.mergeConflicts = [];
+    state.mergeDeletes = [];
+    state.mergeDupes = [];
     clearDriveToken();
     driveTokenClient = null;
     discardEdits();
-    save();
+    // ZS-151: скидання самотесту/стану має право записати порожній кеш поверх старого.
+    save({ force: true });
     render();
   }
 
@@ -13679,6 +13720,65 @@ button.count-toggle {
       state.driveFolder = "";
       state.driveEncryptKey = "";
       state.driveNote = "";
+      // ZS-151: applyCode після installSample не затирає багатий кеш; boot-порядок піднімає кеш ДО applyCode.
+      try { localStorage.removeItem(CACHE_KEY); } catch (err151a) {}
+      state.reportKey = "lead";
+      state.openCode = "lead";
+      state.reportRoot = "lead";
+      state.scope = "all";
+      state.report = emptyUnitReport({ name: "Авто151", code: "lead" });
+      state.added = {
+        people: [{ id: "np151", name: "Кеш Стоп", surname: "Стоп", givenName: "Кеш", patronymic: "", rank: "Солдат", callsign: "Кеш151", accounting: "official", duty: "in", position: "", place: "root" }],
+        machines: []
+      };
+      state.edits = { people: {}, machines: {} };
+      save();
+      check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Кеш151") !== -1, "ZS-151 save пише кеш");
+      // Як boot: порожній live, потім applyReportCache, потім applyCode(lead) → save.
+      bundles = {};
+      state.added = { people: [], machines: [] };
+      state.report = emptyUnitReport({ name: "", code: "lead" });
+      state.reportKey = "lead";
+      check(!!applyReportCache(loadReportCache()), "ZS-151 applyReportCache до applyCode");
+      applyCode("lead");
+      check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Кеш151") !== -1, "ZS-151 applyCode не затирає кеш маркером");
+      check(
+        (state.added.people || []).some(function (item) { return item && item.callsign === "Кеш151"; })
+          || JSON.stringify(state.report || {}).indexOf("Кеш151") !== -1
+          || JSON.stringify(bundles["lead"] || {}).indexOf("Кеш151") !== -1,
+        "ZS-151 після applyCode live з кешу"
+      );
+      // Порожній overwrite без force — відхиляється.
+      bundles = {};
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.removed = { people: {}, machines: {} };
+      state.peopleCards = {};
+      state.machineCards = {};
+      state.daysArchive = {};
+      state.changes = [];
+      state.report = emptyUnitReport({ name: "", code: "lead" });
+      state.reportKey = "lead";
+      check(saveReportCache() === false, "ZS-151 порожній live не затирає багатий кеш");
+      check(!!localStorage.getItem(CACHE_KEY) && localStorage.getItem(CACHE_KEY).indexOf("Кеш151") !== -1, "ZS-151 кеш лишився після відхиленого saveReportCache");
+      // Без локального вмісту в кеші — порожній запис дозволений (шлях «немає правок → Диск»).
+      try { localStorage.removeItem(CACHE_KEY); } catch (err151b) {}
+      bundles = {};
+      state.added = { people: [], machines: [] };
+      state.peopleCards = {};
+      state.machineCards = {};
+      state.daysArchive = {};
+      state.report = emptyUnitReport({ name: "Порожньо", code: "lead" });
+      state.reportKey = "lead";
+      check(saveReportCache() === true && !!localStorage.getItem(CACHE_KEY), "ZS-151 порожній кеш можна записати з нуля");
+      try { localStorage.removeItem(CACHE_KEY); } catch (err151c) {}
+      state.added = { people: [], machines: [] };
+      state.edits = { people: {}, machines: {} };
+      state.peopleCards = {};
+      state.machineCards = {};
+      state.driveFolder = "";
+      state.driveEncryptKey = "";
+      state.driveNote = "";
       // ZS-150: вкладка unit у lead — bundle з вмістом; editable; sync → vu-{slug}.bin
       var child150 = "AAAA-BBBB-CCCC-DDDD-150A";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child150; });
@@ -15711,6 +15811,8 @@ button.count-toggle {
     indexPeople(viewUnit());
     load();
     migrateLegacyRotaKeys();
+    // ZS-151: підняти zvitnist.cache.v1 ДО applyCode/save — інакше порожній live затирає кеш.
+    applyReportCache(loadReportCache());
     root.addEventListener("click", onClick);
     root.addEventListener("keydown", function (event) {
       if (event.key !== "Enter" && event.key !== " ") return;
