@@ -879,8 +879,45 @@ button.count-toggle {
   min-width: 0;
 }
 
-.unit-create .label,
-.archive .label { display: block; margin-top: 8px; font-weight: 700; }
+.unit-create .label { display: block; margin-top: 8px; font-weight: 700; }
+
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 2px;
+  border-top: 1px solid var(--line);
+}
+
+.archive-row .archive-kind {
+  display: block;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.archive-row .archive-name {
+  display: block;
+  font-weight: 700;
+  overflow-wrap: break-word;
+}
+
+.archive-row .archive-restore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font-weight: 700;
+}
 
 .wide-access .label { display: block; margin-top: 8px; font-weight: 700; }
 
@@ -1178,7 +1215,6 @@ button.count-toggle {
 
 .status-item .grow { display: block; font-weight: 700; }
 .unit-create button,
-.archive button,
 .remove {
   display: block;
   width: 100%;
@@ -1643,6 +1679,7 @@ button.count-toggle {
     calendarOpen: false,
     calendarMonth: "",
     calendarCopyKind: "",
+    archiveOpen: false,
     changesOpen: false,
     mergeConflicts: [],
     mergeDupes: [],
@@ -2108,7 +2145,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-11T15:35:00.000Z";
+  var APP_BUILD_AT = "2026-11-11T15:46:11.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -4330,6 +4367,7 @@ button.count-toggle {
     state.calendarOpen = false;
     state.calendarCopyKind = "";
     state.calendarMonth = monthKeyFromISO(state.viewDay);
+    state.archiveOpen = false;
     state.changesOpen = false;
     bundles = {};
   }
@@ -9763,6 +9801,8 @@ button.count-toggle {
     state.unitNameDraft = "";
     state.unitError = "";
     state.accessChange = null;
+    state.archiveOpen = false;
+    if (state.confirm && (state.confirm.kind === "purgePerson" || state.confirm.kind === "purgeMachine")) state.confirm = null;
     state.statusEdit = "";
     state.machineStatusEdit = "";
     state.typeEdit = "";
@@ -9822,22 +9862,71 @@ button.count-toggle {
     return list;
   }
 
-  function renderArchive() {
-    var section = el("section", { className: "block archive", attrs: { id: "archive", "aria-labelledby": "archive-title" } });
-    section.append(el("h2", { text: "Архів", attrs: { id: "archive-title" } }));
-    archivedPeople().forEach(function (item) {
-      var row = el("div", { className: "unit-code" });
-      row.append(el("div", { className: "label", text: personCallsign(item) || personName(item) }));
-      row.append(el("button", { text: "Повернути", attrs: { type: "button", "data-restore": "person:" + item.id } }));
-      section.append(row);
-    });
-    archivedMachines().forEach(function (item) {
-      var row = el("div", { className: "unit-code" });
-      row.append(el("div", { className: "label", text: machineName(item) || machineBoard(item) }));
-      row.append(el("button", { text: "Повернути", attrs: { type: "button", "data-restore": "machine:" + item.id } }));
-      section.append(row);
-    });
+  function archivePersonTitle(item) {
+    return personCallsign(item) || personName(item) || "Без позивного";
+  }
+
+  function archiveMachineTitle(item) {
+    return machineName(item) || machineTypeLabel(item) || machineBoard(item) || "Без назви";
+  }
+
+  function renderArchiveEntry() {
+    var section = el("section", { className: "block unit-create", attrs: { id: "archive-entry" } });
+    section.append(el("button", { text: "Архів", attrs: { type: "button", "data-open-archive": "1" } }));
     return section;
+  }
+
+  function renderArchiveOverlay() {
+    var overlay = el("div", { className: "overlay", attrs: { id: "archive-overlay", role: "dialog", "aria-label": "Архів" } });
+    var sheet = el("div", { className: "overlay-sheet" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: "Архів", attrs: { id: "archive-title" } }));
+    head.append(iconButton("x", "Закрити", { "data-close-archive": "1" }));
+    sheet.append(head);
+    var section = el("section", { className: "block archive", attrs: { id: "archive", "aria-labelledby": "archive-title" } });
+    var people = archivedPeople();
+    var machines = archivedMachines();
+    if (!people.length && !machines.length) {
+      section.append(el("p", { className: "hint", text: "Архів порожній." }));
+    }
+    people.forEach(function (item) {
+      var row = el("div", { className: "archive-row" });
+      var text = el("div", { className: "grow" });
+      text.append(el("span", { className: "archive-kind", text: "Картка о/с" }));
+      text.append(el("span", { className: "archive-name", text: archivePersonTitle(item) }));
+      row.append(text);
+      row.append(el("button", {
+        className: "archive-restore",
+        text: "Повернути",
+        attrs: { type: "button", "data-restore": "person:" + item.id }
+      }));
+      row.append(iconButton("x", "Видалити безповоротно", { "data-purge": "person:" + item.id }));
+      section.append(row);
+      if (state.confirm && state.confirm.kind === "purgePerson" && state.confirm.id === item.id) {
+        section.append(renderConfirmBox());
+      }
+    });
+    machines.forEach(function (item) {
+      var row = el("div", { className: "archive-row" });
+      var text = el("div", { className: "grow" });
+      text.append(el("span", { className: "archive-kind", text: "ОВТ" }));
+      text.append(el("span", { className: "archive-name", text: archiveMachineTitle(item) }));
+      row.append(text);
+      row.append(el("button", {
+        className: "archive-restore",
+        text: "Повернути",
+        attrs: { type: "button", "data-restore": "machine:" + item.id }
+      }));
+      row.append(iconButton("x", "Видалити безповоротно", { "data-purge": "machine:" + item.id }));
+      section.append(row);
+      if (state.confirm && state.confirm.kind === "purgeMachine" && state.confirm.id === item.id) {
+        section.append(renderConfirmBox());
+      }
+    });
+    sheet.append(section);
+    overlay.append(sheet);
+    return overlay;
   }
 
   function renderProfile() {
@@ -9863,7 +9952,7 @@ button.count-toggle {
     if (state.profilePane === "types" && canEditCatalogs()) sheet.append(renderTypeCreate());
     if (canBranch()) {
       sheet.append(renderDrive());
-      sheet.append(renderArchive());
+      sheet.append(renderArchiveEntry());
       sheet.append(renderWideAccess());
       sheet.append(renderUnitCreate());
     }
@@ -9987,6 +10076,7 @@ button.count-toggle {
     if (state.profile) parts.push(renderProfile());
     if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
     if (state.accessChange) parts.push(renderAccessChangeOverlay());
+    if (state.archiveOpen) parts.push(renderArchiveOverlay());
     if (state.calendarOpen) parts.push(renderCalendarOverlay());
     if (state.changesOpen) parts.push(renderChangesOverlay());
     if (state.mergeConflicts && state.mergeConflicts.length) {
@@ -10194,6 +10284,7 @@ button.count-toggle {
     state.confirm = null;
     state.draft = null;
     state.changesOpen = false;
+    state.archiveOpen = false;
     discardEdits();
     state.open.clear();
     save();
@@ -10238,6 +10329,36 @@ button.count-toggle {
     return found;
   }
 
+  function archivedPersonById(id) {
+    ensureCardStores();
+    var card = state.peopleCards[id];
+    if (card) return personItemFromCard(card, state.viewDay || latestCardDayKey(card));
+    var found = null;
+    archivedPeople().some(function (item) {
+      if (item && item.id === id) {
+        found = item;
+        return true;
+      }
+      return false;
+    });
+    return found;
+  }
+
+  function archivedMachineById(id) {
+    ensureCardStores();
+    var card = state.machineCards[id];
+    if (card) return machineItemFromCard(card, state.viewDay || latestCardDayKey(card));
+    var found = null;
+    archivedMachines().some(function (item) {
+      if (item && item.id === id) {
+        found = item;
+        return true;
+      }
+      return false;
+    });
+    return found;
+  }
+
   function removalQuestion(kind, id) {
     if (kind === "duty") {
       var personDuty = dutyMap()[id];
@@ -10255,6 +10376,16 @@ button.count-toggle {
       var personItem = findPerson(id);
       var who = personItem ? (personCallsign(personItem) || personName(personItem)) : "";
       return "В архів картку «" + who + "»?";
+    }
+    if (kind === "purgePerson") {
+      var purgePerson = archivedPersonById(id);
+      var purgeWho = purgePerson ? archivePersonTitle(purgePerson) : "";
+      return "Видалити безповоротно картку «" + purgeWho + "»?";
+    }
+    if (kind === "purgeMachine") {
+      var purgeMachine = archivedMachineById(id);
+      var purgeWhat = purgeMachine ? archiveMachineTitle(purgeMachine) : "";
+      return "Видалити безповоротно «" + purgeWhat + "»?";
     }
     if (kind === "event") {
       var eventRow = findEvent(id);
@@ -10859,6 +10990,38 @@ button.count-toggle {
     });
   }
 
+  function purgeArchivedForever(kind, id) {
+    ensureCardStores();
+    if (kind === "person") {
+      delete state.peopleCards[id];
+      delete state.removed.people[id];
+      if (state.removedAt && state.removedAt.people) delete state.removedAt.people[id];
+      state.added.people = (state.added.people || []).filter(function (item) {
+        return !(item && item.id === id);
+      });
+      if (state.edits && state.edits.people) delete state.edits.people[id];
+      delete state.positions[id];
+      removePersonFromUnitTree(viewUnit(), id);
+      stripPersonFromDaysArchive(id);
+      return;
+    }
+    if (kind === "machine") {
+      delete state.machineCards[id];
+      delete state.removed.machines[id];
+      if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[id];
+      state.added.machines = (state.added.machines || []).filter(function (item) {
+        return !(item && item.id === id);
+      });
+      if (state.edits && state.edits.machines) delete state.edits.machines[id];
+      if (state.report && Array.isArray(state.report.machines)) {
+        state.report.machines = state.report.machines.filter(function (row) {
+          return !(row && row.id === id);
+        });
+      }
+      stripMachineFromDaysArchive(id);
+    }
+  }
+
   function confirmRemoval() {
     if (!state.confirm) return;
     if (state.confirm.kind === "duty" || state.confirm.kind === "machineDuty") {
@@ -10871,6 +11034,14 @@ button.count-toggle {
     }
     if (state.confirm.kind === "event") {
       removeEventRecord(state.confirm.id);
+      return;
+    }
+    if (state.confirm.kind === "purgePerson" || state.confirm.kind === "purgeMachine") {
+      if (!canBranch()) return;
+      purgeArchivedForever(state.confirm.kind === "purgeMachine" ? "machine" : "person", state.confirm.id);
+      state.confirm = null;
+      save();
+      render();
       return;
     }
     if (!canDelete()) return;
@@ -11256,6 +11427,20 @@ button.count-toggle {
       render();
       return;
     }
+    var openArchive = event.target.closest("[data-open-archive]");
+    if (openArchive) {
+      if (!canBranch()) return;
+      state.archiveOpen = true;
+      render();
+      return;
+    }
+    var closeArchive = event.target.closest("[data-close-archive]");
+    if (closeArchive) {
+      state.archiveOpen = false;
+      if (state.confirm && (state.confirm.kind === "purgePerson" || state.confirm.kind === "purgeMachine")) state.confirm = null;
+      render();
+      return;
+    }
     var mergePick = event.target.closest("[data-merge-pick]");
     if (mergePick) {
       applyMergeConflictChoice(mergePick.getAttribute("data-merge-pick"));
@@ -11525,6 +11710,10 @@ button.count-toggle {
       var restoredId = restored.slice(1).join(":");
       var restoreDay = state.viewDay || todayISO();
       ensureCardStores();
+      if (state.confirm && ((restoredKind === "person" && state.confirm.kind === "purgePerson" && state.confirm.id === restoredId) ||
+          (restoredKind === "machine" && state.confirm.kind === "purgeMachine" && state.confirm.id === restoredId))) {
+        state.confirm = null;
+      }
       // ZS-133: повернути з архіву й внести запис на поточний день (для редагування).
       if (restoredKind === "person") {
         delete state.removed.people[restoredId];
@@ -11564,6 +11753,21 @@ button.count-toggle {
       }
       projectCardsToLiveDay();
       save();
+      render();
+      return;
+    }
+    var purge = event.target.closest("[data-purge]");
+    if (purge) {
+      if (!canBranch()) return;
+      var purgeParts = purge.getAttribute("data-purge").split(":");
+      var purgeKind = purgeParts[0] === "machine" ? "purgeMachine" : "purgePerson";
+      var purgeId = purgeParts.slice(1).join(":");
+      if (state.confirm && state.confirm.kind === purgeKind && state.confirm.id === purgeId) {
+        state.confirm = null;
+        render();
+        return;
+      }
+      state.confirm = { kind: purgeKind, id: purgeId };
       render();
       return;
     }
@@ -11864,6 +12068,7 @@ button.count-toggle {
     state.calendarOpen = false;
     state.calendarCopyKind = "";
     state.calendarMonth = monthKeyFromISO(state.viewDay);
+    state.archiveOpen = false;
     state.driveFolderOpen = false;
     state.driveGoogleEmail = "";
     state.accessChange = null;
@@ -12090,7 +12295,7 @@ button.count-toggle {
     checkWorkWidth("служба");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("unit-create") && !document.getElementById("status-create") && !document.getElementById("wide-access") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "служба бачить звіт без форм");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("main").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("access-user") && document.getElementById("unit-name") && document.getElementById("archive") && document.getElementById("archive-title").textContent === "Архів", "служба у профілі має доступ для користувачів, створює ланку і бачить архів");
+    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("main").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("access-user") && document.getElementById("unit-name") && document.getElementById("archive-entry") && document.querySelector("#profile-overlay [data-open-archive]") && document.querySelector("#profile-overlay [data-open-archive]").textContent === "Архів" && !document.getElementById("archive"), "служба у профілі має доступ для користувачів, створює ланку і кнопку Архів");
     var driveBlock = document.getElementById("drive");
     check(!!driveBlock && driveBlock.textContent.indexOf("Код доступу") !== -1 && driveBlock.textContent.indexOf("Адреса спільної папки") !== -1 && driveBlock.textContent.indexOf("Я адмініструю теку") === -1, "у профілі код доступу і кнопка адреси без позначки адміна");
     check(driveBlock.textContent.indexOf("Ключ шифрування звіт") === -1 && driveBlock.textContent.indexOf("Диск") === -1 && driveBlock.textContent.indexOf("Здати") === -1, "немає старого підпису ключа, Диск і Здати");
@@ -12574,7 +12779,7 @@ button.count-toggle {
       "версія зліва від ✕ у шапці профілю"
     );
     check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive") && document.getElementById("profile-overlay").contains(document.getElementById("archive")) && !document.getElementById("main").contains(document.getElementById("archive")) && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("archive").textContent.indexOf("Новий підрозділ") === -1, "без ключа lead у профілі має доступ для користувачів, створює ланку і бачить архів");
+    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive-entry") && document.getElementById("profile-overlay").contains(document.getElementById("archive-entry")) && !document.getElementById("archive") && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("archive-entry").textContent.indexOf("Новий підрозділ") === -1, "без ключа lead у профілі має доступ для користувачів, створює ланку і кнопку Архів");
     document.querySelector("[data-profile-pane='people']").click();
     check(!document.getElementById("status-name"), "без ключа lead не відкриває форму статусу");
     document.querySelector("[data-profile-pane='types']").click();
@@ -13108,9 +13313,9 @@ button.count-toggle {
     check(!!document.querySelector("#people [data-add='person']") && !!document.getElementById("people") && !!document.getElementById("equipment") && !!document.getElementById("tasks"), "довгий код бачить усі розділи");
     check(!document.getElementById("status-create"), "довгий код підрозділу не є службою");
     check(document.getElementById("app").textContent.indexOf("Профільні розділи") === -1, "профільних розділів немає і в новому звіті");
-    check(!document.getElementById("wide-access") && !document.getElementById("section-access") && !document.getElementById("archive") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "на звіті нової ланки немає доступу й архіву");
+    check(!document.getElementById("wide-access") && !document.getElementById("section-access") && !document.getElementById("archive") && !document.getElementById("archive-entry") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "на звіті нової ланки немає доступу й архіву");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name"), "новий підрозділ у профілі має доступ для користувачів, створює нижче і бачить архів");
+    check(!!document.getElementById("wide-access") && document.getElementById("profile-overlay").contains(document.getElementById("wide-access")) && !document.getElementById("section-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive-entry") && !document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name"), "новий підрозділ у профілі має доступ для користувачів, створює нижче і кнопку Архів");
     check(document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1, "порожня ланка має блок доступу");
     var issuerCode = String(state.openCode || state.reportKey || "");
     document.getElementById("unit-name").value = "Клен";
@@ -13134,12 +13339,12 @@ button.count-toggle {
     check(state.scope === "grant" && !document.getElementById("people") && !document.getElementById("equipment") && !!document.getElementById("tasks") && !document.getElementById("wide-access"), "грант завдань порожньої ланки без штату і без видачі");
     check(state.reportKey === issuerCode && state.report && state.report.file === reportFileName(issuerCode) && state.report.file !== SAMPLE_FILE, "грант читає файл підрозділу");
     document.querySelector("[data-open-profile]").click();
-    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("wide-access") && !document.getElementById("archive"), "грант без службових речей і без архіву");
+    check(!document.getElementById("status-name") && !document.getElementById("unit-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.getElementById("wide-access") && !document.getElementById("archive") && !document.getElementById("archive-entry"), "грант без службових речей і без архіву");
     document.querySelector("[data-close-profile]").click();
     applyCode(issuerCode);
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && !document.getElementById("wide-access"), "той, хто видав, бачить розділи на звіті");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive"), "той, хто видав, має доступ для користувачів і архів у профілі");
+    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive-entry"), "той, хто видав, має доступ для користувачів і кнопку Архів у профілі");
     document.getElementById("unit-name").value = "Вал";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var childUnit = state.units.filter(function (unit) {
@@ -13154,7 +13359,7 @@ button.count-toggle {
     applyCode(childUnit.code);
     check(state.scope === "all" && document.querySelector("#people .frac").getAttribute("data-total") === "0" && document.querySelector("#equipment .frac").getAttribute("data-total") === "0" && document.getElementById("people").textContent.indexOf("Бондар") === -1, "код нижчої ланки відкриває порожній звіт");
     document.querySelector("[data-open-profile]").click();
-    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive") && !document.getElementById("status-name") && !document.getElementById("type-name"), "нижча ланка теж створює ще нижче");
+    check(!!document.getElementById("wide-access") && !!document.getElementById("unit-name") && !!document.getElementById("archive-entry") && !document.getElementById("status-name") && !document.getElementById("type-name"), "нижча ланка теж створює ще нижче");
     document.getElementById("unit-name").value = "Група";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     var grandUnit = state.units.filter(function (unit) {
@@ -13436,17 +13641,41 @@ button.count-toggle {
     var peopleBack = document.querySelector("#people .frac");
     check(peopleBack && peopleBack.getAttribute("data-plus") === "14" && peopleBack.getAttribute("data-total") === "18", "дріб людей без архівованого");
     document.querySelector("[data-open-profile]").click();
+    check(!document.getElementById("archive") && !!document.querySelector("#profile-overlay [data-open-archive]") && document.querySelectorAll("#profile-overlay [data-open-archive]").length === 1, "у профілі одна кнопка Архів");
+    document.querySelector("#profile-overlay [data-open-archive]").click();
     var personArchive = document.getElementById("archive");
-    check(personArchive && document.getElementById("profile-overlay").contains(personArchive) && !document.getElementById("main").contains(personArchive) && personArchive.textContent.indexOf("Буревій") !== -1 && !!personArchive.querySelector("[data-restore='person:" + createdPerson.id + "']") && document.getElementById("main").textContent.indexOf("Буревій") === -1 && personArchive.textContent.indexOf("Новий підрозділ") === -1, "архів людей у профілі, на звіті їх немає");
+    check(personArchive && document.getElementById("archive-overlay") && document.getElementById("archive-overlay").contains(personArchive) && !document.getElementById("profile-overlay").contains(personArchive) && !document.getElementById("main").contains(personArchive) && personArchive.textContent.indexOf("Картка о/с") !== -1 && personArchive.textContent.indexOf("Буревій") !== -1 && !!personArchive.querySelector("[data-restore='person:" + createdPerson.id + "']") && !!personArchive.querySelector("[data-purge='person:" + createdPerson.id + "']") && document.getElementById("main").textContent.indexOf("Буревій") === -1 && personArchive.textContent.indexOf("Новий підрозділ") === -1, "архів людей у вікні, на звіті їх немає");
+    check(personArchive.querySelectorAll(".archive-row").length >= 1 && personArchive.querySelectorAll("button.archive-restore").length === personArchive.querySelectorAll(".archive-row").length, "у архіві підписані рядки, не стопка голих Повернути");
     personArchive.querySelector("[data-restore='person:" + createdPerson.id + "']").click();
     check(!state.removed.people[createdPerson.id] && document.getElementById("people").textContent.indexOf("Буревій") !== -1, "повернути повертає людину на звіт");
     var restoredPeople = document.querySelector("#people .frac");
     check(restoredPeople && restoredPeople.getAttribute("data-plus") === "15" && restoredPeople.getAttribute("data-total") === "19", "після повернення людина знову в дробі");
+    document.querySelector("[data-close-archive]").click();
     document.querySelector("[data-close-profile]").click();
     if (!state.open.has("person:" + createdPerson.id)) toggle("person:" + createdPerson.id);
     document.querySelector("[data-remove='person:" + createdPerson.id + "']").click();
     document.querySelector("[data-confirm-delete]").click();
     check(!!state.removed.people[createdPerson.id] && document.querySelector("#people .frac").getAttribute("data-total") === "18", "повторне архівування знову ховає з дробу");
+    document.querySelector("[data-open-profile]").click();
+    document.querySelector("#profile-overlay [data-open-archive]").click();
+    var purgeAsk = document.querySelector("#archive [data-purge='person:" + createdPerson.id + "']");
+    check(!!purgeAsk && purgeAsk.classList.contains("tool-x"), "хрестик безповоротного видалення в архіві");
+    purgeAsk.click();
+    check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("Видалити безповоротно") !== -1, "архів питає перед стиранням");
+    document.querySelector("[data-confirm-delete]").click();
+    check(!state.removed.people[createdPerson.id] && !state.peopleCards[createdPerson.id] && !(state.added.people || []).some(function (item) { return item && item.id === createdPerson.id; }) && (!document.getElementById("archive") || document.getElementById("archive").textContent.indexOf("Буревій") === -1), "безповоротне видалення стирає картку з архіву");
+    document.querySelector("[data-close-archive]").click();
+    document.querySelector("[data-close-profile]").click();
+    // Нова картка для подальших перевірок архіву ОВТ / повторного архівування.
+    document.querySelector("#people [data-add='person']").click();
+    document.getElementById("call-draft").value = "Буревій";
+    document.getElementById("call-draft").dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#card-overlay [data-save-card='draft']").click();
+    createdPerson = state.added.people[0];
+    if (!state.open.has("person:" + createdPerson.id)) toggle("person:" + createdPerson.id);
+    document.querySelector("[data-remove='person:" + createdPerson.id + "']").click();
+    document.querySelector("[data-confirm-delete]").click();
+    check(!!state.removed.people[createdPerson.id] && document.querySelector("#people .frac").getAttribute("data-total") === "18", "нова картка знову в архіві для наступних кроків");
     document.querySelector("#equipment [data-add='machine']").click();
     var machineHeld = document.querySelector("#equipment .frac");
     check(!!document.getElementById("card-overlay") && state.added.machines.length === 0 && machineHeld && machineHeld.getAttribute("data-total") === "8", "машина не з’являється до закриття/дискети");
@@ -13509,10 +13738,12 @@ button.count-toggle {
     var gearBack = document.querySelector("#equipment .frac");
     check(gearBack && gearBack.getAttribute("data-plus") === "7" && gearBack.getAttribute("data-total") === "8", "дріб техніки без архівованої");
     document.querySelector("[data-open-profile]").click();
+    document.querySelector("#profile-overlay [data-open-archive]").click();
     var gearArchive = document.getElementById("archive");
-    check(gearArchive && gearArchive.textContent.indexOf("Вихор") !== -1 && !!gearArchive.querySelector("[data-restore='machine:" + createdMachine.id + "']") && document.getElementById("main").textContent.indexOf("Вихор") === -1, "архів техніки у профілі");
+    check(gearArchive && gearArchive.textContent.indexOf("ОВТ") !== -1 && gearArchive.textContent.indexOf("Вихор") !== -1 && !!gearArchive.querySelector("[data-restore='machine:" + createdMachine.id + "']") && !!gearArchive.querySelector("[data-purge='machine:" + createdMachine.id + "']") && document.getElementById("main").textContent.indexOf("Вихор") === -1, "архів техніки у вікні");
     gearArchive.querySelector("[data-restore='machine:" + createdMachine.id + "']").click();
     check(!state.removed.machines[createdMachine.id] && document.getElementById("equipment").textContent.indexOf("Вихор") !== -1 && document.querySelector("#equipment .frac").getAttribute("data-total") === "9", "повернути повертає машину в дріб");
+    document.querySelector("[data-close-archive]").click();
     document.querySelector("[data-close-profile]").click();
     if (!state.open.has("machine:" + createdMachine.id)) toggle("machine:" + createdMachine.id);
     document.querySelector("[data-remove='machine:" + createdMachine.id + "']").click();
