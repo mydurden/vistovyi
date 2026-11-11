@@ -2108,7 +2108,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-11T14:21:24.000Z";
+  var APP_BUILD_AT = "2026-11-11T15:35:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -4425,7 +4425,8 @@ button.count-toggle {
     };
   }
 
-  // ZS-151: чи є в знімку кешу змістовний звіт (не порожня оболонка).
+  // ZS-151/152: чи є в знімку кешу змістовний звіт (не порожня оболонка).
+  // ZS-152: tomb/архів теж «вміст» — інакше архів останньої людини не пишеться поверх багатого кешу.
   function reportCachePayloadHasContent(data) {
     if (!data || !data.bundles || typeof data.bundles !== "object") return false;
     return Object.keys(data.bundles).some(function (key) {
@@ -4438,13 +4439,12 @@ button.count-toggle {
         return item && !(saved.removed && saved.removed.machines && saved.removed.machines[item.id]);
       })) return true;
       var peopleCards = saved.peopleCards || {};
-      if (Object.keys(peopleCards).some(function (id) {
-        return peopleCards[id] && !peopleCards[id].archived;
-      })) return true;
+      if (Object.keys(peopleCards).some(function (id) { return !!peopleCards[id]; })) return true;
       var machineCards = saved.machineCards || {};
-      if (Object.keys(machineCards).some(function (id) {
-        return machineCards[id] && !machineCards[id].archived;
-      })) return true;
+      if (Object.keys(machineCards).some(function (id) { return !!machineCards[id]; })) return true;
+      if ((saved.removedPeople || []).length || (saved.removedMachines || []).length) return true;
+      if (saved.removed && saved.removed.people && Object.keys(saved.removed.people).some(function (id) { return !!saved.removed.people[id]; })) return true;
+      if (saved.removed && saved.removed.machines && Object.keys(saved.removed.machines).some(function (id) { return !!saved.removed.machines[id]; })) return true;
       var day = saved.fileDay || saved.viewDay || todayISO();
       return daySliceHasReport(daySliceFromReportOrArchive(saved.report, saved.daysArchive || {}, day, saved.changes));
     });
@@ -7480,9 +7480,17 @@ button.count-toggle {
         }
         return;
       }
-      // ZS-132: локально видалили (tomb/архів), на Диску ще є — питати.
+      // ZS-132/152: локально видалили (tomb/архів), на Диску ще є — питати.
+      // ZS-152: до вибору НЕ класти tomb у знімок і лишати запис з Диска в живому списку.
       if (localTomb && (remoteEntity || remoteAliveCard) && !remoteTomb) {
         var remoteForAsk = remoteEntity || null;
+        if (!remoteForAsk && remoteAliveCard && remoteCards && remoteCards[id]) {
+          var remoteCard = remoteCards[id];
+          var remoteCardDay = latestCardDayKey(remoteCard) || todayISO();
+          remoteForAsk = kind === "machine"
+            ? machineItemFromCard(remoteCard, remoteCardDay)
+            : personItemFromCard(remoteCard, remoteCardDay);
+        }
         if (askDeletes) {
           deleteConflicts.push({
             kind: kind,
@@ -7495,6 +7503,8 @@ button.count-toggle {
                 : (personCallsign(remoteForAsk) || personName(remoteForAsk) || id))
               : id
           });
+          if (remoteForAsk) out.push(cloneData(remoteForAsk));
+          return;
         }
         removed.push({ id: id, removed: true, updatedAt: localTombAt || stampNow() });
         return;
@@ -7719,6 +7729,19 @@ button.count-toggle {
       seenDelete[key] = true;
       uniqueDeletes.push(item);
     });
+    // ZS-152: pending local-removed — картка жива в знімку до явного keep-removed.
+    uniqueDeletes.forEach(function (item) {
+      if (!item || item.direction !== "local-removed" || !item.id) return;
+      if (item.kind === "machine") {
+        if (snapshot.machineCards[item.id]) {
+          snapshot.machineCards[item.id].archived = false;
+          snapshot.machineCards[item.id].archivedAt = null;
+        }
+      } else if (snapshot.peopleCards[item.id]) {
+        snapshot.peopleCards[item.id].archived = false;
+        snapshot.peopleCards[item.id].archivedAt = null;
+      }
+    });
     return { snapshot: snapshot, conflicts: conflicts, deleteConflicts: uniqueDeletes };
   }
 
@@ -7740,14 +7763,27 @@ button.count-toggle {
     return snapshotFromStoredBundle(bundleKey) || null;
   }
 
-  function applyMergedRemovals(snapshot) {
+  function pendingDeleteIdSet(list) {
+    var out = { people: {}, machines: {} };
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (!item || !item.id) return;
+      if (item.kind === "machine") out.machines[String(item.id)] = true;
+      else out.people[String(item.id)] = true;
+    });
+    return out;
+  }
+
+  function applyMergedRemovals(snapshot, pendingDeletes) {
     if (!snapshot) return;
     ensureCardStores();
     if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
     if (!state.removedAt.people) state.removedAt.people = {};
     if (!state.removedAt.machines) state.removedAt.machines = {};
+    var pending = pendingDeleteIdSet(pendingDeletes);
     (Array.isArray(snapshot.removedPeople) ? snapshot.removedPeople : []).forEach(function (item) {
       if (!item || !item.id) return;
+      // ZS-152: id у черзі delete-діалогу — не архівувати до вибору.
+      if (pending.people[String(item.id)]) return;
       // ZS-137b: жива локальна картка — зняти stale removed, не архівувати.
       var personCard = state.peopleCards[item.id];
       if (personCard && !personCard.archived) {
@@ -7760,6 +7796,7 @@ button.count-toggle {
     });
     (Array.isArray(snapshot.removedMachines) ? snapshot.removedMachines : []).forEach(function (item) {
       if (!item || !item.id) return;
+      if (pending.machines[String(item.id)]) return;
       var machineCard = state.machineCards[item.id];
       if (machineCard && !machineCard.archived) {
         delete state.removed.machines[item.id];
@@ -7769,6 +7806,105 @@ button.count-toggle {
       state.removed.machines[item.id] = true;
       state.removedAt.machines[item.id] = item.updatedAt || stampNow();
     });
+  }
+
+  // ZS-152: pending local-removed — зняти archived у live, щоб діалог і restore бачили людину.
+  function thawPendingLocalRemoves(deleteConflicts) {
+    ensureCardStores();
+    (Array.isArray(deleteConflicts) ? deleteConflicts : []).forEach(function (item) {
+      if (!item || !item.id || item.direction !== "local-removed") return;
+      if (item.kind === "machine") {
+        if (state.machineCards[item.id]) {
+          state.machineCards[item.id].archived = false;
+          state.machineCards[item.id].archivedAt = null;
+        }
+        delete state.removed.machines[item.id];
+        if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[item.id];
+        if (item.entity) {
+          var dayM = state.viewDay || todayISO();
+          if (!(state.machineCards[item.id] && state.machineCards[item.id].days && state.machineCards[item.id].days[dayM])) {
+            upsertMachineCardDay(item.id, dayM, item.entity);
+          }
+        }
+        return;
+      }
+      if (state.peopleCards[item.id]) {
+        state.peopleCards[item.id].archived = false;
+        state.peopleCards[item.id].archivedAt = null;
+      }
+      delete state.removed.people[item.id];
+      if (state.removedAt && state.removedAt.people) delete state.removedAt.people[item.id];
+      if (item.entity) {
+        var dayP = state.viewDay || todayISO();
+        if (!(state.peopleCards[item.id] && state.peopleCards[item.id].days && state.peopleCards[item.id].days[dayP])) {
+          upsertPersonCardDay(item.id, dayP, item.entity);
+        } else if (!state.peopleCards[item.id]) {
+          upsertPersonCardDay(item.id, dayP, item.entity);
+        }
+      }
+    });
+  }
+
+  // ZS-152: після apply знімка повернути локально живі картки, якщо remote без tomb їх загубив.
+  function restorePreservedAliveCards(preservedPeople, preservedMachines, remoteSnap) {
+    ensureCardStores();
+    var remotePeopleTombs = tombstoneMap(remoteSnap && remoteSnap.removedPeople);
+    var remoteMachineTombs = tombstoneMap(remoteSnap && remoteSnap.removedMachines);
+    Object.keys(preservedPeople || {}).forEach(function (id) {
+      var prev = preservedPeople[id];
+      if (!prev || prev.archived) return;
+      if (remotePeopleTombs[id] || (remoteSnap && remoteSnap.peopleCards && remoteSnap.peopleCards[id] && remoteSnap.peopleCards[id].archived)) return;
+      var cur = state.peopleCards[id];
+      if (cur && !cur.archived) {
+        var keepP = {};
+        keepP[id] = cur;
+        var addP = {};
+        addP[id] = prev;
+        state.peopleCards[id] = mergeCardMaps(keepP, addP)[id] || cur;
+        return;
+      }
+      state.peopleCards[id] = cloneData(prev);
+      state.peopleCards[id].archived = false;
+      state.peopleCards[id].archivedAt = null;
+      delete state.removed.people[id];
+      if (state.removedAt && state.removedAt.people) delete state.removedAt.people[id];
+    });
+    Object.keys(preservedMachines || {}).forEach(function (id) {
+      var prev = preservedMachines[id];
+      if (!prev || prev.archived) return;
+      if (remoteMachineTombs[id] || (remoteSnap && remoteSnap.machineCards && remoteSnap.machineCards[id] && remoteSnap.machineCards[id].archived)) return;
+      var cur = state.machineCards[id];
+      if (cur && !cur.archived) {
+        var keepM = {};
+        keepM[id] = cur;
+        var addM = {};
+        addM[id] = prev;
+        state.machineCards[id] = mergeCardMaps(keepM, addM)[id] || cur;
+        return;
+      }
+      state.machineCards[id] = cloneData(prev);
+      state.machineCards[id].archived = false;
+      state.machineCards[id].archivedAt = null;
+      delete state.removed.machines[id];
+      if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[id];
+    });
+  }
+
+  function mergeDialogsPending() {
+    return !!((state.mergeDeletes && state.mergeDeletes.length) ||
+      (state.mergeConflicts && state.mergeConflicts.length) ||
+      (state.mergeDupes && state.mergeDupes.length));
+  }
+
+  function flushDriveAfterMergeChoices() {
+    if (mergeDialogsPending()) return;
+    var folderId = driveFolderId(state.driveFolder);
+    var key = String(state.driveEncryptKey || "").trim();
+    if (!folderId || !key || !driveTokenValid()) return;
+    upsertOwnUnitFile(driveToken, folderId).then(function () {
+      save({ force: true });
+      render();
+    }).catch(function () {});
   }
 
   function personFioKey(person) {
@@ -7849,25 +7985,27 @@ button.count-toggle {
           }
           // ZS-126: завжди 3-way merge, без keepLocal «цілий файл».
           var localSnap = localOwnSnapshotForMerge(key);
+          var preservedPeople = cloneData((localSnap && localSnap.peopleCards) || {});
+          var preservedMachines = cloneData((localSnap && localSnap.machineCards) || {});
           var baseSnap = loadMergeBase(key);
           var merged = mergeUnitSnapshots(localSnap, raw, baseSnap);
           if (!merged.snapshot) return { pulled: false };
           applyOwnUnitSnapshot(merged.snapshot, key);
+          // ZS-152: локально додана людина не зникає після F5/авто-sync з порожнім remote.
+          restorePreservedAliveCards(preservedPeople, preservedMachines, raw);
+          thawPendingLocalRemoves(merged.deleteConflicts);
+          projectCardsToLiveDay();
           if (!driveChildWriteCode()) {
-            applyMergedRemovals(merged.snapshot);
+            applyMergedRemovals(merged.snapshot, merged.deleteConflicts);
             // Після tombstone з merge — знову зафіксувати bundle (removedPeople/removedAt),
             // інакше наступний snapshotFromStoredBundle може лишитись без tomb.
             captureBundle(canonicalOwnBundleKey(key));
             state.mergeConflicts = Array.isArray(merged.conflicts) ? merged.conflicts.slice() : [];
-            state.mergeDeletes = (Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts : []).filter(function (item) {
-              if (!item || !item.id) return false;
-              ensureCardStores();
-              if (item.kind === "machine") {
-                var mc = state.machineCards[item.id];
-                return !(mc && !mc.archived);
-              }
-              var pc = state.peopleCards[item.id];
-              return !(pc && !pc.archived);
+            // ZS-152: не відкидати delete-діалог лише тому, що картка тимчасово жива до вибору.
+            state.mergeDeletes = (Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts : []).map(function (row) {
+              var copy = cloneData(row);
+              if (copy && copy.direction === "local-removed") copy.pendingChoice = true;
+              return copy;
             });
             queuePersonDuplicatePrompts(merged.snapshot);
           } else {
@@ -7893,7 +8031,11 @@ button.count-toggle {
               bundles[ownKey].removedPeople = cloneData(merged.snapshot.removedPeople || []);
               bundles[ownKey].removedMachines = cloneData(merged.snapshot.removedMachines || []);
             }
-            var pendingLeadDeletes = Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts.slice() : [];
+            var pendingLeadDeletes = (Array.isArray(merged.deleteConflicts) ? merged.deleteConflicts : []).map(function (row) {
+              var copy = cloneData(row);
+              if (copy && copy.direction === "local-removed") copy.pendingChoice = true;
+              return copy;
+            });
             if (pendingLeadDeletes.length) {
               state.mergeDeletes = (Array.isArray(state.mergeDeletes) ? state.mergeDeletes : []).concat(pendingLeadDeletes);
             }
@@ -8474,6 +8616,8 @@ button.count-toggle {
               }
               // ZS-128: 3-way merge файлу unit (як телефон↔ПК), не сліпий replace.
               var localSnap = localChildSnapshotForMerge(code);
+              var preservedPeople = cloneData((localSnap && localSnap.peopleCards) || {});
+              var preservedMachines = cloneData((localSnap && localSnap.machineCards) || {});
               var baseSnap = loadMergeBase(code);
               var mergedResult = mergeUnitSnapshots(localSnap, raw, baseSnap);
               if (!mergedResult.snapshot) {
@@ -8486,7 +8630,11 @@ button.count-toggle {
                 conflictAcc = conflictAcc.concat(mergedResult.conflicts);
               }
               if (isOpenTab && Array.isArray(mergedResult.deleteConflicts) && mergedResult.deleteConflicts.length) {
-                deleteAcc = deleteAcc.concat(mergedResult.deleteConflicts);
+                deleteAcc = deleteAcc.concat(mergedResult.deleteConflicts.map(function (row) {
+                  var copy = cloneData(row);
+                  if (copy && copy.direction === "local-removed") copy.pendingChoice = true;
+                  return copy;
+                }));
               }
               if (!ingestChildUnit(code, mergedResult.snapshot)) {
                 missing += 1;
@@ -8497,9 +8645,18 @@ button.count-toggle {
               state.childFilesPulledThisSync[code] = true;
               if (unitReportStatus(code) === "merged") merged += 1;
               if (isOpenTab) {
-                applyMergedRemovals(mergedResult.snapshot);
+                restorePreservedAliveCards(preservedPeople, preservedMachines, raw);
+                thawPendingLocalRemoves(mergedResult.deleteConflicts);
+                projectCardsToLiveDay();
+                applyMergedRemovals(mergedResult.snapshot, mergedResult.deleteConflicts);
                 queuePersonDuplicatePrompts(mergedResult.snapshot);
               }
+              // ZS-152: не upsert tomb/знімок на Диск, доки відкрита вкладка чекає delete/conflict вибір.
+              var pendingOpenDialogs = isOpenTab && (
+                (mergedResult.deleteConflicts && mergedResult.deleteConflicts.length) ||
+                (mergedResult.conflicts && mergedResult.conflicts.length)
+              );
+              if (pendingOpenDialogs) return null;
               var snapToWrite = cloneData(mergedResult.snapshot);
               snapToWrite.code = code;
               snapToWrite.children = subordinatesFor(code).map(function (row) {
@@ -8626,6 +8783,18 @@ button.count-toggle {
         return { settings: bundle.settings, pulled: bundle.pulled, children: children };
       });
     }).then(function (bundle) {
+      // ZS-152: не писати власний файл на Диск, доки висять delete/conflict/dupe діалоги.
+      if (mergeDialogsPending()) {
+        state.driveNote = "Є розбіжності — оберіть у вікні, потім звіт допишеться на Диск.";
+        setDriveProgress(4, syncTotal);
+        render();
+        return {
+          settings: bundle.settings,
+          pulled: bundle.pulled,
+          own: { deferred: true },
+          children: bundle.children
+        };
+      }
       state.driveNote = "Пишу файл підрозділу.";
       setDriveProgress(4, syncTotal);
       render();
@@ -8635,6 +8804,7 @@ button.count-toggle {
     }).then(function (bundle) {
       // ZS-123/125: після реального merge — завжди перезаписати файл lead зі знімка bundles,
       // навіть якщо зараз відкрита підлегла ланка (не через upsertOwnUnitFile → файл unit).
+      if (mergeDialogsPending()) return bundle;
       var needParentWrite = bundle.children && Number(bundle.children.merged) > 0;
       if (!needParentWrite) return bundle;
       var parentKey = String(state.driveEncryptKey || "").trim();
@@ -8851,6 +9021,7 @@ button.count-toggle {
     captureBundle(state.reportKey);
     save();
     render();
+    flushDriveAfterMergeChoices();
   }
 
   function renderMergeDeleteOverlay() {
@@ -8913,8 +9084,43 @@ button.count-toggle {
     if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
     ensureCardStores();
     var aliveCard = item.kind === "machine" ? state.machineCards[item.id] : state.peopleCards[item.id];
-    // ZS-137b: будь-яка кнопка не зносить живі локальні правки/картки.
-    if (aliveCard && !aliveCard.archived) {
+    // ZS-137b: жива картка без pendingChoice (хибний/stale діалог) — будь-яка кнопка не архівує.
+    // ZS-152: після thaw pendingChoice=true — keep-removed справді архівує; restore лишає живою.
+    if (aliveCard && !aliveCard.archived && action === "restore") {
+      if (item.kind === "machine") {
+        delete state.removed.machines[item.id];
+        if (state.removedAt.machines) delete state.removedAt.machines[item.id];
+      } else {
+        delete state.removed.people[item.id];
+        if (state.removedAt.people) delete state.removedAt.people[item.id];
+      }
+      aliveCard.archived = false;
+      aliveCard.archivedAt = null;
+      if (item.entity) {
+        var dayKeep = state.viewDay || todayISO();
+        if (item.kind === "machine") {
+          if (!(aliveCard.days && aliveCard.days[dayKeep])) upsertMachineCardDay(item.id, dayKeep, item.entity);
+        } else if (!(aliveCard.days && aliveCard.days[dayKeep])) {
+          upsertPersonCardDay(item.id, dayKeep, item.entity);
+        }
+        if (state.peopleCards[item.id]) {
+          state.peopleCards[item.id].archived = false;
+          state.peopleCards[item.id].archivedAt = null;
+        }
+        if (state.machineCards[item.id]) {
+          state.machineCards[item.id].archived = false;
+          state.machineCards[item.id].archivedAt = null;
+        }
+      }
+      state.mergeDeletes = list.slice(1);
+      projectCardsToLiveDay();
+      captureBundle(state.reportKey);
+      save();
+      render();
+      flushDriveAfterMergeChoices();
+      return;
+    }
+    if (aliveCard && !aliveCard.archived && action === "keep-removed" && !item.pendingChoice) {
       if (item.kind === "machine") {
         delete state.removed.machines[item.id];
         if (state.removedAt.machines) delete state.removedAt.machines[item.id];
@@ -8929,6 +9135,7 @@ button.count-toggle {
       captureBundle(state.reportKey);
       save();
       render();
+      flushDriveAfterMergeChoices();
       return;
     }
     if (action === "keep-removed") {
@@ -9020,6 +9227,7 @@ button.count-toggle {
     captureBundle(state.reportKey);
     save();
     render();
+    flushDriveAfterMergeChoices();
   }
 
   function renderMergeDupeOverlay() {
@@ -9117,6 +9325,7 @@ button.count-toggle {
     captureBundle(state.reportKey);
     save();
     render();
+    flushDriveAfterMergeChoices();
   }
 
   function renderDrive() {
@@ -13779,6 +13988,213 @@ button.count-toggle {
       state.driveFolder = "";
       state.driveEncryptKey = "";
       state.driveNote = "";
+      // ZS-152: локальний add тримається після merge з порожнім remote; delete-діалог без раннього tomb.
+      try {
+        var day152 = todayISO();
+        state.reportKey = "lead";
+        state.openCode = "lead";
+        state.reportRoot = "lead";
+        state.scope = "all";
+        state.removed = { people: {}, machines: {} };
+        state.removedAt = { people: {}, machines: {} };
+        state.peopleCards = {};
+        state.machineCards = {};
+        state.added = { people: [], machines: [] };
+        state.report = emptyUnitReport({ name: "Служба", code: "lead" });
+        state.viewDay = day152;
+        state.fileDay = day152;
+        state.draft = {
+          kind: "person",
+          surname: "Нова",
+          givenName: "СтоДва",
+          patronymic: "",
+          name: "",
+          rank: "Солдат",
+          callsign: "Add152",
+          unit: "",
+          accounting: "official",
+          duty: "in",
+          position: ""
+        };
+        saveDraft();
+        var id152 = Object.keys(state.peopleCards).find(function (id) {
+          return state.peopleCards[id] && state.peopleCards[id].callsign === "Add152";
+        }) || ((state.added.people || [])[0] && state.added.people[0].id);
+        check(!!id152, "ZS-152: після add є нова людина");
+        var local152 = localOwnSnapshotForMerge("lead");
+        var remote152 = {
+          version: 2,
+          name: "Служба",
+          code: "lead",
+          day: day152,
+          unit: { id: "root", name: "Служба", people: [] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: [],
+          peopleCards: {},
+          machineCards: {},
+          removedPeople: [],
+          removedMachines: []
+        };
+        var merged152 = mergeUnitSnapshots(local152, remote152, cloneData(remote152));
+        check(
+          flattenPeopleFromUnit(merged152.snapshot.unit).some(function (p) { return p && p.id === id152; }) &&
+            !!(merged152.snapshot.peopleCards && merged152.snapshot.peopleCards[id152]),
+          "ZS-152: merge з порожнім remote лишає локальний add"
+        );
+        var preserved152 = cloneData(state.peopleCards);
+        applyOwnUnitSnapshot(merged152.snapshot, "lead");
+        restorePreservedAliveCards(preserved152, {}, remote152);
+        projectCardsToLiveDay();
+        check(
+          !!(state.peopleCards[id152] && !state.peopleCards[id152].archived) ||
+            flattenPeopleFromUnit(state.report.unit).some(function (p) { return p && p.id === id152; }) ||
+            (state.added.people || []).some(function (p) { return p && p.id === id152; }),
+          "ZS-152: після apply+restorePreserved add лишається"
+        );
+        // Delete conflict: до вибору немає tomb; restore реально лишає.
+        var personDel152 = {
+          id: "p152del",
+          name: "Хмара Відновлення",
+          surname: "Хмара",
+          givenName: "Відновлення",
+          patronymic: "",
+          rank: "Солдат",
+          callsign: "Restore152",
+          accounting: "official",
+          duty: "in",
+          position: "",
+          updatedAt: "2026-11-11T10:00:00.000Z"
+        };
+        var localDel152 = {
+          version: 2,
+          name: "Служба",
+          code: "lead",
+          day: day152,
+          unit: { id: "root", name: "Служба", people: [] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: [],
+          removedPeople: [{ id: "p152del", removed: true, updatedAt: "2026-11-11T12:00:00.000Z" }],
+          removedMachines: [],
+          peopleCards: {
+            p152del: {
+              id: "p152del",
+              archived: true,
+              archivedAt: "2026-11-11T12:00:00.000Z",
+              ownerKey: "lead",
+              place: "root",
+              callsign: "Restore152",
+              days: {}
+            }
+          },
+          machineCards: {}
+        };
+        localDel152.peopleCards.p152del.days[day152] = cloneData(personDel152);
+        var remoteDel152 = {
+          version: 2,
+          name: "Служба",
+          code: "lead",
+          day: day152,
+          unit: { id: "root", name: "Служба", people: [cloneData(personDel152)] },
+          machines: [],
+          tasks: [],
+          people: [],
+          days: {},
+          children: [],
+          removedPeople: [],
+          removedMachines: [],
+          peopleCards: {
+            p152del: {
+              id: "p152del",
+              archived: false,
+              ownerKey: "lead",
+              place: "root",
+              callsign: "Restore152",
+              days: {}
+            }
+          },
+          machineCards: {}
+        };
+        remoteDel152.peopleCards.p152del.days[day152] = cloneData(personDel152);
+        var mergedDel152 = mergeUnitSnapshots(localDel152, remoteDel152, null);
+        check(!!(mergedDel152.deleteConflicts && mergedDel152.deleteConflicts.length === 1), "ZS-152: delete-конфлікт у черзі");
+        check(!(mergedDel152.snapshot.removedPeople || []).some(function (row) { return row && row.id === "p152del"; }), "ZS-152: tomb не в знімку до вибору");
+        check(flattenPeopleFromUnit(mergedDel152.snapshot.unit).some(function (p) { return p && p.id === "p152del"; }), "ZS-152: запис з Диска в списку до вибору");
+        state.peopleCards = cloneData(localDel152.peopleCards);
+        state.removed = { people: { p152del: true }, machines: {} };
+        state.removedAt = { people: { p152del: "2026-11-11T12:00:00.000Z" }, machines: {} };
+        applyOwnUnitSnapshot(mergedDel152.snapshot, "lead");
+        thawPendingLocalRemoves(mergedDel152.deleteConflicts);
+        projectCardsToLiveDay();
+        applyMergedRemovals(mergedDel152.snapshot, mergedDel152.deleteConflicts);
+        state.mergeDeletes = mergedDel152.deleteConflicts.map(function (row) {
+          var copy = cloneData(row);
+          copy.pendingChoice = true;
+          return copy;
+        });
+        check(!state.removed.people.p152del && state.peopleCards.p152del && !state.peopleCards.p152del.archived, "ZS-152: до вибору thaw зняв removed");
+        check(!!findPerson("p152del"), "ZS-152: до вибору людина видима");
+        check(mergeDialogsPending(), "ZS-152: діалоги pending блокують upsert");
+        applyMergeDeleteChoice("restore");
+        check(!state.removed.people.p152del && !!findPerson("p152del"), "ZS-152: Повернути з хмари лишає людину");
+        check(!mergeDialogsPending(), "ZS-152: після restore черга порожня");
+        // keep-removed після повторного merge
+        var mergedDel152b = mergeUnitSnapshots(localDel152, remoteDel152, null);
+        applyOwnUnitSnapshot(mergedDel152b.snapshot, "lead");
+        thawPendingLocalRemoves(mergedDel152b.deleteConflicts);
+        projectCardsToLiveDay();
+        applyMergedRemovals(mergedDel152b.snapshot, mergedDel152b.deleteConflicts);
+        state.mergeDeletes = mergedDel152b.deleteConflicts.map(function (row) {
+          var copy = cloneData(row);
+          copy.pendingChoice = true;
+          return copy;
+        });
+        applyMergeDeleteChoice("keep-removed");
+        check(!!state.removed.people.p152del && !findPerson("p152del"), "ZS-152: Лишити видаленим архівує після вибору");
+        // Архів єдиної людини все одно пише tomb у кеш (не блокує ZS-151 empty-guard).
+        try { localStorage.removeItem(CACHE_KEY); } catch (err152cache) {}
+        state.reportKey = "lead";
+        state.openCode = "lead";
+        state.peopleCards = {};
+        state.machineCards = {};
+        state.added = { people: [], machines: [] };
+        state.removed = { people: {}, machines: {} };
+        state.report = emptyUnitReport({ name: "Служба", code: "lead" });
+        state.draft = {
+          kind: "person",
+          surname: "Єдина",
+          givenName: "Картка",
+          callsign: "Only152",
+          unit: "",
+          accounting: "official",
+          duty: "in",
+          position: "",
+          rank: "Солдат",
+          name: "",
+          patronymic: ""
+        };
+        saveDraft();
+        var onlyId = Object.keys(state.peopleCards).find(function (id) {
+          return state.peopleCards[id] && state.peopleCards[id].callsign === "Only152";
+        });
+        state.confirm = { kind: "person", id: onlyId };
+        confirmRemoval();
+        var cacheOnly = localStorage.getItem(CACHE_KEY) || "";
+        check(cacheOnly.indexOf("Only152") !== -1 && cacheOnly.indexOf('"archived":true') !== -1, "ZS-152: tomb єдиної людини пишеться в кеш");
+      } catch (err152) {
+        check(false, "ZS-152: " + (err152 && err152.message ? err152.message : err152));
+      }
+      state.mergeDeletes = [];
+      state.mergeConflicts = [];
+      state.mergeDupes = [];
+      state.driveFolder = "";
+      state.driveEncryptKey = "";
+      state.driveNote = "";
       // ZS-150: вкладка unit у lead — bundle з вмістом; editable; sync → vu-{slug}.bin
       var child150 = "AAAA-BBBB-CCCC-DDDD-150A";
       state.units = (state.units || []).filter(function (unit) { return unit.code !== child150; });
@@ -14645,9 +15061,10 @@ button.count-toggle {
       };
       var merged132 = mergeUnitSnapshots(local132, remote132, null);
       check(!!merged132.snapshot && Array.isArray(merged132.deleteConflicts) && merged132.deleteConflicts.length === 1, "ZS-132: конфлікт видалення vs Диск");
-      check(flattenPeopleFromUnit(merged132.snapshot.unit).length === 0, "ZS-132: до вибору людина не в живому списку");
-      check((merged132.snapshot.removedPeople || []).some(function (row) { return row.id === "p132"; }), "ZS-132: tombstone у знімку");
-      check(flattenPeopleFromUnit(merged132.snapshot.days["2026-11-01"].unit).length === 0, "ZS-132: days[] без видаленої людини");
+      // ZS-152: до вибору людина з Диска лишається в живому списку; tomb ще не в removedPeople.
+      check(flattenPeopleFromUnit(merged132.snapshot.unit).some(function (row) { return row && row.id === "p132"; }), "ZS-132/152: до вибору людина з Диска в списку");
+      check(!(merged132.snapshot.removedPeople || []).some(function (row) { return row && row.id === "p132"; }), "ZS-132/152: до вибору немає tomb у знімку");
+      check(flattenPeopleFromUnit(merged132.snapshot.days["2026-11-01"].unit).some(function (row) { return row && row.id === "p132"; }), "ZS-132/152: days[] тримає людину до вибору");
       state.driveEncryptKey = "секрет-132";
       state.openCode = "lead";
       state.reportRoot = "lead";
@@ -14656,17 +15073,30 @@ button.count-toggle {
       state.mergeConflicts = [];
       state.mergeDupes = [];
       check(!!applyOwnUnitSnapshot(merged132.snapshot, "секрет-132"), "ZS-132: застосовуємо знімок");
-      applyMergedRemovals(merged132.snapshot);
-      state.mergeDeletes = merged132.deleteConflicts.slice();
+      thawPendingLocalRemoves(merged132.deleteConflicts);
+      projectCardsToLiveDay();
+      applyMergedRemovals(merged132.snapshot, merged132.deleteConflicts);
+      state.mergeDeletes = merged132.deleteConflicts.map(function (row) {
+        var copy = cloneData(row);
+        copy.pendingChoice = true;
+        return copy;
+      });
       render();
       check(!!document.getElementById("merge-delete-overlay"), "ZS-132: діалог видалення на екрані");
+      check(!!findPerson("p132"), "ZS-152: до вибору людина ще на екрані");
       applyMergeDeleteChoice("keep-removed");
       check(!!state.removed.people.p132 && !findPerson("p132"), "ZS-132: лишити видаленим");
       check(!document.getElementById("merge-delete-overlay"), "ZS-132: діалог закрито");
       var merged132b = mergeUnitSnapshots(local132, remote132, null);
-      state.mergeDeletes = merged132b.deleteConflicts.slice();
+      state.mergeDeletes = merged132b.deleteConflicts.map(function (row) {
+        var copy = cloneData(row);
+        copy.pendingChoice = true;
+        return copy;
+      });
       applyOwnUnitSnapshot(merged132b.snapshot, "секрет-132");
-      applyMergedRemovals(merged132b.snapshot);
+      thawPendingLocalRemoves(merged132b.deleteConflicts);
+      projectCardsToLiveDay();
+      applyMergedRemovals(merged132b.snapshot, merged132b.deleteConflicts);
       render();
       applyMergeDeleteChoice("restore");
       check(!state.removed.people.p132 && !!findPerson("p132"), "ZS-132: повернути з хмари");
@@ -14736,12 +15166,18 @@ button.count-toggle {
       };
       var mergedTombAsk = mergeUnitSnapshots(local132tomb, remote132b, base132b);
       check(!!mergedTombAsk.snapshot && Array.isArray(mergedTombAsk.deleteConflicts) && mergedTombAsk.deleteConflicts.length === 1, "ZS-137: з tomb — питати");
-      check(flattenPeopleFromUnit(mergedTombAsk.snapshot.unit).length === 0, "ZS-137: до вибору немає в списку");
+      check(flattenPeopleFromUnit(mergedTombAsk.snapshot.unit).some(function (row) { return row && row.id === "p132b"; }), "ZS-137/152: до вибору людина з Диска в списку");
       state.removed = { people: {}, machines: {} };
       state.mergeConflicts = [];
       applyOwnUnitSnapshot(mergedTombAsk.snapshot, "секрет-132");
-      applyMergedRemovals(mergedTombAsk.snapshot);
-      state.mergeDeletes = mergedTombAsk.deleteConflicts.slice();
+      thawPendingLocalRemoves(mergedTombAsk.deleteConflicts);
+      projectCardsToLiveDay();
+      applyMergedRemovals(mergedTombAsk.snapshot, mergedTombAsk.deleteConflicts);
+      state.mergeDeletes = mergedTombAsk.deleteConflicts.map(function (row) {
+        var copy = cloneData(row);
+        copy.pendingChoice = true;
+        return copy;
+      });
       render();
       check(!!document.getElementById("merge-delete-overlay"), "ZS-137: діалог лише при tomb");
       applyMergeDeleteChoice("keep-removed");
