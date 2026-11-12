@@ -2152,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T12:16:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T13:08:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -6894,6 +6894,7 @@ button.count-toggle {
   }
 
   // ZS-111: технічні підписи sync ховаємо; лишаємо помилки/дії + progress bar.
+  // ZS-167: помилки create/delete/rotate settings теж видимі в профілі (не «тихе» локальне).
   function isVisibleDriveNote(note) {
     var text = String(note || "").trim();
     if (!text) return false;
@@ -6902,7 +6903,36 @@ button.count-toggle {
     if (/^Мережа не відповіла/.test(text)) return true;
     if (/^Вікно Google не відкрилось/.test(text)) return true;
     if (/^Google не відкриває вхід/.test(text)) return true;
+    if (/довідники на Диск не записано/.test(text)) return true;
+    if (/Без Диска довідники/.test(text)) return true;
+    if (/синхрон довідників\/файлу не вдався/.test(text)) return true;
+    if (/синхрон не вдався/.test(text)) return true;
     return false;
+  }
+
+  // ZS-167: lead на Диску — settings + vu-lead разом (або жодного з них), щоб назви й відбитки не роз’їжджались.
+  function syncIssuedUnitsToDrive(token, folderId) {
+    if (!token || !folderId) {
+      return Promise.resolve({ wroteSettings: false, wroteLead: false, reason: "nodrive" });
+    }
+    return syncSettingsFileNow(token, folderId).then(function (settingsRes) {
+      if (!settingsRes || !settingsRes.wroteSettings) {
+        return {
+          wroteSettings: false,
+          wroteLead: false,
+          reason: (settingsRes && settingsRes.reason) || "nowrite"
+        };
+      }
+      return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
+        return { wroteSettings: true, wroteLead: true };
+      });
+    });
+  }
+
+  function surfaceUnitDriveGateError(message) {
+    var text = String(message || "").trim();
+    state.driveNote = text;
+    state.unitError = text;
   }
 
   function appendDriveSyncStatus(parent) {
@@ -10126,27 +10156,22 @@ button.count-toggle {
       state.accessChange = null;
       save();
       if (!token || !folderId) {
-        state.driveNote = "Ланку прибрано локально. Без Диска довідники з відбитками не оновлено.";
+        surfaceUnitDriveGateError("Ланку прибрано локально. Без Диска довідники з відбитками не оновлено.");
         render();
         return Promise.resolve();
       }
-      // ZS-163/164: прибрати відбиток з settings і одразу upload; без canWrite — чітка помилка.
-      return syncSettingsFileNow(token, folderId).then(function (settingsRes) {
-        if (!settingsRes || !settingsRes.wroteSettings) {
-          state.driveNote = settingsWriteBlockedNote("delete");
-          // Файл lead все одно оновимо (children), але без брехні про успішний gate.
-          return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
-            render();
-          }).catch(function () {
-            render();
-          });
-        }
-        return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
-          state.driveNote = "Список нижчих оновлено.";
+      // ZS-163/167: settings + vu-lead разом; без canWrite — видима помилка, без «тихого» lead-only.
+      return syncIssuedUnitsToDrive(token, folderId).then(function (driveRes) {
+        if (!driveRes || !driveRes.wroteSettings) {
+          surfaceUnitDriveGateError(settingsWriteBlockedNote("delete"));
           render();
-        });
+          return;
+        }
+        state.unitError = "";
+        state.driveNote = "Список нижчих оновлено.";
+        render();
       }).catch(function () {
-        state.driveNote = "Ланку прибрано локально; синхрон довідників/файлу не вдався.";
+        surfaceUnitDriveGateError("Ланку прибрано локально; синхрон довідників/файлу не вдався.");
         render();
       });
     }
@@ -10164,29 +10189,30 @@ button.count-toggle {
     save();
 
     if (!token || !folderId) {
+      surfaceUnitDriveGateError("Новий код збережено локально. Без Диска довідники з відбитками не оновлено.");
       render();
       return Promise.resolve();
     }
     return resealChildUnitFile(token, folderId, oldCode, nextCode).then(function (reseal) {
-      // ZS-163/164: оновити відбиток нового коду в settings.
-      return syncSettingsFileNow(token, folderId).then(function (settingsRes) {
-        return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
-          return { reseal: reseal, settingsRes: settingsRes };
-        });
+      // ZS-163/167: settings + vu-lead разом після зміни коду.
+      return syncIssuedUnitsToDrive(token, folderId).then(function (driveRes) {
+        return { reseal: reseal, driveRes: driveRes };
       });
     }).then(function (bundle) {
       var reseal = bundle && bundle.reseal;
-      var settingsRes = bundle && bundle.settingsRes;
-      if (!settingsRes || !settingsRes.wroteSettings) {
-        state.driveNote = settingsWriteBlockedNote("rotate");
+      var driveRes = bundle && bundle.driveRes;
+      if (!driveRes || !driveRes.wroteSettings) {
+        surfaceUnitDriveGateError(settingsWriteBlockedNote("rotate"));
       } else if (reseal && reseal.ok) {
+        state.unitError = "";
         state.driveNote = "Доступ змінено, файл підлеглого перезапечатано.";
       } else {
+        state.unitError = "";
         state.driveNote = "Новий код збережено; файл підлеглого не перезапечатано.";
       }
       render();
     }).catch(function () {
-      state.driveNote = "Новий код збережено локально; синхрон не вдався.";
+      surfaceUnitDriveGateError("Новий код збережено локально; синхрон не вдався.");
       render();
     });
   }
@@ -11837,23 +11863,25 @@ button.count-toggle {
     offerReportFile(doc);
     save();
     render();
-    // ZS-164: одразу upload settings з новим fingerprint (або чітка помилка без canWrite).
+    // ZS-164/167: одразу settings + vu-lead (назви й відбитки разом); інакше видима помилка в профілі.
     var folderId = folderIdFromLink(state.driveFolder);
     var token = driveToken || "";
     if (!token || !folderId) {
-      state.driveNote = "Ланку додано локально. Без Диска довідники з відбитками не оновлено.";
+      surfaceUnitDriveGateError("Ланку додано локально. Без Диска довідники з відбитками не оновлено.");
       render();
       return;
     }
-    syncSettingsFileNow(token, folderId).then(function (settingsRes) {
-      if (!settingsRes || !settingsRes.wroteSettings) {
-        state.driveNote = settingsWriteBlockedNote("create");
-      } else {
-        state.driveNote = "Ланку додано, список на Диску оновлено.";
+    syncIssuedUnitsToDrive(token, folderId).then(function (driveRes) {
+      if (!driveRes || !driveRes.wroteSettings) {
+        surfaceUnitDriveGateError(settingsWriteBlockedNote("create"));
+        render();
+        return;
       }
+      state.unitError = "";
+      state.driveNote = "Ланку додано, список на Диску оновлено.";
       render();
     }).catch(function () {
-      state.driveNote = "Ланку додано локально; довідники на Диск не записано.";
+      surfaceUnitDriveGateError("Ланку додано локально; довідники на Диск не записано.");
       render();
     });
   }
@@ -13069,6 +13097,35 @@ button.count-toggle {
     state.settingsFolderAdminHash = "";
     check(!!canWriteDriveSettings(), "ZS-165: lead знову може писати settings після сценарію unit");
     check(typeof safeDedupeDriveFiles === "function", "ZS-165: один settings — dedupe newer-wins лишається");
+    // ZS-167: create/delete/rotate — settings+vu-lead разом; помилка gate видима в профілі.
+    check(typeof syncIssuedUnitsToDrive === "function", "ZS-167: syncIssuedUnitsToDrive є");
+    check(typeof surfaceUnitDriveGateError === "function", "ZS-167: surfaceUnitDriveGateError є");
+    check(!!isVisibleDriveNote(settingsWriteBlockedNote("create")), "ZS-167: помилка settings на create видима в профілі");
+    check(!!isVisibleDriveNote(settingsWriteBlockedNote("delete")), "ZS-167: помилка settings на delete видима в профілі");
+    check(!!isVisibleDriveNote(settingsWriteBlockedNote("rotate")), "ZS-167: помилка settings на rotate видима в профілі");
+    check(!!isVisibleDriveNote("Ланку додано локально. Без Диска довідники з відбитками не оновлено."), "ZS-167: nodrive create видимий");
+    check(!!isVisibleDriveNote("Ланку прибрано локально; синхрон довідників/файлу не вдався."), "ZS-167: catch delete видимий");
+    check(!isVisibleDriveNote("Ланку додано, список на Диску оновлено."), "ZS-167: технічний успіх create лишається схованим");
+    state.driveEncryptKey = code165;
+    state.openCode = code165;
+    state.settingsFolderAdmin = true;
+    state.settingsFolderAdminHash = keyFingerprint("секрет-lead-165");
+    check(!canWriteDriveSettings(), "ZS-167: unit не пише settings (лишається v75 правило)");
+    state.driveEncryptKey = "секрет-lead-165";
+    state.openCode = "lead";
+    state.settingsFolderAdmin = false;
+    state.settingsFolderAdminHash = "";
+    check(!!canWriteDriveSettings(), "ZS-167: lead canWrite для settings+vu-lead");
+    var keepErr167 = state.unitError;
+    surfaceUnitDriveGateError(settingsWriteBlockedNote("create"));
+    check(state.unitError.indexOf("довідники на Диск не записано") !== -1 && state.driveNote === state.unitError, "ZS-167: помилка в unitError і driveNote");
+    state.profile = true;
+    render();
+    check(!!document.querySelector("#unit-create .error") && document.querySelector("#unit-create .error").textContent.indexOf("довідники на Диск не записано") !== -1, "ZS-167: помилка create в UI профілю біля нового підрозділу");
+    check(!!document.querySelector("[data-drive-note]") && document.querySelector("[data-drive-note]").textContent.indexOf("довідники на Диск не записано") !== -1, "ZS-167: помилка settings також у блоці Диска");
+    state.unitError = keepErr167;
+    state.driveNote = "";
+    state.profile = false;
     state.units = keepUnits165;
     state.deletedUnits = keepDeleted165;
     state.settingsUnitFingerprints = keepFp165;
