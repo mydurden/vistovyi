@@ -2145,7 +2145,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-11T16:18:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T06:24:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -5431,11 +5431,11 @@ button.count-toggle {
   function cardIconRow(kind, id, draftMode) {
     var row = el("span", { className: "card-actions" });
     if (canDelete()) {
-      // Чернетка: хрестик скасовує. Збережена картка: хрестик лише закриває (архів — свайп / явний шлях).
+      // Чернетка: хрестик скасовує. Збережена картка: хрестик знову в архів (як до ZS-154).
       if (draftMode) row.append(iconButton("x", "Видалити", { "data-discard-draft": "1" }));
-      else row.append(iconButton("x", "Закрити", { "data-close-card": "1" }));
+      else row.append(iconButton("x", "В архів", { "data-remove": kind + ":" + id }));
     } else if (!draftMode) {
-      // Без права архіву все одно потрібен спосіб закрити вікно хрестиком.
+      // Без права архіву — хрестик лише закриває вікно.
       row.append(iconButton("x", "Закрити", { "data-close-card": "1" }));
     }
     row.append(iconButton("check", "Зберегти", { "data-save-card": draftMode ? "draft" : kind + ":" + id }));
@@ -11368,7 +11368,7 @@ button.count-toggle {
       discardDraft();
       return;
     }
-    // ZS-154: хрестик на збереженій картці закриває вікно (без архіву).
+    // Без права архіву хрестик лише закриває; з правом — data-remove (див. нижче).
     var closeSavedCard = event.target.closest("[data-close-card]");
     if (closeSavedCard) {
       closeCardOverlay();
@@ -11378,7 +11378,7 @@ button.count-toggle {
     if (saveCard) {
       if (saveCard.getAttribute("data-save-card") === "draft") saveDraft();
       else {
-        // ZS-154: галочка на збереженій картці комітить (якщо треба) і закриває вікно.
+        // ZS-154/ZS-155: галочка комітить (якщо треба) і закриває вікно — без архіву.
         commitCard(saveCard.getAttribute("data-save-card"));
         closeCardOverlay();
       }
@@ -12986,7 +12986,7 @@ button.count-toggle {
     accountPick.querySelector("[data-pick-toggle]").click();
     check((!afterPerson || afterPerson.offsetTop === afterPersonTop) && accountCard.scrollHeight === accountH && (layerPos(accountPick.querySelector(".pick-list")) === "fixed" || layerPos(accountPick.querySelector(".pick-list")) === "absolute"), "облік людини поверх, без зсуву");
     accountPick.querySelector("[data-pick-toggle]").click();
-    checkTitleIcons(document.getElementById("panel-person-p4"), "Картка військовослужбовця", "Закрити");
+    checkTitleIcons(document.getElementById("panel-person-p4"), "Картка військовослужбовця", "В архів");
     function paint(node) {
       return node ? getComputedStyle(node).backgroundColor : "";
     }
@@ -13065,7 +13065,7 @@ button.count-toggle {
     if (!state.open.has("person:p4")) toggle("person:p4");
     check(document.getElementById("unitp-p4") && document.getElementById("unitp-p4").value === "Ланка Схід", "personUnit читає item.unit після зняття edits");
     state.edits.people.p4.unit = "Ланка Схід";
-    check(!!document.querySelector("#panel-person-p4 [data-close-card]") && !!document.querySelector(".swipe-row [data-remove='person:p4']"), "хрестик закриває, архів — свайп");
+    check(!!document.querySelector("#panel-person-p4 [data-remove='person:p4']"), "створювач видаляє картку");
     check(!!document.querySelector("#people [data-add='person']") && !!document.querySelector("#equipment [data-add='machine']"), "плюс біля шестерень");
     check(!document.getElementById("add-person-form") && !document.getElementById("add-machine-form") && !document.getElementById("add-person-name") && !document.getElementById("add-machine-name"), "немає коротких полів додавання");
     check(document.getElementById("app").textContent.indexOf("Додати військовослужбовця") === -1 && document.getElementById("app").textContent.indexOf("Додати машину") === -1, "немає старих кнопок додавання");
@@ -13103,7 +13103,7 @@ button.count-toggle {
     var fieldCols = fieldGrid ? getComputedStyle(fieldGrid).gridTemplateColumns.split(" ").filter(Boolean) : [];
     check(fieldGrid && getComputedStyle(fieldGrid).display === "grid" && fieldCols.length === 2, "два стовпці картки");
     check(!document.querySelector("#panel-machine-m8 .icon-gear") && !document.querySelector("#panel-machine-m8 [data-toggle^='gear:']"), "немає шестерні на картці машини");
-    checkTitleIcons(document.getElementById("panel-machine-m8"), "Степ", "Закрити");
+    checkTitleIcons(document.getElementById("panel-machine-m8"), "Степ", "В архів");
     var boardNode = document.getElementById("mboard-m8");
     var machinePanel = document.getElementById("panel-machine-m8");
     check(paint(boardNode) === paperPaint && paint(document.getElementById("mname-m8")) === paperPaint && paint(boardNode) !== "rgb(231, 225, 214)", "до правки поля машини #fbf8f3");
@@ -13136,7 +13136,7 @@ button.count-toggle {
       if (btn.textContent.indexOf("Картка машини") !== -1) dozerCardButton = true;
     });
     check(!dozerCardButton, "немає кнопки Картка машини");
-    check(!!document.querySelector("#panel-machine-m8 [data-close-card]") && !!document.querySelector(".swipe-row [data-remove='machine:m8']"), "хрестик закриває машину, архів — свайп");
+    check(!!document.querySelector("#panel-machine-m8 [data-remove='machine:m8']"), "створювач видаляє машину");
     toggle("type:excavator");
     toggle("machine:m5");
     check(text("panel-machine-m5").includes("не працює гідравліка") && text("panel-machine-m5").includes("Дата повернення"), "причина і повернення");
@@ -13522,24 +13522,28 @@ button.count-toggle {
     document.querySelector("[data-cancel-delete]").click();
     check(!state.removed.people.p3 && !document.getElementById("confirm-ask"), "скасування після свайпа");
     if (!state.open.has("person:p4")) toggle("person:p4");
-    // ZS-154: галочка і хрестик на збереженій картці лише закривають вікно (без архіву).
-    check(!!document.querySelector("#panel-person-p4 [data-close-card]") && !!document.querySelector("#panel-person-p4 [data-save-card='person:p4']"), "є закриття хрестиком і галочкою");
-    check(!document.querySelector("#panel-person-p4 [data-remove='person:p4']"), "у шапці картки немає архіву");
-    document.querySelector("#panel-person-p4 [data-close-card]").click();
-    check(!document.getElementById("card-overlay") && !state.removed.people.p4 && document.getElementById("people").textContent.indexOf("Сокіл") !== -1, "хрестик закриває без архіву");
-    toggle("person:p4");
+    // ZS-155: хрестик знову в архів; галочка лише закриває (без архіву).
+    var removeP4 = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
+    check(!!removeP4 && !!document.querySelector("#panel-person-p4 [data-save-card='person:p4']"), "є видалення хрестиком і закриття галочкою");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
     check(!document.getElementById("card-overlay") && !state.removed.people.p4 && document.getElementById("people").textContent.indexOf("Сокіл") !== -1, "галочка закриває без архіву");
-    var swipeArchive = document.querySelector(".swipe-row [data-remove='person:p4']");
-    check(!!swipeArchive, "архів лишається у свайпі");
-    if (swipeArchive) swipeArchive.click();
+    toggle("person:p4");
+    removeP4 = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
+    check(!!removeP4, "є видалення картки");
+    if (removeP4) removeP4.click();
     var ask = document.getElementById("confirm-ask");
-    check(ask && ask.textContent.indexOf("В архів картку «Сокіл»?") !== -1, "свайп питає з позивним");
+    check(ask && ask.textContent.indexOf("В архів картку «Сокіл»?") !== -1, "питання називає позивний");
     check(!!document.querySelector("[data-confirm-delete]") && !!document.querySelector("[data-cancel-delete]"), "підтвердити і скасувати");
     check(!state.removed.people.p4, "до підтвердження картка на місці");
+    var removeP4Again = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
+    if (removeP4Again) removeP4Again.click();
+    check(!state.removed.people.p4 && !!document.getElementById("surname-p4") && !document.getElementById("confirm-ask") && document.getElementById("app").textContent.indexOf("В архів картку «Сокіл»?") === -1, "другий хрестик закриває без видалення");
+    var removeP4Ask = document.querySelector("#panel-person-p4 [data-remove='person:p4']");
+    if (removeP4Ask) removeP4Ask.click();
+    check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("В архів картку «Сокіл»?") !== -1, "перший хрестик знову питає");
     var cancelDelete = document.querySelector("[data-cancel-delete]");
     if (cancelDelete) cancelDelete.click();
-    check(!state.removed.people.p4 && !document.getElementById("confirm-ask"), "скасування не видаляє");
+    check(!state.removed.people.p4 && !!document.getElementById("surname-p4") && !document.getElementById("confirm-ask"), "скасування не видаляє");
     var afterCancel = document.querySelector("#people .frac");
     check(afterCancel && afterCancel.getAttribute("data-plus") === "14" && afterCancel.getAttribute("data-total") === "18", "дріб після скасування");
     var squadBefore = document.querySelectorAll("#panel-unit-s1 [data-toggle^='person:']").length;
