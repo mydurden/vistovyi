@@ -1685,6 +1685,8 @@ button.count-toggle {
     mergeDupes: [],
     mergeDeletes: [],
     removedAt: { people: {}, machines: {} },
+    // ZS-157: безповоротний purge (не показувати в архіві; не воскрешати з Диска).
+    purged: { people: {}, machines: {} },
     // ZS-133: наскрізні картки о/с і ОВТ (одна на весь час; стани по днях у card.days).
     peopleCards: {},
     machineCards: {}
@@ -2145,7 +2147,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T06:24:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T06:42:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -2225,6 +2227,53 @@ button.count-toggle {
   function ensureCardStores() {
     if (!state.peopleCards || typeof state.peopleCards !== "object") state.peopleCards = {};
     if (!state.machineCards || typeof state.machineCards !== "object") state.machineCards = {};
+  }
+
+  function ensurePurgedStores() {
+    if (!state.purged || typeof state.purged !== "object") state.purged = { people: {}, machines: {} };
+    if (!state.purged.people) state.purged.people = {};
+    if (!state.purged.machines) state.purged.machines = {};
+  }
+
+  function purgedIdsFromTombs(list) {
+    var map = {};
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (item && item.id && item.purged) map[String(item.id)] = true;
+    });
+    return map;
+  }
+
+  function purgedIdsFromFlags(flags) {
+    var map = {};
+    Object.keys(flags || {}).forEach(function (id) {
+      if (flags[id]) map[String(id)] = true;
+    });
+    return map;
+  }
+
+  function stripPurgedCards(cardMap, purgedIds) {
+    var out = {};
+    Object.keys(cardMap || {}).forEach(function (id) {
+      if (purgedIds && purgedIds[String(id)]) return;
+      var row = cardMap[id];
+      if (!row || !row.id) return;
+      out[id] = row;
+    });
+    return out;
+  }
+
+  function removalsFromSnapshotTombs(list) {
+    var removed = {};
+    var removedAt = {};
+    var purged = {};
+    (Array.isArray(list) ? list : []).forEach(function (item) {
+      if (!item || !item.id) return;
+      var id = String(item.id);
+      removed[id] = true;
+      removedAt[id] = item.updatedAt || stampNow();
+      if (item.purged) purged[id] = true;
+    });
+    return { removed: removed, removedAt: removedAt, purged: purged };
   }
 
   function cloneDayFields(raw) {
@@ -2377,8 +2426,13 @@ button.count-toggle {
     if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
     if (!state.removedAt.people) state.removedAt.people = {};
     if (!state.removedAt.machines) state.removedAt.machines = {};
+    ensurePurgedStores();
     Object.keys(state.peopleCards).forEach(function (id) {
       var card = state.peopleCards[id];
+      if (state.purged.people[id]) {
+        state.removed.people[id] = true;
+        return;
+      }
       if (card && card.archived) {
         state.removed.people[id] = true;
         if (card.archivedAt) state.removedAt.people[id] = card.archivedAt;
@@ -2389,6 +2443,10 @@ button.count-toggle {
     });
     Object.keys(state.machineCards).forEach(function (id) {
       var card = state.machineCards[id];
+      if (state.purged.machines[id]) {
+        state.removed.machines[id] = true;
+        return;
+      }
       if (card && card.archived) {
         state.removed.machines[id] = true;
         if (card.archivedAt) state.removedAt.machines[id] = card.archivedAt;
@@ -2396,6 +2454,13 @@ button.count-toggle {
         delete state.removed.machines[id];
         delete state.removedAt.machines[id];
       }
+    });
+    // ZS-157: purged без картки все одно лишається removed.
+    Object.keys(state.purged.people).forEach(function (id) {
+      if (state.purged.people[id]) state.removed.people[id] = true;
+    });
+    Object.keys(state.purged.machines).forEach(function (id) {
+      if (state.purged.machines[id]) state.removed.machines[id] = true;
     });
   }
 
@@ -2497,12 +2562,18 @@ button.count-toggle {
   // Overlay added/edits/removed → картки поточного дня.
   function syncLiveOverlaysIntoCards() {
     ensureCardStores();
+    ensurePurgedStores();
     // ZS-137b: спочатку зняти stale removed з живих карток — інакше archived знесе локальні правки.
     syncRemovedFlagsFromCards();
     var day = state.viewDay || todayISO();
     var baked = buildBakedDayParts();
     flattenPeopleFromUnit(baked.unit).forEach(function (person) {
       if (!person || !person.id) return;
+      // ZS-157: безповоротний purge — не відновлювати archived-картку.
+      if (state.purged.people[person.id]) {
+        delete state.peopleCards[person.id];
+        return;
+      }
       if (state.removed.people[person.id]) {
         upsertPersonCardDay(person.id, day, person, {
           archived: true,
@@ -2521,6 +2592,10 @@ button.count-toggle {
     // Видалені, яких уже немає в baked (м’яке видалення зі списку).
     Object.keys(state.removed.people || {}).forEach(function (id) {
       if (!state.removed.people[id]) return;
+      if (state.purged.people[id]) {
+        delete state.peopleCards[id];
+        return;
+      }
       var card = state.peopleCards[id];
       if (!card) {
         var raw = findPerson(id);
@@ -2535,6 +2610,10 @@ button.count-toggle {
     });
     (baked.machines || []).forEach(function (machine) {
       if (!machine || !machine.id) return;
+      if (state.purged.machines[machine.id]) {
+        delete state.machineCards[machine.id];
+        return;
+      }
       if (state.removed.machines[machine.id]) {
         upsertMachineCardDay(machine.id, day, machine, {
           archived: true,
@@ -2551,6 +2630,10 @@ button.count-toggle {
     });
     Object.keys(state.removed.machines || {}).forEach(function (id) {
       if (!state.removed.machines[id]) return;
+      if (state.purged.machines[id]) {
+        delete state.machineCards[id];
+        return;
+      }
       var card = state.machineCards[id];
       if (!card) {
         upsertMachineCardDay(id, day, findMachine(id) || { id: id }, {
@@ -3257,23 +3340,28 @@ button.count-toggle {
     }).filter(function (item) { return !!item.code; });
     var report = state.report || sampleReportDocument();
     syncRemovedFlagsFromCards();
+    ensurePurgedStores();
     var removedPeople = Object.keys(state.removed.people || {}).filter(function (id) {
       return !!state.removed.people[id];
     }).map(function (id) {
-      return {
+      var row = {
         id: id,
         removed: true,
         updatedAt: (state.removedAt && state.removedAt.people && state.removedAt.people[id]) || stampNow()
       };
+      if (state.purged.people[id]) row.purged = true;
+      return row;
     });
     var removedMachines = Object.keys(state.removed.machines || {}).filter(function (id) {
       return !!state.removed.machines[id];
     }).map(function (id) {
-      return {
+      var row = {
         id: id,
         removed: true,
         updatedAt: (state.removedAt && state.removedAt.machines && state.removedAt.machines[id]) || stampNow()
       };
+      if (state.purged.machines[id]) row.purged = true;
+      return row;
     });
     return {
       version: 2,
@@ -3379,12 +3467,36 @@ button.count-toggle {
     });
     var removedFlags = b.removed || { people: {}, machines: {} };
     var removedAt = b.removedAt || { people: {}, machines: {} };
+    var purgedFlags = b.purged || { people: {}, machines: {} };
     var peopleTombs = Array.isArray(b.removedPeople) && b.removedPeople.length
       ? cloneData(b.removedPeople)
-      : tombsFromRemovedFlags(removedFlags.people, removedAt.people);
+      : tombsFromRemovedFlags(removedFlags.people, removedAt.people, purgedFlags.people);
     var machineTombs = Array.isArray(b.removedMachines) && b.removedMachines.length
       ? cloneData(b.removedMachines)
-      : tombsFromRemovedFlags(removedFlags.machines, removedAt.machines);
+      : tombsFromRemovedFlags(removedFlags.machines, removedAt.machines, purgedFlags.machines);
+    // ZS-157: якщо в bundle є purged-прапорці — позначити tomb навіть у готовому removedPeople.
+    if (purgedFlags.people) {
+      peopleTombs = (peopleTombs || []).map(function (row) {
+        if (!row || !row.id) return row;
+        if (purgedFlags.people[row.id]) {
+          var copy = cloneData(row);
+          copy.purged = true;
+          return copy;
+        }
+        return row;
+      });
+    }
+    if (purgedFlags.machines) {
+      machineTombs = (machineTombs || []).map(function (row) {
+        if (!row || !row.id) return row;
+        if (purgedFlags.machines[row.id]) {
+          var copy = cloneData(row);
+          copy.purged = true;
+          return copy;
+        }
+        return row;
+      });
+    }
     return {
       version: 2,
       name: String(b.report.name || "").slice(0, 80),
@@ -4395,15 +4507,17 @@ button.count-toggle {
     if (String(state.reportKey || "") === "1rota") state.reportKey = "lead";
   }
 
-  function tombsFromRemovedFlags(removedMap, removedAtMap) {
+  function tombsFromRemovedFlags(removedMap, removedAtMap, purgedMap) {
     return Object.keys(removedMap || {}).filter(function (id) {
       return !!removedMap[id];
     }).map(function (id) {
-      return {
+      var row = {
         id: id,
         removed: true,
         updatedAt: (removedAtMap && removedAtMap[id]) || stampNow()
       };
+      if (purgedMap && purgedMap[id]) row.purged = true;
+      return row;
     });
   }
 
@@ -4411,12 +4525,14 @@ button.count-toggle {
     if (!key) return;
     stashViewDay();
     var removedAt = state.removedAt || { people: {}, machines: {} };
+    ensurePurgedStores();
     bundles[key] = {
       edits: state.edits,
       removed: state.removed,
       removedAt: removedAt,
-      removedPeople: tombsFromRemovedFlags(state.removed && state.removed.people, removedAt.people),
-      removedMachines: tombsFromRemovedFlags(state.removed && state.removed.machines, removedAt.machines),
+      purged: cloneData(state.purged),
+      removedPeople: tombsFromRemovedFlags(state.removed && state.removed.people, removedAt.people, state.purged.people),
+      removedMachines: tombsFromRemovedFlags(state.removed && state.removed.machines, removedAt.machines, state.purged.machines),
       peopleCards: cloneData(state.peopleCards || {}),
       machineCards: cloneData(state.machineCards || {}),
       added: state.added,
@@ -4439,6 +4555,7 @@ button.count-toggle {
         edits: cloneData(row.edits || { people: {}, machines: {} }),
         removed: cloneData(row.removed || { people: {}, machines: {} }),
         removedAt: cloneData(row.removedAt || { people: {}, machines: {} }),
+        purged: cloneData(row.purged || { people: {}, machines: {} }),
         removedPeople: cloneData(row.removedPeople || []),
         removedMachines: cloneData(row.removedMachines || []),
         peopleCards: cloneData(row.peopleCards || {}),
@@ -4530,6 +4647,7 @@ button.count-toggle {
         edits: src.edits || { people: {}, machines: {} },
         removed: src.removed || { people: {}, machines: {} },
         removedAt: src.removedAt || { people: {}, machines: {} },
+        purged: src.purged || { people: {}, machines: {} },
         removedPeople: Array.isArray(src.removedPeople) ? src.removedPeople : [],
         removedMachines: Array.isArray(src.removedMachines) ? src.removedMachines : [],
         peopleCards: src.peopleCards || {},
@@ -4564,8 +4682,17 @@ button.count-toggle {
     state.edits = saved.edits;
     state.removed = saved.removed;
     state.removedAt = saved.removedAt || { people: {}, machines: {} };
-    state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
-    state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
+    state.purged = saved.purged ? cloneData(saved.purged) : { people: {}, machines: {} };
+    ensurePurgedStores();
+    // ZS-157: purged з removedPeople (старі кеші без state.purged).
+    (saved.removedPeople || []).forEach(function (item) {
+      if (item && item.id && item.purged) state.purged.people[item.id] = true;
+    });
+    (saved.removedMachines || []).forEach(function (item) {
+      if (item && item.id && item.purged) state.purged.machines[item.id] = true;
+    });
+    state.peopleCards = stripPurgedCards(saved.peopleCards ? cloneData(saved.peopleCards) : {}, state.purged.people);
+    state.machineCards = stripPurgedCards(saved.machineCards ? cloneData(saved.machineCards) : {}, state.purged.machines);
     state.added = saved.added;
     state.positions = saved.positions;
     state.changes = saved.changes;
@@ -4608,6 +4735,7 @@ button.count-toggle {
     state.edits = { people: {}, machines: {} };
     state.removed = { people: {}, machines: {} };
     state.removedAt = { people: {}, machines: {} };
+    state.purged = { people: {}, machines: {} };
     state.added = { people: [], machines: [] };
     state.positions = {};
     state.changes = [];
@@ -4627,8 +4755,10 @@ button.count-toggle {
       state.edits = saved.edits;
       state.removed = saved.removed || { people: {}, machines: {} };
       state.removedAt = saved.removedAt || { people: {}, machines: {} };
-      state.peopleCards = saved.peopleCards ? cloneData(saved.peopleCards) : {};
-      state.machineCards = saved.machineCards ? cloneData(saved.machineCards) : {};
+      state.purged = saved.purged ? cloneData(saved.purged) : { people: {}, machines: {} };
+      ensurePurgedStores();
+      state.peopleCards = stripPurgedCards(saved.peopleCards ? cloneData(saved.peopleCards) : {}, state.purged.people);
+      state.machineCards = stripPurgedCards(saved.machineCards ? cloneData(saved.machineCards) : {}, state.purged.machines);
       state.added = saved.added;
       state.positions = saved.positions;
       state.changes = saved.changes;
@@ -7499,11 +7629,31 @@ button.count-toggle {
       var localEntity = localMap[id];
       var remoteEntity = remoteMap[id];
       var baseEntity = baseMap[id];
-      var localAliveCard = cardAlive(localCards, id);
       var remoteAliveCard = cardAlive(remoteCards, id);
-      // ZS-137b: жива локальна картка переважає stale removedPeople — не delete-conflict і не tomb.
-      var localTomb = localAliveCard ? null : (tombLocal[id] || cardTombMeta(localCards, id));
+      var rawLocalTomb = tombLocal[id] || cardTombMeta(localCards, id);
       var remoteTomb = tombRemote[id] || cardTombMeta(remoteCards, id);
+      // ZS-157: безповоротний purge сильніший за live-картку з Диска/злиття.
+      if (rawLocalTomb && rawLocalTomb.purged) {
+        removed.push({
+          id: id,
+          removed: true,
+          purged: true,
+          updatedAt: rawLocalTomb.updatedAt || stampNow()
+        });
+        return;
+      }
+      if (remoteTomb && remoteTomb.purged && !cardAlive(localCards, id)) {
+        removed.push({
+          id: id,
+          removed: true,
+          purged: true,
+          updatedAt: remoteTomb.updatedAt || stampNow()
+        });
+        return;
+      }
+      // ZS-137b: жива локальна картка переважає stale removedPeople — не delete-conflict і не tomb.
+      var localAliveCard = cardAlive(localCards, id);
+      var localTomb = localAliveCard ? null : rawLocalTomb;
       var localTombAt = localTomb && localTomb.updatedAt ? String(localTomb.updatedAt) : "";
       var remoteTombAt = remoteTomb && remoteTomb.updatedAt ? String(remoteTomb.updatedAt) : "";
       if (localAliveCard) {
@@ -7759,8 +7909,21 @@ button.count-toggle {
       machineCards: cloneData((local.machineCards && Object.keys(local.machineCards).length ? local.machineCards : null) || remote.machineCards || {})
     };
     // ZS-133/142/144: злити наскрізні картки local∪remote.
-    snapshot.peopleCards = mergeCardMaps(local.peopleCards, remote.peopleCards);
-    snapshot.machineCards = mergeCardMaps(local.machineCards, remote.machineCards);
+    // ZS-157: безповоротний purge — не повертати картки (ні живі, ні archived) з Диска.
+    var purgedPeopleIds = Object.assign(
+      {},
+      purgedIdsFromTombs(local.removedPeople),
+      purgedIdsFromTombs(remote.removedPeople),
+      purgedIdsFromTombs(peopleMerge.removed)
+    );
+    var purgedMachineIds = Object.assign(
+      {},
+      purgedIdsFromTombs(local.removedMachines),
+      purgedIdsFromTombs(remote.removedMachines),
+      purgedIdsFromTombs(machinesMerge.removed)
+    );
+    snapshot.peopleCards = stripPurgedCards(mergeCardMaps(local.peopleCards, remote.peopleCards), purgedPeopleIds);
+    snapshot.machineCards = stripPurgedCards(mergeCardMaps(local.machineCards, remote.machineCards), purgedMachineIds);
     // Один діалог на id (живий день + days[] можуть обидва поставити ту саму розбіжність).
     var seenDelete = {};
     var uniqueDeletes = [];
@@ -7822,13 +7985,21 @@ button.count-toggle {
     if (!state.removedAt.people) state.removedAt.people = {};
     if (!state.removedAt.machines) state.removedAt.machines = {};
     var pending = pendingDeleteIdSet(pendingDeletes);
+    ensurePurgedStores();
     (Array.isArray(snapshot.removedPeople) ? snapshot.removedPeople : []).forEach(function (item) {
       if (!item || !item.id) return;
       // ZS-152: id у черзі delete-діалогу — не архівувати до вибору.
       if (pending.people[String(item.id)]) return;
+      if (item.purged) {
+        state.purged.people[item.id] = true;
+        state.removed.people[item.id] = true;
+        state.removedAt.people[item.id] = item.updatedAt || stampNow();
+        delete state.peopleCards[item.id];
+        return;
+      }
       // ZS-137b: жива локальна картка — зняти stale removed, не архівувати.
       var personCard = state.peopleCards[item.id];
-      if (personCard && !personCard.archived) {
+      if (personCard && !personCard.archived && !state.purged.people[item.id]) {
         delete state.removed.people[item.id];
         if (state.removedAt.people) delete state.removedAt.people[item.id];
         return;
@@ -7839,8 +8010,15 @@ button.count-toggle {
     (Array.isArray(snapshot.removedMachines) ? snapshot.removedMachines : []).forEach(function (item) {
       if (!item || !item.id) return;
       if (pending.machines[String(item.id)]) return;
+      if (item.purged) {
+        state.purged.machines[item.id] = true;
+        state.removed.machines[item.id] = true;
+        state.removedAt.machines[item.id] = item.updatedAt || stampNow();
+        delete state.machineCards[item.id];
+        return;
+      }
       var machineCard = state.machineCards[item.id];
-      if (machineCard && !machineCard.archived) {
+      if (machineCard && !machineCard.archived && !state.purged.machines[item.id]) {
         delete state.removed.machines[item.id];
         if (state.removedAt.machines) delete state.removedAt.machines[item.id];
         return;
@@ -8512,11 +8690,13 @@ button.count-toggle {
     state.edits = saved.edits || { people: {}, machines: {} };
     state.removed = saved.removed || { people: {}, machines: {} };
     state.removedAt = saved.removedAt || { people: {}, machines: {} };
+    state.purged = saved.purged ? cloneData(saved.purged) : { people: {}, machines: {} };
+    ensurePurgedStores();
     // ZS-144: не підміняти живі cards порожнім знімком з Диска/bundle.
     var incomingPeople = saved.peopleCards ? cloneData(saved.peopleCards) : {};
     var incomingMachines = saved.machineCards ? cloneData(saved.machineCards) : {};
-    state.peopleCards = mergeCardMaps(state.peopleCards || {}, incomingPeople);
-    state.machineCards = mergeCardMaps(state.machineCards || {}, incomingMachines);
+    state.peopleCards = stripPurgedCards(mergeCardMaps(state.peopleCards || {}, incomingPeople), state.purged.people);
+    state.machineCards = stripPurgedCards(mergeCardMaps(state.machineCards || {}, incomingMachines), state.purged.machines);
     state.added = saved.added || { people: [], machines: [] };
     state.positions = saved.positions || {};
     state.changes = Array.isArray(saved.changes) ? saved.changes : [];
@@ -8592,11 +8772,41 @@ button.count-toggle {
     var liveMachines = String(state.reportKey || "").toLowerCase() === String(code || "").toLowerCase()
       ? (state.machineCards || {})
       : {};
-    var childPeopleCards = mergeCardMaps(mergeCardMaps(prevPeople, livePeople), incomingPeople);
-    var childMachineCards = mergeCardMaps(mergeCardMaps(prevMachines, liveMachines), incomingMachines);
+    var peopleRem = removalsFromSnapshotTombs(rawJson && rawJson.removedPeople);
+    var machineRem = removalsFromSnapshotTombs(rawJson && rawJson.removedMachines);
+    // ZS-157: зберегти локальний purged, якщо знімок ще без маркера.
+    var livePurgedPeople = String(state.reportKey || "").toLowerCase() === String(code || "").toLowerCase()
+      ? purgedIdsFromFlags(state.purged && state.purged.people)
+      : {};
+    var livePurgedMachines = String(state.reportKey || "").toLowerCase() === String(code || "").toLowerCase()
+      ? purgedIdsFromFlags(state.purged && state.purged.machines)
+      : {};
+    var prevPurgedPeople = purgedIdsFromFlags(prevBundle && prevBundle.purged && prevBundle.purged.people);
+    var prevPurgedMachines = purgedIdsFromFlags(prevBundle && prevBundle.purged && prevBundle.purged.machines);
+    var purgedPeople = Object.assign({}, prevPurgedPeople, livePurgedPeople, peopleRem.purged);
+    var purgedMachines = Object.assign({}, prevPurgedMachines, livePurgedMachines, machineRem.purged);
+    var childPeopleCards = stripPurgedCards(
+      mergeCardMaps(mergeCardMaps(prevPeople, livePeople), incomingPeople),
+      purgedPeople
+    );
+    var childMachineCards = stripPurgedCards(
+      mergeCardMaps(mergeCardMaps(prevMachines, liveMachines), incomingMachines),
+      purgedMachines
+    );
+    var removedPeopleFlags = Object.assign({}, (prevBundle && prevBundle.removed && prevBundle.removed.people) || {}, peopleRem.removed);
+    var removedMachineFlags = Object.assign({}, (prevBundle && prevBundle.removed && prevBundle.removed.machines) || {}, machineRem.removed);
+    Object.keys(purgedPeople).forEach(function (id) { removedPeopleFlags[id] = true; });
+    Object.keys(purgedMachines).forEach(function (id) { removedMachineFlags[id] = true; });
     bundles[code] = {
       edits: { people: {}, machines: {} },
-      removed: { people: {}, machines: {} },
+      removed: { people: removedPeopleFlags, machines: removedMachineFlags },
+      removedAt: {
+        people: Object.assign({}, (prevBundle && prevBundle.removedAt && prevBundle.removedAt.people) || {}, peopleRem.removedAt),
+        machines: Object.assign({}, (prevBundle && prevBundle.removedAt && prevBundle.removedAt.machines) || {}, machineRem.removedAt)
+      },
+      purged: { people: purgedPeople, machines: purgedMachines },
+      removedPeople: tombsFromRemovedFlags(removedPeopleFlags, peopleRem.removedAt, purgedPeople),
+      removedMachines: tombsFromRemovedFlags(removedMachineFlags, machineRem.removedAt, purgedMachines),
       peopleCards: childPeopleCards,
       machineCards: childMachineCards,
       added: { people: [], machines: [] },
@@ -9824,11 +10034,13 @@ button.count-toggle {
 
   function archivedPeople() {
     ensureCardStores();
+    ensurePurgedStores();
     var list = [];
     var seen = {};
     Object.keys(state.peopleCards).forEach(function (id) {
       var card = state.peopleCards[id];
       if (!card || !card.archived) return;
+      if (state.purged.people[id]) return;
       seen[id] = true;
       list.push(personItemFromCard(card, state.viewDay || latestCardDayKey(card)));
     });
@@ -9851,11 +10063,13 @@ button.count-toggle {
 
   function archivedMachines() {
     ensureCardStores();
+    ensurePurgedStores();
     var list = [];
     var seen = {};
     Object.keys(state.machineCards).forEach(function (id) {
       var card = state.machineCards[id];
       if (!card || !card.archived) return;
+      if (state.purged.machines[id]) return;
       seen[id] = true;
       list.push(machineItemFromCard(card, state.viewDay || latestCardDayKey(card)));
     });
@@ -10996,10 +11210,16 @@ button.count-toggle {
 
   function purgeArchivedForever(kind, id) {
     ensureCardStores();
+    ensurePurgedStores();
+    var ts = stampNow();
     if (kind === "person") {
+      // ZS-157: стерти картку з архіву, але лишити purged-tomb — інакше sync воскресить з Диска.
       delete state.peopleCards[id];
-      delete state.removed.people[id];
-      if (state.removedAt && state.removedAt.people) delete state.removedAt.people[id];
+      state.purged.people[id] = true;
+      state.removed.people[id] = true;
+      if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+      if (!state.removedAt.people) state.removedAt.people = {};
+      state.removedAt.people[id] = ts;
       state.added.people = (state.added.people || []).filter(function (item) {
         return !(item && item.id === id);
       });
@@ -11011,8 +11231,11 @@ button.count-toggle {
     }
     if (kind === "machine") {
       delete state.machineCards[id];
-      delete state.removed.machines[id];
-      if (state.removedAt && state.removedAt.machines) delete state.removedAt.machines[id];
+      state.purged.machines[id] = true;
+      state.removed.machines[id] = true;
+      if (!state.removedAt) state.removedAt = { people: {}, machines: {} };
+      if (!state.removedAt.machines) state.removedAt.machines = {};
+      state.removedAt.machines[id] = ts;
       state.added.machines = (state.added.machines || []).filter(function (item) {
         return !(item && item.id === id);
       });
@@ -13686,7 +13909,12 @@ button.count-toggle {
     purgeAsk.click();
     check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("Видалити безповоротно") !== -1, "архів питає перед стиранням");
     document.querySelector("[data-confirm-delete]").click();
-    check(!state.removed.people[createdPerson.id] && !state.peopleCards[createdPerson.id] && !(state.added.people || []).some(function (item) { return item && item.id === createdPerson.id; }) && (!document.getElementById("archive") || document.getElementById("archive").textContent.indexOf("Буревій") === -1), "безповоротне видалення стирає картку з архіву");
+    ensurePurgedStores();
+    check(!!state.purged.people[createdPerson.id], "ZS-157 purge ставить purged");
+    check(!!state.removed.people[createdPerson.id], "ZS-157 purge лишає removed-tomb");
+    check(!state.peopleCards[createdPerson.id], "ZS-157 purge стирає peopleCards");
+    check(!(state.added.people || []).some(function (item) { return item && item.id === createdPerson.id; }), "ZS-157 purge прибирає з added");
+    check(!archivedPeople().some(function (item) { return item && item.id === createdPerson.id; }), "ZS-157 purge прибирає з UI архіву");
     document.querySelector("[data-close-archive]").click();
     document.querySelector("[data-close-profile]").click();
     // Нова картка для подальших перевірок архіву ОВТ / повторного архівування.
@@ -14216,6 +14444,8 @@ button.count-toggle {
       state.added = { people: [], machines: [] };
       state.edits = { people: {}, machines: {} };
       state.removed = { people: {}, machines: {} };
+      state.removedAt = { people: {}, machines: {} };
+      state.purged = { people: {}, machines: {} };
       state.peopleCards = {};
       state.machineCards = {};
       state.daysArchive = {};
@@ -14228,6 +14458,9 @@ button.count-toggle {
       try { localStorage.removeItem(CACHE_KEY); } catch (err151b) {}
       bundles = {};
       state.added = { people: [], machines: [] };
+      state.removed = { people: {}, machines: {} };
+      state.removedAt = { people: {}, machines: {} };
+      state.purged = { people: {}, machines: {} };
       state.peopleCards = {};
       state.machineCards = {};
       state.daysArchive = {};
@@ -15437,6 +15670,42 @@ button.count-toggle {
       applyMergeDeleteChoice("keep-removed");
       check(!!state.removed.people.p132b && !findPerson("p132b"), "ZS-137: лишити видаленим при справжньому tomb");
       state.mergeDeletes = [];
+
+      // ZS-157: purge-tomb — не тихе воскресіння в о/с (lead) і не повернення archived у архів (unit).
+      var local157purge = cloneData(local132b);
+      local157purge.removedPeople = [{ id: "p132b", removed: true, purged: true, updatedAt: "2026-11-12T06:00:00.000Z" }];
+      local157purge.peopleCards = {};
+      var remote157live = cloneData(remote132b);
+      remote157live.peopleCards = {
+        p132b: {
+          id: "p132b",
+          archived: false,
+          archivedAt: null,
+          days: { "2026-11-05": cloneData(person132b) },
+          ownerKey: "lead"
+        }
+      };
+      var merged157lead = mergeUnitSnapshots(local157purge, remote157live, base132b);
+      check(!!merged157lead.snapshot, "ZS-157: merge після purge");
+      check(!flattenPeopleFromUnit(merged157lead.snapshot.unit).some(function (row) { return row && row.id === "p132b"; }), "ZS-157 lead: purge не воскрешає в о/с");
+      check(!(merged157lead.snapshot.peopleCards && merged157lead.snapshot.peopleCards.p132b), "ZS-157 lead: немає картки після purge");
+      check((merged157lead.snapshot.removedPeople || []).some(function (row) { return row && row.id === "p132b" && row.purged; }), "ZS-157 lead: purged-tomb у знімку");
+      check(!merged157lead.deleteConflicts || !merged157lead.deleteConflicts.length, "ZS-157 lead: без діалогу — тихо лишити видаленим");
+      var remote157arch = cloneData(remote132b);
+      remote157arch.unit = { id: "root", name: "Служба", people: [] };
+      remote157arch.removedPeople = [{ id: "p132b", removed: true, updatedAt: "2026-11-05T12:00:00.000Z" }];
+      remote157arch.peopleCards = {
+        p132b: {
+          id: "p132b",
+          archived: true,
+          archivedAt: "2026-11-05T12:00:00.000Z",
+          days: { "2026-11-05": cloneData(person132b) },
+          ownerKey: "unit-a"
+        }
+      };
+      var merged157unit = mergeUnitSnapshots(local157purge, remote157arch, remote157arch);
+      check(!(merged157unit.snapshot.peopleCards && merged157unit.snapshot.peopleCards.p132b), "ZS-157 unit: archived з Диска не повертається після purge");
+      check((merged157unit.snapshot.removedPeople || []).some(function (row) { return row && row.id === "p132b" && row.purged; }), "ZS-157 unit: purged-tomb тримається");
       // ZS-137: новий на телефоні + старі на Диску/в base без tomb — без wipe, новий лишається.
       var personPhone = {
         id: "p137new",
