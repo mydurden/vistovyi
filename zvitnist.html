@@ -2152,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T13:08:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T13:25:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3945,7 +3945,13 @@ button.count-toggle {
   }
 
   function settingsWriteBlockedNote(action) {
-    var what = action === "create" ? "додано" : (action === "rotate" ? "змінено" : "прибрано");
+    // ZS-169: на delete — не видаляємо локально, доки settings не записались (інакше дірка зі старим fp на Диску).
+    if (action === "delete") {
+      return "Ланку не видалено: довідники на Диск не записано (немає права писати settings). "
+        + "Без зняття відбитка unit міг би далі писати звіт. "
+        + "Перевірте код доступу адміна теки і зробіть sync.";
+    }
+    var what = action === "create" ? "додано" : "змінено";
     return "Ланку " + what + " локально, але довідники на Диск не записано (немає права писати settings). "
       + "Поки vistovyi-settings.json без актуальних відбитків — захист від запису звіту на Диску не діє. "
       + "Перевірте код доступу адміна теки і зробіть sync.";
@@ -6895,6 +6901,7 @@ button.count-toggle {
 
   // ZS-111: технічні підписи sync ховаємо; лишаємо помилки/дії + progress bar.
   // ZS-167: помилки create/delete/rotate settings теж видимі в профілі (не «тихе» локальне).
+  // ZS-169: delete без settings/trash — блок, видима помилка «не видалено».
   function isVisibleDriveNote(note) {
     var text = String(note || "").trim();
     if (!text) return false;
@@ -6905,6 +6912,7 @@ button.count-toggle {
     if (/^Google не відкриває вхід/.test(text)) return true;
     if (/довідники на Диск не записано/.test(text)) return true;
     if (/Без Диска довідники/.test(text)) return true;
+    if (/Ланку не видалено/.test(text)) return true;
     if (/синхрон довідників\/файлу не вдався/.test(text)) return true;
     if (/синхрон не вдався/.test(text)) return true;
     return false;
@@ -7631,6 +7639,29 @@ button.count-toggle {
       return response.ok;
     }).catch(function () {
       return false;
+    });
+  }
+
+  // ZS-169: після delete lead кладе vu-*.bin цієї ланки в кошик (не лишає сміття в теці).
+  function trashIssuedUnitDriveFile(token, folderId, code, knownName) {
+    var key = String(code || "").trim();
+    if (!token || !folderId || !key) {
+      return Promise.resolve({ trashed: 0, reason: "skip" });
+    }
+    var label = String(knownName || "").trim();
+    if (label) {
+      rememberCanonUnitName(key, label);
+      if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+      if (!state.driveUnitFileLabel[key]) state.driveUnitFileLabel[key] = label;
+    }
+    return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
+      var file = resolved && resolved.file;
+      if (!file || !file.id) return { trashed: 0, reason: "missing", name: resolved && resolved.name || "" };
+      return trashDriveFile(token, file.id).then(function (ok) {
+        return { trashed: ok ? 1 : 0, name: resolved.name || file.name || "", fileId: file.id };
+      });
+    }).catch(function () {
+      return { trashed: 0, reason: "error" };
     });
   }
 
@@ -10133,6 +10164,54 @@ button.count-toggle {
     return removed;
   }
 
+  // ZS-169: знімок ланки перед delete — відкат, якщо settings не записались.
+  function snapshotIssuedUnit(unit) {
+    if (!unit) return null;
+    var code = String(unit.code || "").trim();
+    return {
+      unit: {
+        id: unit.id,
+        name: unit.name,
+        code: unit.code,
+        parent: unit.parent
+      },
+      code: code,
+      name: String(unit.name || "").trim(),
+      fileLabel: state.driveUnitFileLabel && state.driveUnitFileLabel[code]
+        ? String(state.driveUnitFileLabel[code])
+        : String(unit.name || "").trim(),
+      status: state.unitReportStatus && state.unitReportStatus[code]
+        ? state.unitReportStatus[code]
+        : null,
+      bundle: bundles && bundles[code] ? bundles[code] : null
+    };
+  }
+
+  function restoreIssuedUnitSnapshot(snap) {
+    if (!snap || !snap.unit || !snap.code) return;
+    clearUnitDeleted(snap.code);
+    var exists = false;
+    for (var i = 0; i < state.units.length; i++) {
+      var row = state.units[i];
+      if (!row) continue;
+      if (row.id === snap.unit.id || String(row.code || "").trim() === snap.code) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists) state.units.push(snap.unit);
+    if (snap.status != null) {
+      if (!state.unitReportStatus || typeof state.unitReportStatus !== "object") state.unitReportStatus = {};
+      state.unitReportStatus[snap.code] = snap.status;
+    }
+    if (snap.bundle) bundles[snap.code] = snap.bundle;
+    if (snap.name) rememberCanonUnitName(snap.code, snap.name);
+    if (snap.fileLabel) {
+      if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+      state.driveUnitFileLabel[snap.code] = snap.fileLabel;
+    }
+  }
+
   function confirmAccessChange() {
     var change = state.accessChange;
     if (!change || !canBranch()) return Promise.resolve();
@@ -10152,26 +10231,47 @@ button.count-toggle {
     var token = driveToken || "";
 
     if (change.deletePending) {
-      removeIssuedUnit(unit.id);
+      // ZS-169: delete лише після успішного settings (зняти fp); інакше відкат — без дірки «локально tomb / на Диску старий fp».
+      var snap = snapshotIssuedUnit(unit);
+      var removedCode = snap && snap.code ? snap.code : String(unit.code || "").trim();
+      var removedLabel = snap && snap.fileLabel ? snap.fileLabel : String(unit.name || "").trim();
       state.accessChange = null;
-      save();
+      removeIssuedUnit(unit.id);
       if (!token || !folderId) {
-        surfaceUnitDriveGateError("Ланку прибрано локально. Без Диска довідники з відбитками не оновлено.");
+        restoreIssuedUnitSnapshot(snap);
+        surfaceUnitDriveGateError("Ланку не видалено. Без Диска не зняти відбиток з settings — unit міг би далі писати звіт.");
+        save();
         render();
         return Promise.resolve();
       }
-      // ZS-163/167: settings + vu-lead разом; без canWrite — видима помилка, без «тихого» lead-only.
       return syncIssuedUnitsToDrive(token, folderId).then(function (driveRes) {
         if (!driveRes || !driveRes.wroteSettings) {
+          restoreIssuedUnitSnapshot(snap);
           surfaceUnitDriveGateError(settingsWriteBlockedNote("delete"));
+          save();
           render();
           return;
         }
-        state.unitError = "";
-        state.driveNote = "Список нижчих оновлено.";
-        render();
+        // settings без fp уже на Диску — локальний delete лишається; vu-*.bin → кошик.
+        save();
+        return trashIssuedUnitDriveFile(token, folderId, removedCode, removedLabel).then(function () {
+          state.unitError = "";
+          state.driveNote = "Список нижчих оновлено.";
+          render();
+        });
       }).catch(function () {
-        surfaceUnitDriveGateError("Ланку прибрано локально; синхрон довідників/файлу не вдався.");
+        // Якщо settings уже без цього fp (частина sync встигла) — не відкатуємо (безпечніше лишити delete).
+        if (state.settingsUnitFingerprintsReady && !unitFingerprintAllowed(removedCode)) {
+          save();
+          return trashIssuedUnitDriveFile(token, folderId, removedCode, removedLabel).then(function () {
+            state.unitError = "";
+            state.driveNote = "Список нижчих оновлено.";
+            render();
+          });
+        }
+        restoreIssuedUnitSnapshot(snap);
+        surfaceUnitDriveGateError("Ланку не видалено; синхрон довідників/файлу не вдався.");
+        save();
         render();
       });
     }
@@ -13042,7 +13142,7 @@ button.count-toggle {
     rememberSettingsUnitFingerprints({ unitFingerprints: ownFp }, true);
     check(unitFingerprintAllowed(code163), "ZS-164: свій fingerprint — дозволено");
     var noteNowrite = settingsWriteBlockedNote("delete");
-    check(noteNowrite.indexOf("довідники на Диск не записано") !== -1 && noteNowrite.indexOf("Список нижчих оновлено") === -1, "ZS-164: без canWrite — чітка помилка, не фальшивий успіх");
+    check(noteNowrite.indexOf("довідники на Диск не записано") !== -1 && noteNowrite.indexOf("не видалено") !== -1 && noteNowrite.indexOf("Список нижчих оновлено") === -1, "ZS-164/169: без canWrite — чітка помилка delete, не фальшивий успіх");
     var payloadCreate164 = buildSettingsPayload();
     check(payloadCreate164.unitFingerprints && typeof payloadCreate164.unitFingerprints === "object", "ZS-164: create/delete шлях будує unitFingerprints у payload");
     check(typeof refreshUnitFingerprintsFromDrive === "function" && typeof syncSettingsFileNow === "function", "ZS-164: refresh settings і syncSettingsFileNow є");
@@ -13104,7 +13204,8 @@ button.count-toggle {
     check(!!isVisibleDriveNote(settingsWriteBlockedNote("delete")), "ZS-167: помилка settings на delete видима в профілі");
     check(!!isVisibleDriveNote(settingsWriteBlockedNote("rotate")), "ZS-167: помилка settings на rotate видима в профілі");
     check(!!isVisibleDriveNote("Ланку додано локально. Без Диска довідники з відбитками не оновлено."), "ZS-167: nodrive create видимий");
-    check(!!isVisibleDriveNote("Ланку прибрано локально; синхрон довідників/файлу не вдався."), "ZS-167: catch delete видимий");
+    check(!!isVisibleDriveNote("Ланку не видалено; синхрон довідників/файлу не вдався."), "ZS-169: catch delete (блок) видимий");
+    check(!!isVisibleDriveNote("Ланку не видалено. Без Диска не зняти відбиток з settings — unit міг би далі писати звіт."), "ZS-169: nodrive delete блок видимий");
     check(!isVisibleDriveNote("Ланку додано, список на Диску оновлено."), "ZS-167: технічний успіх create лишається схованим");
     state.driveEncryptKey = code165;
     state.openCode = code165;
@@ -13126,6 +13227,47 @@ button.count-toggle {
     state.unitError = keepErr167;
     state.driveNote = "";
     state.profile = false;
+    // ZS-169: trash vu після delete; nowrite/nodrive — відкат, без дірки fp.
+    check(typeof trashIssuedUnitDriveFile === "function", "ZS-169: trashIssuedUnitDriveFile є");
+    check(typeof snapshotIssuedUnit === "function" && typeof restoreIssuedUnitSnapshot === "function", "ZS-169: snapshot/restore delete є");
+    var code169 = "MNPQ-RSTU-VWX2-YZ34-5678";
+    var keepUnits169 = state.units;
+    var keepDeleted169 = state.deletedUnits;
+    var keepFp169 = state.settingsUnitFingerprints;
+    var keepFpReady169 = state.settingsUnitFingerprintsReady;
+    var keepEncrypt169 = state.driveEncryptKey;
+    var keepOpen169 = state.openCode;
+    var keepFolder169 = state.driveFolder;
+    var keepDriveNames169 = state.driveUnitNames;
+    var keepDriveLabel169 = state.driveUnitFileLabel;
+    state.units = [{ id: "u-169", name: "Взвод дельта", code: code169, parent: "lead" }];
+    state.deletedUnits = {};
+    state.driveEncryptKey = "секрет-lead-169";
+    state.openCode = "lead";
+    state.driveFolder = "";
+    state.driveUnitNames = {};
+    state.driveUnitNames[code169] = "Взвод дельта";
+    state.driveUnitFileLabel = {};
+    state.driveUnitFileLabel[code169] = "Взвод дельта";
+    rememberSettingsUnitFingerprints({ unitFingerprints: (function () { var m = {}; m[keyFingerprint(code169)] = "Взвод дельта"; return m; })() }, true);
+    var snap169 = snapshotIssuedUnit(state.units[0]);
+    check(snap169 && snap169.code === code169 && snap169.fileLabel === "Взвод дельта", "ZS-169: snapshot тримає код і ярлик файлу");
+    removeIssuedUnit("u-169");
+    check(state.units.length === 0 && isUnitDeleted(code169), "ZS-169: після remove є tomb");
+    restoreIssuedUnitSnapshot(snap169);
+    check(state.units.length === 1 && !isUnitDeleted(code169) && findUnitByCode(code169), "ZS-169: restore повертає ланку без tomb");
+    check(state.driveUnitFileLabel[code169] === "Взвод дельта", "ZS-169: restore вертає ярлик vu-файлу");
+    check(settingsWriteBlockedNote("delete").indexOf("не видалено") !== -1, "ZS-169: nowrite delete каже «не видалено»");
+    check(unitDriveFileName(code169) === "vu-vzvod-delta.bin" || !!unitDriveFileName(code169), "ZS-169: ім’я vu-*.bin відновлюється для trash");
+    state.units = keepUnits169;
+    state.deletedUnits = keepDeleted169;
+    state.settingsUnitFingerprints = keepFp169;
+    state.settingsUnitFingerprintsReady = keepFpReady169;
+    state.driveEncryptKey = keepEncrypt169;
+    state.openCode = keepOpen169;
+    state.driveFolder = keepFolder169;
+    state.driveUnitNames = keepDriveNames169;
+    state.driveUnitFileLabel = keepDriveLabel169;
     state.units = keepUnits165;
     state.deletedUnits = keepDeleted165;
     state.settingsUnitFingerprints = keepFp165;
@@ -13806,7 +13948,15 @@ button.count-toggle {
     document.querySelector("#profile-overlay [data-change-access]").click();
     document.querySelector("#access-change-overlay [data-access-delete]").click();
     document.querySelector("#access-change-overlay [data-access-confirm]").click();
-    check(state.units.length === 0 && !document.getElementById("access-change-overlay"), "Підтвердити після Видалити прибирає ланку");
+    // ZS-169: без Диска delete блок (не лишаємо tomb при старих fp на Диску).
+    check(state.units.length === 1 && !document.getElementById("access-change-overlay") && String(state.unitError || "").indexOf("не видалено") !== -1, "ZS-169: без Диска Підтвердити не видаляє ланку");
+    // Подальші кроки тестового сценарію потребують порожнього списку — прямий tomb (не UI delete).
+    var wipeCode = String(state.units[0].code || "");
+    removeIssuedUnit(state.units[0].id);
+    save();
+    check(state.units.length === 0 && isUnitDeleted(wipeCode), "пряме removeIssuedUnit чистить список для наступних кроків");
+    state.unitError = "";
+    state.driveNote = "";
     document.getElementById("unit-name").value = "Туз";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     check(state.units.length === 1 && state.units[0].name === "Туз", "ланку Туз створено знову для подальших перевірок");
@@ -17544,7 +17694,13 @@ button.count-toggle {
     unitDriveFileName: unitDriveFileName,
     encryptWithCode: encryptWithCode,
     decryptWithCode: decryptWithCode,
-    currentUnitSnapshot: currentUnitSnapshot
+    currentUnitSnapshot: currentUnitSnapshot,
+    trashIssuedUnitDriveFile: trashIssuedUnitDriveFile,
+    snapshotIssuedUnit: snapshotIssuedUnit,
+    restoreIssuedUnitSnapshot: restoreIssuedUnitSnapshot,
+    removeIssuedUnit: removeIssuedUnit,
+    syncIssuedUnitsToDrive: syncIssuedUnitsToDrive,
+    settingsWriteBlockedNote: settingsWriteBlockedNote
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
