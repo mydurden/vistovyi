@@ -821,6 +821,88 @@ h2 {
   grid-column: 1 / -1;
 }
 
+.schema-card-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 8px;
+  margin-top: 4px;
+}
+
+.schema-card-fields .field {
+  margin: 0;
+  min-width: 0;
+}
+
+.schema-card-fields .field.full,
+.schema-card-fields .field.wide {
+  grid-column: 1 / -1;
+}
+
+.card textarea {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+
+.card textarea:disabled {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.constructor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+@media (min-width: 720px) {
+  .constructor-layout {
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+    align-items: start;
+  }
+}
+
+.constructor-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.constructor-blocks {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+.constructor-block-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.constructor-block-row .grow {
+  min-width: 0;
+}
+
+.constructor-preview-note {
+  margin: 0 0 8px;
+}
+
+
 .field { margin: 0 0 10px; }
 .field .label, .card .label { color: var(--muted); font-size: 0.82rem; font-weight: 700; }
 .field .value { font-size: 1rem; overflow-wrap: anywhere; }
@@ -1494,6 +1576,150 @@ button.count-toggle {
   var OTHER_TYPE = { id: "other", name: "Інше", one: "Інше" };
   var SETTINGS_FILE = "vistovyi-settings.json";
 
+  // ——— ZS-156: універсальні схеми карток ———
+  var CARD_SECTIONS = {
+    people: { tool: "Картка особового складу +", cardTitle: "Картка військовослужбовця", section: "Особовий склад" },
+    gear: { tool: "Картка ОВТ +", cardTitle: "Картка ОВТ", section: "ОВТ" },
+    tasks: { tool: "Картка завдання +", cardTitle: "Картка завдання", section: "Завдання" }
+  };
+
+  function defaultCardSchemas() {
+    return {
+      people: [
+        { id: "callsign", kind: "field", label: "Позивний", rows: 1, width: "half" },
+        { id: "surname", kind: "field", label: "Прізвище", rows: 1, width: "half" },
+        { id: "givenName", kind: "field", label: "Ім’я", rows: 1, width: "half" },
+        { id: "patronymic", kind: "field", label: "По батькові", rows: 1, width: "half" },
+        { id: "rank", kind: "list", label: "Звання", rows: 1, width: "half", items: [] },
+        { id: "unit", kind: "field", label: "Підрозділ", rows: 1, width: "half" },
+        { id: "position", kind: "field", label: "Посада або умовна посада", rows: 1, width: "full" },
+        { id: "duty", kind: "list", label: "Стан", rows: 1, width: "half", items: [] },
+        { id: "accounting", kind: "list", label: "Облік", rows: 1, width: "half", items: [] }
+      ],
+      gear: [
+        { id: "name", kind: "field", label: "Назва", rows: 1, width: "full" },
+        { id: "type", kind: "list", label: "Тип", rows: 1, width: "half", items: [] },
+        { id: "board", kind: "field", label: "Борт", rows: 1, width: "half" },
+        { id: "unit", kind: "field", label: "Підрозділ", rows: 1, width: "half" },
+        { id: "duty", kind: "list", label: "Стан", rows: 1, width: "half", items: [] },
+        { id: "accounting", kind: "list", label: "Облік", rows: 1, width: "half", items: [] },
+        { id: "mileage", kind: "field", label: "Пробіг", rows: 1, width: "half" },
+        { id: "hours", kind: "field", label: "Мотогодини", rows: 1, width: "half" },
+        { id: "service", kind: "field", label: "Останнє ТО", rows: 1, width: "full" }
+      ],
+      tasks: [
+        { id: "name", kind: "field", label: "Назва", rows: 1, width: "full" },
+        { id: "status", kind: "list", label: "Статус", rows: 1, width: "half", items: ["Заплановано", "Виконується", "Зроблено"] },
+        { id: "description", kind: "field", label: "Опис", rows: 4, width: "full" },
+        { id: "time", kind: "field", label: "Час виконання", rows: 1, width: "half" },
+        { id: "start", kind: "field", label: "Початок", rows: 1, width: "half" },
+        { id: "place", kind: "field", label: "Місце", rows: 1, width: "full" },
+        { id: "author", kind: "field", label: "Хто здав", rows: 1, width: "full" }
+      ]
+    };
+  }
+
+  function normalizeCardBlock(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    var id = String(raw.id || "").trim().slice(0, 40);
+    var kind = raw.kind === "list" ? "list" : "field";
+    var label = String(raw.label || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!id || !label) return null;
+    var rows = Math.max(1, Math.min(12, Number(raw.rows) || 1));
+    var width = raw.width === "half" ? "half" : "full";
+    var block = { id: id, kind: kind, label: label, rows: rows, width: width };
+    if (kind === "list") {
+      var items = [];
+      (Array.isArray(raw.items) ? raw.items : String(raw.items || "").split(/\n+/)).forEach(function (line) {
+        var text = String(line || "").replace(/\s+/g, " ").trim().slice(0, 80);
+        if (text && items.indexOf(text) === -1) items.push(text);
+      });
+      block.items = items;
+    }
+    return block;
+  }
+
+  function normalizeCardSchemaList(list) {
+    var out = [];
+    var seen = {};
+    (Array.isArray(list) ? list : []).forEach(function (raw) {
+      var block = normalizeCardBlock(raw);
+      if (!block || seen[block.id]) return;
+      seen[block.id] = true;
+      out.push(block);
+    });
+    return out;
+  }
+
+  function cloneCardSchemas(src) {
+    var base = defaultCardSchemas();
+    var out = { people: [], gear: [], tasks: [] };
+    ["people", "gear", "tasks"].forEach(function (key) {
+      var list = src && Array.isArray(src[key]) ? src[key] : base[key];
+      out[key] = normalizeCardSchemaList(list);
+      if (!out[key].length) out[key] = normalizeCardSchemaList(base[key]);
+    });
+    return out;
+  }
+
+  function ensureCardSchemas() {
+    if (!state.cardSchemas || typeof state.cardSchemas !== "object") {
+      state.cardSchemas = cloneCardSchemas(null);
+    } else {
+      state.cardSchemas = cloneCardSchemas(state.cardSchemas);
+    }
+    return state.cardSchemas;
+  }
+
+  function cardSchema(section) {
+    var schemas = ensureCardSchemas();
+    return schemas[section] || [];
+  }
+
+  function slugCardId(label) {
+    var base = String(label || "")
+      .toLowerCase()
+      .replace(/[^a-zа-яіїєґ0-9]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24);
+    if (!base) base = "f";
+    var id = "cf" + base.replace(/-/g, "");
+    return id.slice(0, 40);
+  }
+
+  function uniqueCardBlockId(section, label, preferred) {
+    var used = {};
+    cardSchema(section).forEach(function (block) { used[block.id] = true; });
+    var id = String(preferred || slugCardId(label) || "field").slice(0, 40);
+    if (!used[id]) return id;
+    var n = 2;
+    while (used[id + n]) n += 1;
+    return String(id + n).slice(0, 40);
+  }
+
+  function setCardSchema(section, blocks) {
+    ensureCardSchemas();
+    state.cardSchemas[section] = normalizeCardSchemaList(blocks);
+    if (!state.cardSchemas[section].length) {
+      state.cardSchemas[section] = normalizeCardSchemaList(defaultCardSchemas()[section]);
+    }
+  }
+
+  function serializeCardSchemas() {
+    var schemas = ensureCardSchemas();
+    return {
+      people: schemas.people.map(function (b) { return normalizeCardBlock(b); }),
+      gear: schemas.gear.map(function (b) { return normalizeCardBlock(b); }),
+      tasks: schemas.tasks.map(function (b) { return normalizeCardBlock(b); })
+    };
+  }
+
+  function parseCardSchemas(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    return cloneCardSchemas(raw);
+  }
+
+
   var MONTHS = [
     "січня", "лютого", "березня", "квітня", "травня", "червня",
     "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
@@ -1639,6 +1865,9 @@ button.count-toggle {
     driveUnitFileLabel: {},
     profile: false,
     profilePane: "",
+    // ZS-156: схеми універсальних карток (lead settings → Drive).
+    cardSchemas: null,
+    cardConstructor: null,
     report: null,
     reportKey: "lead",
     sampleReport: null,
@@ -2152,7 +2381,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T14:39:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T15:35:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -2161,6 +2390,24 @@ button.count-toggle {
   function buildVersionLabel(at) {
     var d = new Date(at || APP_BUILD_AT);
     if (isNaN(d.getTime())) return "Версія від —";
+    try {
+      var parts = new Intl.DateTimeFormat("uk-UA", {
+        timeZone: "Europe/Kyiv",
+        hour: "2-digit",
+        minute: "2-digit",
+        day: "2-digit",
+        month: "2-digit",
+        year: "2-digit",
+        hour12: false
+      }).formatToParts(d);
+      var map = {};
+      parts.forEach(function (part) {
+        if (part.type !== "literal") map[part.type] = part.value;
+      });
+      if (map.hour && map.minute && map.day && map.month && map.year) {
+        return "Версія від " + map.hour + ":" + map.minute + " " + map.day + "." + map.month + "." + map.year;
+      }
+    } catch (err) {}
     return "Версія від " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + " " +
       pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + "." + String(d.getFullYear()).slice(-2);
   }
@@ -5831,6 +6078,11 @@ button.count-toggle {
     var shown = box.querySelector(".pick-current span");
     if (shown) shown.textContent = label;
     closePick(box);
+    if (box.getAttribute("data-constructor-field") && state.cardConstructor) {
+      var ctorField = box.getAttribute("data-constructor-field");
+      state.cardConstructor[ctorField] = value;
+      return;
+    }
     if (applyDraftField(box)) return;
     if (liveAutosaveEditNode(box)) return;
     rememberPending(box);
@@ -5916,53 +6168,261 @@ button.count-toggle {
     return wrap;
   }
 
+  function schemaFieldDomId(section, fieldId, entityId) {
+    if (section === "people") {
+      if (fieldId === "callsign") return "call-" + entityId;
+      if (fieldId === "givenName") return "given-" + entityId;
+      if (fieldId === "patronymic") return "patronym-" + entityId;
+      if (fieldId === "unit") return "unitp-" + entityId;
+      if (fieldId === "position") return "post-" + entityId;
+      if (fieldId === "accounting") return "account-" + entityId;
+      return fieldId + "-" + entityId;
+    }
+    if (section === "gear") {
+      var map = {
+        name: "mname",
+        type: "mtype",
+        board: "mboard",
+        unit: "munit",
+        duty: "mduty",
+        accounting: "maccount",
+        mileage: "mmile",
+        hours: "mhours",
+        service: "mservice"
+      };
+      return (map[fieldId] || ("m" + fieldId)) + "-" + entityId;
+    }
+    return fieldId + "-" + entityId;
+  }
+
+  function schemaListOptions(section, block) {
+    if (!block) return [];
+    if (section === "people" && block.id === "rank") {
+      var ranks = [];
+      RANK_GROUPS.forEach(function (group) {
+        group.ranks.forEach(function (rank) { ranks.push([rank, rank]); });
+      });
+      return ranks;
+    }
+    if (section === "people" && block.id === "duty") {
+      return Object.keys(dutyMap()).map(function (key) { return [key, dutyMap()[key].label]; });
+    }
+    if (section === "people" && block.id === "accounting") return accountingOptions();
+    if (section === "gear" && block.id === "duty") {
+      return Object.keys(machineDutyMap()).map(function (key) { return [key, machineDutyMap()[key].label]; });
+    }
+    if (section === "gear" && block.id === "accounting") return accountingOptions();
+    if (section === "gear" && block.id === "type") {
+      var typeOptions = [["", ""]];
+      typeCatalog().forEach(function (type) { typeOptions.push([type.id, type.one]); });
+      return typeOptions;
+    }
+    if (section === "tasks" && block.id === "status") {
+      return Object.keys(TASK_STATUS).map(function (key) { return [key, key]; });
+    }
+    return (block.items || []).map(function (item) { return [item, item]; });
+  }
+
+  function schemaEntityValue(section, item, fieldId, draftMode) {
+    if (!item) return "";
+    if (section === "people") {
+      var parts = draftMode
+        ? { surname: item.surname || "", givenName: item.givenName || "", patronymic: item.patronymic || "" }
+        : personNameParts(item);
+      if (draftMode && !parts.surname && !parts.givenName && !parts.patronymic && item.name) {
+        parts = splitLegacyName(item.name);
+      }
+      if (fieldId === "surname") return draftMode ? (parts.surname || "") : pendingValue("person", item.id, "surname", parts.surname);
+      if (fieldId === "givenName") return draftMode ? (parts.givenName || "") : pendingValue("person", item.id, "givenName", parts.givenName);
+      if (fieldId === "patronymic") return draftMode ? (parts.patronymic || "") : pendingValue("person", item.id, "patronymic", parts.patronymic);
+      if (fieldId === "rank") return draftMode ? (item.rank || "") : pendingValue("person", item.id, "rank", personRank(item));
+      if (fieldId === "unit") return draftMode ? (item.unit || "") : pendingValue("person", item.id, "unit", personUnit(item));
+      if (fieldId === "callsign") return draftMode ? (item.callsign || "") : pendingValue("person", item.id, "callsign", personCallsign(item));
+      if (fieldId === "position") return draftMode ? (item.position || "") : pendingValue("person", item.id, "position", positionOf(item));
+      if (fieldId === "duty") return draftMode ? (item.duty || "in") : pendingValue("person", item.id, "duty", personDutyKey(item));
+      if (fieldId === "accounting") return draftMode ? (item.accounting || "official") : pendingValue("person", item.id, "accounting", personAccountingKey(item));
+    }
+    if (section === "gear") {
+      if (fieldId === "name") return draftMode ? (item.name || "") : pendingValue("machine", item.id, "name", machineName(item));
+      if (fieldId === "board") return draftMode ? (item.board || "") : pendingValue("machine", item.id, "board", machineBoard(item));
+      if (fieldId === "unit") return draftMode ? (item.unit || "") : pendingValue("machine", item.id, "unit", machineUnit(item));
+      if (fieldId === "duty") return draftMode ? (item.duty || "in") : pendingValue("machine", item.id, "duty", machineDutyKey(item));
+      if (fieldId === "accounting") return draftMode ? (item.accounting || "official") : pendingValue("machine", item.id, "accounting", machineAccountingKey(item));
+      if (fieldId === "type") {
+        if (draftMode) {
+          var typeKey = resolveMachineTypeId(item.type);
+          return typeKey === OTHER_TYPE.id ? "" : typeKey;
+        }
+        var pendingType = pendingValue("machine", item.id, "type", machineTypeLabel(item));
+        var resolved = resolveMachineTypeId(pendingType);
+        if (resolved === OTHER_TYPE.id || !typeById(resolved)) return "";
+        return resolved;
+      }
+      if (fieldId === "mileage") {
+        var mileage = draftMode ? item.mileage : machineMileage(item);
+        var mileShown = draftMode ? mileage : pendingValue("machine", item.id, "mileage", mileage);
+        return mileShown == null ? "" : String(mileShown);
+      }
+      if (fieldId === "hours") {
+        var hours = draftMode ? item.hours : machineHours(item);
+        var hoursShown = draftMode ? hours : pendingValue("machine", item.id, "hours", hours);
+        return hoursShown == null ? "" : String(hoursShown);
+      }
+      if (fieldId === "service") {
+        var service = draftMode ? (item.service || "") : machineService(item);
+        var serviceText = !service ? "" : (service.indexOf("-") === 4 ? formatDate(service) : service);
+        if (draftMode) return serviceText;
+        var serviceShown = pendingValue("machine", item.id, "service", serviceText);
+        return serviceShown == null || serviceShown === "немає даних" ? "" : String(serviceShown);
+      }
+    }
+    if (section === "tasks") {
+      var raw = item[fieldId];
+      return raw == null ? "" : String(raw);
+    }
+    if (draftMode) return item[fieldId] == null ? "" : String(item[fieldId]);
+    var kind = section === "gear" ? "machine" : "person";
+    return pendingValue(kind, item.id, fieldId, item[fieldId] == null ? "" : item[fieldId]);
+  }
+
+  function appendSchemaCardFields(host, section, item, draftMode, opts) {
+    opts = opts || {};
+    var preview = !!opts.preview;
+    var editable = preview ? false : (!!draftMode || (section === "gear" ? isEditing("machine", item.id) : section === "people" ? isEditing("person", item.id) : false));
+    var kind = section === "gear" ? "machine" : section === "people" ? "person" : "task";
+    var entityId = preview ? "preview" : (item && item.id ? item.id : "draft");
+    var blocks = opts.blocks || cardSchema(section);
+    var grid = el("div", { className: "schema-card-fields" + (section === "gear" ? " card-fields" : "") });
+    blocks.forEach(function (block) {
+      if (!block) return;
+      if (section === "gear" && (block.id === "mileage" || block.id === "hours" || block.id === "service") && !preview && state.machineFields && !state.machineFields[block.id]) {
+        return;
+      }
+      var widthClass = block.width === "half" ? " half" : " full";
+      var value = preview ? "" : schemaEntityValue(section, item, block.id, draftMode);
+      var controlId = schemaFieldDomId(section, block.id, entityId);
+      var control = null;
+      var wideHint = "";
+      if (block.kind === "list" || block.id === "rank" || block.id === "duty" || block.id === "accounting" || block.id === "type" || (section === "tasks" && block.id === "status")) {
+        if (section === "people" && block.id === "rank" && !preview) {
+          control = rankPick(controlId, value, draftMode ? { "data-draft-field": "rank" } : editAttrs("person", item.id, "rank"));
+        } else {
+          var options = schemaListOptions(section, block);
+          var extra = {};
+          if (!preview) {
+            if (draftMode) extra["data-draft-field"] = block.id;
+            else if (kind !== "task") extra = editAttrs(kind, item.id, block.id);
+          }
+          control = inPlacePick(controlId, value, options, extra);
+        }
+      } else if (!preview && block.rows > 1) {
+        var areaAttrs = {
+          id: controlId,
+          rows: String(block.rows),
+          maxlength: "800"
+        };
+        if (draftMode) areaAttrs["data-draft-field"] = block.id;
+        else if (kind !== "task") {
+          areaAttrs["data-edit-kind"] = kind;
+          areaAttrs["data-edit-id"] = item.id;
+          areaAttrs["data-edit-field"] = block.id;
+        }
+        control = el("textarea", { attrs: areaAttrs });
+        control.value = value;
+      } else if (!preview && section === "people" && block.id === "position") {
+        var postAttrs = {
+          id: controlId,
+          type: "text",
+          maxlength: "80",
+          autocomplete: "off",
+          placeholder: "Ще не вписано"
+        };
+        if (draftMode) postAttrs["data-draft-field"] = "position";
+        else postAttrs["data-position-for"] = item.id;
+        control = el("input", { attrs: postAttrs });
+        control.value = value;
+      } else if (!preview) {
+        var extraInput = draftMode ? { "data-draft-field": block.id } : (kind === "task" ? {} : editAttrs(kind, item.id, block.id));
+        control = textInput(controlId, value, extraInput);
+        if (block.id === "mileage" || block.id === "hours") {
+          control.setAttribute("inputmode", "numeric");
+          control.placeholder = "немає даних";
+        }
+        if (block.id === "service") control.placeholder = "немає даних";
+      } else {
+        // preview: empty controls like live card
+        if (block.kind === "list" || block.id === "rank" || block.id === "duty" || block.id === "accounting" || block.id === "type") {
+          control = inPlacePick(controlId, "", schemaListOptions(section, block), {});
+        } else if (block.rows > 1) {
+          control = el("textarea", { attrs: { id: controlId, rows: String(block.rows), disabled: "disabled" } });
+        } else {
+          control = textInput(controlId, "");
+          control.disabled = true;
+        }
+      }
+      if (!preview) lockControl(control, editable);
+      if (section === "gear" && block.id === "type" && value) {
+        wideHint = typeById(value) ? typeById(value).one : "";
+      }
+      if (section === "gear" && block.id === "board") wideHint = value;
+      if (section === "gear" && block.id === "unit") wideHint = value;
+      if (section === "gear" && block.id === "duty") {
+        var duty = machineDutyMap()[value];
+        wideHint = duty ? duty.label : "";
+      }
+      if (section === "gear" && block.id === "accounting") {
+        var account = ACCOUNTING[value] || ACCOUNTING.official;
+        wideHint = account.label;
+      }
+      if (section === "gear" && block.id === "mileage") {
+        var mileageNum = draftMode ? item.mileage : machineMileage(item);
+        wideHint = mileageNum == null ? "немає даних" : groupNumber(mileageNum) + " км";
+      }
+      if (section === "gear" && block.id === "hours") {
+        var hoursNum = draftMode ? item.hours : machineHours(item);
+        wideHint = hoursNum == null ? "немає даних" : groupNumber(hoursNum);
+      }
+      if (section === "gear" && block.id === "service") {
+        var serviceRaw = draftMode ? (item.service || "") : machineService(item);
+        wideHint = !serviceRaw ? "немає даних" : (serviceRaw.indexOf("-") === 4 ? formatDate(serviceRaw) : serviceRaw);
+      }
+      var fieldNode;
+      if (!preview && section === "people" && block.id === "position") {
+        fieldNode = el("div", { className: "field" + widthClass });
+        fieldNode.append(el("label", { className: "label", text: block.label, attrs: { for: controlId } }));
+        fieldNode.append(control);
+      } else {
+        fieldNode = fieldEditor(block.label, control, block.width === "full" ? wideHint : "");
+        fieldNode.classList.remove("wide");
+        if (widthClass.indexOf("full") !== -1) fieldNode.classList.add("full");
+        if (widthClass.indexOf("half") !== -1) fieldNode.classList.add("half");
+        if (block.width === "full" && wideHint && String(wideHint).length > 36) fieldNode.classList.add("wide");
+      }
+      if (!preview && section === "gear" && (block.id === "mileage" || block.id === "hours" || block.id === "service")) {
+        var emptyHint = wideHint || "немає даних";
+        if (emptyHint === "немає даних") {
+          fieldNode.append(el("span", { className: "visually-hidden", text: emptyHint }));
+        }
+      }
+      if (preview) {
+        var meta = el("div", { className: "hint constructor-preview-note", text: (block.kind === "list" ? "список" : (block.rows > 1 ? block.rows + " рядки" : "1 рядок")) + " · " + (block.width === "half" ? "½" : "на всю") });
+        fieldNode.append(meta);
+      }
+      grid.append(fieldNode);
+    });
+    if (section === "gear" && !preview && item) {
+      if (item.reason) grid.append(field("Причина", item.reason));
+      if (item.back) grid.append(field("Дата повернення", formatDate(item.back)));
+    }
+    host.append(grid);
+  }
+
   function renderPersonCard(item, draftMode) {
-    var dutyKey = draftMode ? (item.duty || "in") : pendingValue("person", item.id, "duty", personDutyKey(item));
     var editable = !!draftMode || isEditing("person", item.id);
     var card = el("article", { className: "card" + (editable ? " is-editing" : ""), attrs: { id: panelDomId("person:" + item.id) } });
     card.append(cardHead("Картка військовослужбовця", "person", item.id, draftMode));
     if (!draftMode && state.confirm && state.confirm.kind === "person" && state.confirm.id === item.id) card.append(renderConfirmBox());
-    var parts = draftMode
-      ? { surname: item.surname || "", givenName: item.givenName || "", patronymic: item.patronymic || "" }
-      : personNameParts(item);
-    if (draftMode && !parts.surname && !parts.givenName && !parts.patronymic && item.name) {
-      parts = splitLegacyName(item.name);
-    }
-    var surname = draftMode ? (parts.surname || "") : pendingValue("person", item.id, "surname", parts.surname);
-    var givenName = draftMode ? (parts.givenName || "") : pendingValue("person", item.id, "givenName", parts.givenName);
-    var patronymic = draftMode ? (parts.patronymic || "") : pendingValue("person", item.id, "patronymic", parts.patronymic);
-    var rank = draftMode ? (item.rank || "") : pendingValue("person", item.id, "rank", personRank(item));
-    var unit = draftMode ? (item.unit || "") : pendingValue("person", item.id, "unit", personUnit(item));
-    var call = draftMode ? (item.callsign || "") : pendingValue("person", item.id, "callsign", personCallsign(item));
-    // ZS-138: позивний першим полем у картці о/с (оверлей).
-    card.append(fieldEditor("Позивний", lockControl(textInput("call-" + item.id, call, draftMode ? { "data-draft-field": "callsign" } : editAttrs("person", item.id, "callsign")), editable)));
-    card.append(fieldEditor("Прізвище", lockControl(textInput("surname-" + item.id, surname, draftMode ? { "data-draft-field": "surname" } : editAttrs("person", item.id, "surname")), editable)));
-    card.append(fieldEditor("Ім’я", lockControl(textInput("given-" + item.id, givenName, draftMode ? { "data-draft-field": "givenName" } : editAttrs("person", item.id, "givenName")), editable)));
-    card.append(fieldEditor("По батькові", lockControl(textInput("patronym-" + item.id, patronymic, draftMode ? { "data-draft-field": "patronymic" } : editAttrs("person", item.id, "patronymic")), editable)));
-    card.append(fieldEditor("Звання", lockControl(rankPick("rank-" + item.id, rank, draftMode ? { "data-draft-field": "rank" } : editAttrs("person", item.id, "rank")), editable)));
-    card.append(fieldEditor("Підрозділ", lockControl(textInput("unitp-" + item.id, unit, draftMode ? { "data-draft-field": "unit" } : editAttrs("person", item.id, "unit")), editable)));
-    var post = el("div", { className: "field" });
-    var postLabel = el("label", { className: "label", text: "Посада або умовна посада", attrs: { for: "post-" + item.id } });
-    var postAttrs = {
-      id: "post-" + item.id,
-      type: "text",
-      maxlength: "80",
-      autocomplete: "off",
-      placeholder: "Ще не вписано"
-    };
-    if (draftMode) postAttrs["data-draft-field"] = "position";
-    else postAttrs["data-position-for"] = item.id;
-    var input = el("input", { attrs: postAttrs });
-    input.value = draftMode ? (item.position || "") : pendingValue("person", item.id, "position", positionOf(item));
-    lockControl(input, editable);
-    post.append(postLabel, input);
-    card.append(post);
-    var dutyOptions = Object.keys(dutyMap()).map(function (key) {
-      return [key, dutyMap()[key].label];
-    });
-    card.append(fieldEditor("Стан", lockControl(inPlacePick("duty-" + item.id, dutyKey, dutyOptions, draftMode ? { "data-draft-field": "duty" } : editAttrs("person", item.id, "duty")), editable)));
-    var accountKey = draftMode ? (item.accounting || "official") : pendingValue("person", item.id, "accounting", personAccountingKey(item));
-    card.append(fieldEditor("Облік", lockControl(inPlacePick("account-" + item.id, accountKey, accountingOptions(), draftMode ? { "data-draft-field": "accounting" } : editAttrs("person", item.id, "accounting")), editable)));
+    appendSchemaCardFields(card, "people", item, draftMode);
     return wrapReveal(card, "person:" + item.id);
   }
 
@@ -6078,76 +6538,11 @@ button.count-toggle {
   }
 
   function renderMachineCard(machine, draftMode) {
-    var dutyKey = draftMode ? (machine.duty || "in") : pendingValue("machine", machine.id, "duty", machineDutyKey(machine));
-    var accountKey = draftMode ? (machine.accounting || "official") : pendingValue("machine", machine.id, "accounting", machineAccountingKey(machine));
-    var duty = machineDutyMap()[dutyKey] || null;
-    var account = ACCOUNTING[accountKey] || ACCOUNTING.official;
     var editable = !!draftMode || isEditing("machine", machine.id);
     var card = el("article", { className: "card machine-card" + (editable ? " is-editing" : ""), attrs: { id: panelDomId("machine:" + machine.id) } });
     card.append(cardHead(machineCardTitle(machine, draftMode), "machine", machine.id, draftMode));
     if (!draftMode && state.confirm && state.confirm.kind === "machine" && state.confirm.id === machine.id) card.append(renderConfirmBox());
-    var machineTitle = draftMode ? (machine.name || "") : pendingValue("machine", machine.id, "name", machineName(machine));
-    card.append(fieldEditor("Назва", lockControl(textInput("mname-" + machine.id, machineTitle, draftMode ? { "data-draft-field": "name" } : editAttrs("machine", machine.id, "name")), editable)));
-    var fields = el("div", { className: "card-fields" });
-    var typeOptions = [["", ""]];
-    typeCatalog().forEach(function (type) { typeOptions.push([type.id, type.one]); });
-    var typeKey = "";
-    if (draftMode) {
-      typeKey = resolveMachineTypeId(machine.type);
-      if (typeKey === OTHER_TYPE.id) typeKey = "";
-    } else {
-      var pendingType = pendingValue("machine", machine.id, "type", machineTypeLabel(machine));
-      typeKey = resolveMachineTypeId(pendingType);
-      if (typeKey === OTHER_TYPE.id) typeKey = "";
-      else if (!typeById(typeKey)) typeKey = "";
-    }
-    var typePick = inPlacePick("mtype-" + machine.id, typeKey, typeOptions, draftMode ? { "data-draft-field": "type" } : editAttrs("machine", machine.id, "type"));
-    var board = draftMode ? (machine.board || "") : pendingValue("machine", machine.id, "board", machineBoard(machine));
-    var unit = draftMode ? (machine.unit || "") : pendingValue("machine", machine.id, "unit", machineUnit(machine));
-    fields.append(fieldEditor("Тип", lockControl(typePick, editable), typeKey ? (typeById(typeKey) ? typeById(typeKey).one : "") : ""));
-    fields.append(fieldEditor("Борт", lockControl(textInput("mboard-" + machine.id, board, draftMode ? { "data-draft-field": "board" } : editAttrs("machine", machine.id, "board")), editable), board));
-    fields.append(fieldEditor("Підрозділ", lockControl(textInput("munit-" + machine.id, unit, draftMode ? { "data-draft-field": "unit" } : editAttrs("machine", machine.id, "unit")), editable), unit));
-    var dutyOptions = Object.keys(machineDutyMap()).map(function (key) { return [key, machineDutyMap()[key].label]; });
-    fields.append(fieldEditor("Стан", lockControl(inPlacePick("mduty-" + machine.id, dutyKey, dutyOptions, draftMode ? { "data-draft-field": "duty" } : editAttrs("machine", machine.id, "duty")), editable), duty ? duty.label : ""));
-    fields.append(fieldEditor("Облік", lockControl(inPlacePick("maccount-" + machine.id, accountKey, accountingOptions(), draftMode ? { "data-draft-field": "accounting" } : editAttrs("machine", machine.id, "accounting")), editable), account.label));
-    if (machine.reason) fields.append(field("Причина", machine.reason));
-    if (machine.back) fields.append(field("Дата повернення", formatDate(machine.back)));
-    if (state.machineFields.mileage) {
-      var mileage = draftMode ? machine.mileage : machineMileage(machine);
-      var mileageText = mileage == null ? "немає даних" : groupNumber(mileage) + " км";
-      var mileShown = draftMode ? mileage : pendingValue("machine", machine.id, "mileage", mileage);
-      var mile = textInput("mmile-" + machine.id, mileShown == null ? "" : String(mileShown), draftMode ? { "data-draft-field": "mileage" } : editAttrs("machine", machine.id, "mileage"));
-      mile.setAttribute("inputmode", "numeric");
-      mile.placeholder = "немає даних";
-      lockControl(mile, editable);
-      var mileField = fieldEditor("Пробіг", mile, mileageText);
-      if (mileage == null) mileField.append(el("span", { className: "visually-hidden", text: mileageText }));
-      fields.append(mileField);
-    }
-    if (state.machineFields.hours) {
-      var hours = draftMode ? machine.hours : machineHours(machine);
-      var hoursText = hours == null ? "немає даних" : groupNumber(hours);
-      var hoursShown = draftMode ? hours : pendingValue("machine", machine.id, "hours", hours);
-      var hourInput = textInput("mhours-" + machine.id, hoursShown == null ? "" : String(hoursShown), draftMode ? { "data-draft-field": "hours" } : editAttrs("machine", machine.id, "hours"));
-      hourInput.setAttribute("inputmode", "numeric");
-      hourInput.placeholder = "немає даних";
-      lockControl(hourInput, editable);
-      var hourField = fieldEditor("Мотогодини", hourInput, hoursText);
-      if (hours == null) hourField.append(el("span", { className: "visually-hidden", text: hoursText }));
-      fields.append(hourField);
-    }
-    if (state.machineFields.service) {
-      var service = draftMode ? (machine.service || "") : machineService(machine);
-      var serviceText = !service ? "немає даних" : (service.indexOf("-") === 4 ? formatDate(service) : service);
-      var serviceShown = draftMode ? serviceText : pendingValue("machine", machine.id, "service", serviceText === "немає даних" ? "" : serviceText);
-      var serviceInput = textInput("mservice-" + machine.id, serviceShown == null || serviceShown === "немає даних" ? "" : String(serviceShown), draftMode ? { "data-draft-field": "service" } : editAttrs("machine", machine.id, "service"));
-      serviceInput.placeholder = "немає даних";
-      lockControl(serviceInput, editable);
-      var serviceField = fieldEditor("Останнє ТО", serviceInput, serviceText);
-      if (!service) serviceField.append(el("span", { className: "visually-hidden", text: "немає даних" }));
-      fields.append(serviceField);
-    }
-    card.append(fields);
+    appendSchemaCardFields(card, "gear", machine, draftMode);
     return wrapReveal(card, "machine:" + machine.id);
   }
 
@@ -6230,10 +6625,18 @@ button.count-toggle {
       panel.append(field("Кількість військовослужбовців", String(task.peopleCount)));
       panel.append(field("Стан", task.status));
     } else {
-      panel.append(field("Коротко", task.description));
-      panel.append(field("Час виконання", task.time));
-      panel.append(field("Початок", task.start));
-      var peopleField = el("div", { className: "field" });
+      // ZS-156: розкладка з схеми lead (лише показ значень); спец. блок людей лишаємо.
+      var taskGrid = el("div", { className: "schema-card-fields" });
+      cardSchema("tasks").forEach(function (block) {
+        if (!block) return;
+        var val = task[block.id] == null ? "" : String(task[block.id]);
+        var node = field(block.label, val);
+        if (block.width === "full") node.classList.add("full");
+        else node.classList.add("half");
+        taskGrid.append(node);
+      });
+      panel.append(taskGrid);
+      var peopleField = el("div", { className: "field full" });
       peopleField.append(el("div", { className: "label", text: "Кількість військовослужбовців" }));
       var peopleOpen = state.open.has("task-people:" + task.id);
       var peopleBtn = el("button", {
@@ -6253,9 +6656,6 @@ button.count-toggle {
         peopleField.append(wrapReveal(peopleShell, "task-people:" + task.id));
       }
       panel.append(peopleField);
-      panel.append(field("Місце", task.place));
-      panel.append(field("Хто здав", task.author));
-      panel.append(field("Стан", task.status));
     }
     frag.append(wrapReveal(panel, id));
     return frag;
@@ -7288,6 +7688,8 @@ button.count-toggle {
       duties: serializeDutyList(false),
       machineDuties: serializeDutyList(true),
       reserve: state.settingsReserve && typeof state.settingsReserve === "object" ? state.settingsReserve : {},
+      // ZS-156: схеми карток о/с / ОВТ / завдань.
+      cardSchemas: serializeCardSchemas(),
       // ZS-128: назви підрозділів для спільного vu-*.bin (не коди доступу).
       unitNames: collectCanonUnitNamesForSettings(),
       // ZS-163: відбитки ключів живих unit (не сирий ключ).
@@ -7321,6 +7723,7 @@ button.count-toggle {
       duties: Array.isArray(raw.duties) ? raw.duties : [],
       machineDuties: Array.isArray(raw.machineDuties) ? raw.machineDuties : [],
       reserve: raw.reserve && typeof raw.reserve === "object" ? raw.reserve : {},
+      cardSchemas: raw.cardSchemas && typeof raw.cardSchemas === "object" ? raw.cardSchemas : null,
       unitNames: unitNames,
       unitFingerprints: hasFingerprints ? parseUnitFingerprintsMap(raw.unitFingerprints) : null,
       folderAdmin: !!raw.folderAdmin && !!hash,
@@ -7392,6 +7795,8 @@ button.count-toggle {
     applyDutySide(data.duties, false);
     applyDutySide(data.machineDuties, true);
     state.settingsReserve = data.reserve || {};
+    if (data.cardSchemas) state.cardSchemas = parseCardSchemas(data.cardSchemas);
+    else if (!state.cardSchemas) state.cardSchemas = cloneCardSchemas(null);
     applyCanonUnitNamesMap(data.unitNames);
     rememberSettingsAdmin(data);
     // ZS-163: null = старий файл без поля → gate ще не вмикаємо.
@@ -10557,6 +10962,7 @@ button.count-toggle {
   function closeProfile() {
     state.profile = false;
     state.profilePane = "";
+    state.cardConstructor = null;
     state.unitNameDraft = "";
     state.unitError = "";
     state.accessChange = null;
@@ -10692,6 +11098,170 @@ button.count-toggle {
     return overlay;
   }
 
+  function openCardConstructor(section) {
+    if (!canEditCatalogs()) return;
+    if (!CARD_SECTIONS[section]) return;
+    ensureCardSchemas();
+    state.cardConstructor = {
+      section: section,
+      addKind: "field",
+      labelDraft: "",
+      rowsDraft: "1",
+      widthDraft: "half",
+      itemsDraft: "",
+      selectedId: ""
+    };
+    state.profilePane = "";
+    render();
+  }
+
+  function closeCardConstructor() {
+    state.cardConstructor = null;
+    render();
+  }
+
+  function constructorAddBlock() {
+    if (!canEditCatalogs() || !state.cardConstructor) return;
+    var ctor = state.cardConstructor;
+    var section = ctor.section;
+    var label = String(ctor.labelDraft || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!label) return;
+    var kind = ctor.addKind === "list" ? "list" : "field";
+    var block = normalizeCardBlock({
+      id: uniqueCardBlockId(section, label),
+      kind: kind,
+      label: label,
+      rows: kind === "field" ? Number(ctor.rowsDraft) || 1 : 1,
+      width: ctor.widthDraft === "full" ? "full" : "half",
+      items: kind === "list" ? ctor.itemsDraft : []
+    });
+    if (!block) return;
+    if (kind === "list" && section === "gear" && /інше/i.test(block.label) && block.items.some(function (x) { return /інше/i.test(x); })) {
+      // keep type catalog rule: Інше not as type name via constructor items separately
+    }
+    var next = cardSchema(section).slice();
+    next.push(block);
+    setCardSchema(section, next);
+    ctor.labelDraft = "";
+    ctor.itemsDraft = "";
+    ctor.rowsDraft = "1";
+    ctor.widthDraft = "half";
+    ctor.selectedId = block.id;
+    save();
+    render();
+  }
+
+  function constructorRemoveBlock(blockId) {
+    if (!canEditCatalogs() || !state.cardConstructor || !blockId) return;
+    var section = state.cardConstructor.section;
+    var next = cardSchema(section).filter(function (block) { return block.id !== blockId; });
+    setCardSchema(section, next);
+    if (state.cardConstructor.selectedId === blockId) state.cardConstructor.selectedId = "";
+    save();
+    render();
+  }
+
+  function constructorMoveBlock(blockId, dir) {
+    if (!canEditCatalogs() || !state.cardConstructor || !blockId) return;
+    var section = state.cardConstructor.section;
+    var list = cardSchema(section).slice();
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === blockId) { idx = i; break; }
+    }
+    if (idx < 0) return;
+    var to = idx + dir;
+    if (to < 0 || to >= list.length) return;
+    var tmp = list[idx];
+    list[idx] = list[to];
+    list[to] = tmp;
+    setCardSchema(section, list);
+    save();
+    render();
+  }
+
+  function renderCardConstructorOverlay() {
+    var ctor = state.cardConstructor;
+    if (!ctor || !CARD_SECTIONS[ctor.section]) return null;
+    var meta = CARD_SECTIONS[ctor.section];
+    var overlay = el("div", { className: "overlay", attrs: { id: "card-constructor-overlay", role: "dialog", "aria-label": meta.tool } });
+    var sheet = el("div", { className: "overlay-sheet" });
+    sheet.append(el("div", { className: "pull-bar", attrs: { "aria-hidden": "true" } }));
+    var head = el("div", { className: "card-head" });
+    head.append(el("h2", { text: meta.tool }));
+    head.append(iconButton("x", "Закрити", { "data-close-card-constructor": "1" }));
+    sheet.append(head);
+    var layout = el("div", { className: "constructor-layout" });
+    var left = el("section", { className: "block", attrs: { id: "card-constructor-add" } });
+    left.append(el("p", { className: "hint", text: "Додайте поле або список — праворуч одразу як у живій картці." }));
+    var addRow = el("div", { className: "constructor-add-row" });
+    addRow.append(el("button", {
+      text: "+ Поле",
+      attrs: {
+        type: "button",
+        "data-constructor-add-kind": "field",
+        "aria-pressed": ctor.addKind === "field" ? "true" : "false"
+      }
+    }));
+    addRow.append(el("button", {
+      text: "+ Список",
+      attrs: {
+        type: "button",
+        "data-constructor-add-kind": "list",
+        "aria-pressed": ctor.addKind === "list" ? "true" : "false"
+      }
+    }));
+    left.append(addRow);
+    var form = el("form", { attrs: { id: "card-constructor-form" } });
+    form.append(el("label", { className: "label", text: "Назва", attrs: { for: "constructor-label" } }));
+    var labelInput = el("input", { attrs: { id: "constructor-label", type: "text", maxlength: "80", autocomplete: "off" } });
+    labelInput.value = ctor.labelDraft || "";
+    form.append(labelInput);
+    if (ctor.addKind === "field") {
+      form.append(el("label", { className: "label", text: "Кількість рядків", attrs: { for: "constructor-rows" } }));
+      var rowsPick = inPlacePick("constructor-rows", String(ctor.rowsDraft || "1"), [
+        ["1", "1 рядок"], ["2", "2 рядки"], ["3", "3 рядки"], ["5", "5 рядків"]
+      ], { "data-constructor-field": "rowsDraft" });
+      form.append(rowsPick);
+    } else {
+      form.append(el("label", { className: "label", text: "Пункти (по одному в рядку)", attrs: { for: "constructor-items" } }));
+      var itemsArea = el("textarea", { attrs: { id: "constructor-items", rows: "4" } });
+      itemsArea.value = ctor.itemsDraft || "";
+      form.append(itemsArea);
+    }
+    form.append(el("label", { className: "label", text: "Ширина", attrs: { for: "constructor-width" } }));
+    form.append(inPlacePick("constructor-width", ctor.widthDraft === "full" ? "full" : "half", [
+      ["half", "½ ширини картки"],
+      ["full", "На всю ширину"]
+    ], { "data-constructor-field": "widthDraft" }));
+    form.append(el("button", { text: "Додати в картку", attrs: { type: "submit" } }));
+    left.append(form);
+    var blocksBox = el("div", { className: "constructor-blocks", attrs: { id: "card-constructor-blocks" } });
+    blocksBox.append(el("div", { className: "label", text: "Блоки схеми (зверху вниз)" }));
+    cardSchema(ctor.section).forEach(function (block, index) {
+      var row = el("div", { className: "constructor-block-row" });
+      row.append(el("span", {
+        className: "grow",
+        text: (index + 1) + ". " + block.label + " · " + (block.kind === "list" ? "список" : "поле") + " · " + (block.width === "half" ? "½" : "на всю")
+      }));
+      row.append(el("button", { text: "↑", attrs: { type: "button", "data-constructor-move": block.id, "data-dir": "-1", "aria-label": "Вище" } }));
+      row.append(el("button", { text: "↓", attrs: { type: "button", "data-constructor-move": block.id, "data-dir": "1", "aria-label": "Нижче" } }));
+      row.append(el("button", { text: "✕", attrs: { type: "button", "data-constructor-remove": block.id, "aria-label": "Прибрати" } }));
+      blocksBox.append(row);
+    });
+    left.append(blocksBox);
+    var right = el("section", { className: "block", attrs: { id: "card-constructor-preview" } });
+    right.append(el("h3", { text: "Preview · " + meta.cardTitle }));
+    right.append(el("p", { className: "hint constructor-preview-note", text: "Live preview — як у живій картці" }));
+    var previewCard = el("article", { className: "card" + (ctor.section === "gear" ? " machine-card" : "") });
+    appendSchemaCardFields(previewCard, ctor.section, { id: "preview" }, false, { preview: true });
+    right.append(previewCard);
+    layout.append(left, right);
+    sheet.append(layout);
+    overlay.append(sheet);
+    return overlay;
+  }
+
   function renderProfile() {
     var overlay = el("div", { className: "overlay", attrs: { id: "profile-overlay", role: "dialog" } });
     var sheet = el("div", { className: "overlay-sheet" });
@@ -10707,12 +11277,22 @@ button.count-toggle {
     tools.append(iconButton("x", "Закрити", { "data-close-profile": "1" }));
     head.append(tools);
     sheet.append(head);
-    sheet.append(profilePaneButton("people", "Редагування статусів військовослужбовців"));
-    if (state.profilePane === "people" && canEditCatalogs()) sheet.append(renderStatusCreate());
-    sheet.append(profilePaneButton("gear", "Редагування станів ОВТ"));
-    if (state.profilePane === "gear" && canEditCatalogs()) sheet.append(renderMachineStatusCreate());
-    sheet.append(profilePaneButton("types", "Редагування типів ОВТ"));
-    if (state.profilePane === "types" && canEditCatalogs()) sheet.append(renderTypeCreate());
+    // ZS-156: конструктор карток замість жорстких довідників у профілі.
+    sheet.append(el("button", {
+      className: "row",
+      text: CARD_SECTIONS.people.tool,
+      attrs: { type: "button", "data-open-card-constructor": "people", "aria-label": CARD_SECTIONS.people.tool }
+    }));
+    sheet.append(el("button", {
+      className: "row",
+      text: CARD_SECTIONS.gear.tool,
+      attrs: { type: "button", "data-open-card-constructor": "gear", "aria-label": CARD_SECTIONS.gear.tool }
+    }));
+    sheet.append(el("button", {
+      className: "row",
+      text: CARD_SECTIONS.tasks.tool,
+      attrs: { type: "button", "data-open-card-constructor": "tasks", "aria-label": CARD_SECTIONS.tasks.tool }
+    }));
     if (canBranch()) {
       sheet.append(renderDrive());
       sheet.append(renderArchiveEntry());
@@ -10837,6 +11417,10 @@ button.count-toggle {
     main.append(renderGlossary());
     var parts = [renderHeader(), main];
     if (state.profile) parts.push(renderProfile());
+    if (state.cardConstructor) {
+      var ctorOverlay = renderCardConstructorOverlay();
+      if (ctorOverlay) parts.push(ctorOverlay);
+    }
     if (state.driveFolderOpen) parts.push(renderDriveFolderOverlay());
     if (state.accessChange) parts.push(renderAccessChangeOverlay());
     if (state.archiveOpen) parts.push(renderArchiveOverlay());
@@ -11241,25 +11825,43 @@ button.count-toggle {
   // ZS-139: чи є в чернетці хоч одне заповнене поле (порожнє закриття не створює картку).
   function draftHasContent(draft) {
     if (!draft) return false;
+    var section = draft.kind === "machine" ? "gear" : "people";
+    var knownHit = false;
     if (draft.kind === "machine") {
-      if (String(draft.name || "").trim()) return true;
-      if (String(draft.type || "").trim()) return true;
-      if (String(draft.board || "").trim()) return true;
-      if (String(draft.unit || "").trim()) return true;
-      if (String(draft.service || "").trim()) return true;
-      if (draft.mileage != null && draft.mileage !== "") return true;
-      if (draft.hours != null && draft.hours !== "") return true;
-      return false;
+      if (String(draft.name || "").trim()) knownHit = true;
+      if (String(draft.type || "").trim()) knownHit = true;
+      if (String(draft.board || "").trim()) knownHit = true;
+      if (String(draft.unit || "").trim()) knownHit = true;
+      if (String(draft.service || "").trim()) knownHit = true;
+      if (draft.mileage != null && draft.mileage !== "") knownHit = true;
+      if (draft.hours != null && draft.hours !== "") knownHit = true;
+    } else {
+      if (String(draft.surname || "").trim()) knownHit = true;
+      if (String(draft.givenName || "").trim()) knownHit = true;
+      if (String(draft.patronymic || "").trim()) knownHit = true;
+      if (String(draft.name || "").trim()) knownHit = true;
+      if (String(draft.rank || "").trim()) knownHit = true;
+      if (String(draft.callsign || "").trim()) knownHit = true;
+      if (String(draft.unit || "").trim()) knownHit = true;
+      if (String(draft.position || "").trim()) knownHit = true;
     }
-    if (String(draft.surname || "").trim()) return true;
-    if (String(draft.givenName || "").trim()) return true;
-    if (String(draft.patronymic || "").trim()) return true;
-    if (String(draft.name || "").trim()) return true;
-    if (String(draft.rank || "").trim()) return true;
-    if (String(draft.callsign || "").trim()) return true;
-    if (String(draft.unit || "").trim()) return true;
-    if (String(draft.position || "").trim()) return true;
-    return false;
+    if (knownHit) return true;
+    // duty/accounting/rank у blankDraft мають дефолти — не вважаємо заповненням.
+    var ignore = {
+      duty: true,
+      accounting: true,
+      rank: true,
+      kind: true,
+      id: true
+    };
+    var hit = false;
+    cardSchema(section).forEach(function (block) {
+      if (hit || !block || ignore[block.id]) return;
+      if (knownHit) return;
+      var val = draft[block.id];
+      if (val != null && String(val).trim() !== "") hit = true;
+    });
+    return hit;
   }
 
   function closeCardOverlay() {
@@ -11395,7 +11997,7 @@ button.count-toggle {
       if (!draftParts.surname && !draftParts.givenName && !draftParts.patronymic && draft.name) {
         draftParts = splitLegacyName(draft.name);
       }
-      state.added.people.push({
+      var personRow = {
         id: personId,
         surname: draftParts.surname,
         givenName: draftParts.givenName,
@@ -11408,13 +12010,18 @@ button.count-toggle {
         duty: draft.duty || "in",
         position: draft.position || "",
         place: place
+      };
+      cardSchema("people").forEach(function (block) {
+        if (!block || personRow[block.id] != null) return;
+        if (draft[block.id] != null && draft[block.id] !== "") personRow[block.id] = draft[block.id];
       });
+      state.added.people.push(personRow);
       state.positions[personId] = draft.position || "";
       openUnitPath(place);
     } else {
       var typeId = resolveMachineTypeId(draft.type);
       var machineId = newId("nm");
-      state.added.machines.push({
+      var machineRow = {
         id: machineId,
         type: typeId,
         name: draft.name || "",
@@ -11424,7 +12031,12 @@ button.count-toggle {
         mileage: draft.mileage == null ? null : draft.mileage,
         hours: draft.hours == null ? null : draft.hours,
         service: draft.service || ""
+      };
+      cardSchema("gear").forEach(function (block) {
+        if (!block || machineRow[block.id] != null) return;
+        if (draft[block.id] != null && draft[block.id] !== "") machineRow[block.id] = draft[block.id];
       });
+      state.added.machines.push(machineRow);
       state.open.add("type:" + typeId);
     }
     state.draft = null;
@@ -11445,6 +12057,10 @@ button.count-toggle {
     var fields = kind === "machine"
       ? ["name", "type", "board", "unit", "duty", "accounting", "mileage", "hours", "service"]
       : ["surname", "givenName", "patronymic", "rank", "unit", "callsign", "position", "duty", "accounting"];
+    var section = kind === "machine" ? "gear" : "people";
+    cardSchema(section).forEach(function (block) {
+      if (block && fields.indexOf(block.id) === -1) fields.push(block.id);
+    });
     var base = {};
     fields.forEach(function (fieldName) {
       base[fieldName] = currentFieldValue(kind, id, fieldName);
@@ -12380,6 +12996,36 @@ button.count-toggle {
       closeProfile();
       return;
     }
+    var openCtor = event.target.closest("[data-open-card-constructor]");
+    if (openCtor) {
+      openCardConstructor(openCtor.getAttribute("data-open-card-constructor"));
+      return;
+    }
+    var closeCtor = event.target.closest("[data-close-card-constructor]");
+    if (closeCtor) {
+      closeCardConstructor();
+      return;
+    }
+    var ctorKind = event.target.closest("[data-constructor-add-kind]");
+    if (ctorKind && state.cardConstructor) {
+      state.cardConstructor.addKind = ctorKind.getAttribute("data-constructor-add-kind") === "list" ? "list" : "field";
+      render();
+      return;
+    }
+    var ctorRemove = event.target.closest("[data-constructor-remove]");
+    if (ctorRemove) {
+      constructorRemoveBlock(ctorRemove.getAttribute("data-constructor-remove"));
+      return;
+    }
+    var ctorMove = event.target.closest("[data-constructor-move]");
+    if (ctorMove) {
+      constructorMoveBlock(ctorMove.getAttribute("data-constructor-move"), Number(ctorMove.getAttribute("data-dir") || 0));
+      return;
+    }
+    if (event.target.id === "card-constructor-overlay") {
+      closeCardConstructor();
+      return;
+    }
     var profilePane = event.target.closest("[data-profile-pane]");
     if (profilePane) {
       var pane = profilePane.getAttribute("data-profile-pane");
@@ -12631,6 +13277,22 @@ button.count-toggle {
   }
 
   function onSubmit(event) {
+    var ctorForm = event.target.closest("#card-constructor-form");
+    if (ctorForm) {
+      event.preventDefault();
+      if (state.cardConstructor) {
+        var labelNode = document.getElementById("constructor-label");
+        var itemsNode = document.getElementById("constructor-items");
+        state.cardConstructor.labelDraft = labelNode ? labelNode.value : state.cardConstructor.labelDraft;
+        if (itemsNode) state.cardConstructor.itemsDraft = itemsNode.value;
+        var rowsPick = document.getElementById("constructor-rows");
+        if (rowsPick) state.cardConstructor.rowsDraft = rowsPick.getAttribute("data-value") || state.cardConstructor.rowsDraft;
+        var widthPick = document.getElementById("constructor-width");
+        if (widthPick) state.cardConstructor.widthDraft = widthPick.getAttribute("data-value") || state.cardConstructor.widthDraft;
+      }
+      constructorAddBlock();
+      return;
+    }
     var statusForm = event.target.closest("#status-form");
     if (statusForm) {
       event.preventDefault();
@@ -12797,6 +13459,14 @@ button.count-toggle {
       save();
       return;
     }
+    if (node.id === "constructor-label" && state.cardConstructor) {
+      state.cardConstructor.labelDraft = node.value;
+      return;
+    }
+    if (node.id === "constructor-items" && state.cardConstructor) {
+      state.cardConstructor.itemsDraft = node.value;
+      return;
+    }
     if (node.id === "status-name") {
       state.statusNameDraft = node.value.slice(0, 80);
       return;
@@ -12870,6 +13540,8 @@ button.count-toggle {
     state.fileNote = false;
     state.profile = false;
     state.profilePane = "";
+    state.cardSchemas = cloneCardSchemas(null);
+    state.cardConstructor = null;
     state.accessGrants = [];
     state.accessForDraft = "";
     state.accessPersonDraft = {};
@@ -13856,12 +14528,10 @@ button.count-toggle {
       profileBuild.getBoundingClientRect().right <= profileClose.getBoundingClientRect().left + 2,
       "версія зліва від ✕ у шапці профілю"
     );
-    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "три розділи довідників у профілі");
+    check(document.getElementById("profile-overlay").textContent.indexOf("Картка особового складу +") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Картка ОВТ +") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Картка завдання +") !== -1, "три інструменти конструктора карток у профілі");
     check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !!document.getElementById("unit-name") && !!document.getElementById("wide-access") && !document.getElementById("section-access") && !!document.getElementById("archive-entry") && document.getElementById("profile-overlay").contains(document.getElementById("archive-entry")) && !document.getElementById("archive") && document.getElementById("wide-access").textContent.indexOf("Доступ для користувачів") !== -1 && document.getElementById("archive-entry").textContent.indexOf("Новий підрозділ") === -1, "без ключа lead у профілі має доступ для користувачів, створює ланку і кнопку Архів");
-    document.querySelector("[data-profile-pane='people']").click();
-    check(!document.getElementById("status-name"), "без ключа lead не відкриває форму статусу");
-    document.querySelector("[data-profile-pane='types']").click();
-    check(!document.getElementById("type-name") && !document.getElementById("type-list"), "без ключа lead не відкриває форму типів");
+    document.querySelector("[data-open-card-constructor='people']").click();
+    check(!document.getElementById("card-constructor-overlay") && !document.getElementById("constructor-label"), "без ключа lead не відкриває конструктор");
     check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-edit-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.getElementById("status-list") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]"), "без ключа lead без правки довідників");
     document.querySelector("[data-close-profile]").click();
     check(!document.getElementById("profile-overlay") && state.units.length === 0, "закриття не створює підрозділ");
@@ -13870,28 +14540,29 @@ button.count-toggle {
     state.settingsFolderAdminHash = "";
     useCode("lead");
     document.querySelector("[data-open-profile]").click();
-    document.querySelector("[data-profile-pane='people']").click();
-    check(!!document.getElementById("status-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1, "статус починається в розділі людей");
-    var statusCombo = document.getElementById("status-list");
-    check(statusCombo && statusCombo.classList.contains("duty-combo") && statusCombo.querySelector(".pick-current-edit") && statusCombo.querySelector(".pick-current-edit").getBoundingClientRect().height >= 40, "на службі combo статусів видно");
-    document.querySelector("[data-profile-pane='gear']").click();
-    check(!!document.getElementById("machine-status-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1, "стан техніки в своєму розділі");
-    check(document.getElementById("machine-status-count") && document.getElementById("machine-status-count").tagName !== "SELECT", "рахунок стану не системне вікно");
-    var machineCombo = document.getElementById("machine-status-list");
-    check(machineCombo && machineCombo.classList.contains("duty-combo") && machineCombo.querySelector(".pick-current-edit") && machineCombo.querySelector(".pick-current-edit").getBoundingClientRect().height >= 40, "на службі combo станів ОВТ видно");
-    document.querySelector("[data-profile-pane='types']").click();
-    check(!!document.getElementById("type-name") && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "типи ОВТ у своєму розділі");
-    var typeCombo = document.getElementById("type-list");
-    check(typeCombo && typeCombo.classList.contains("duty-combo") && typeCombo.querySelector(".pick-current-edit"), "типи — той самий combo");
-    typeCombo.querySelector("[data-pick-toggle]").click();
-    check(typeCombo.textContent.indexOf("Новий тип") !== -1 && typeCombo.textContent.indexOf("Самоскиди") !== -1 && typeCombo.textContent.indexOf("Інше") === -1, "Інше не в налаштуваннях типів");
-    document.querySelector("[data-choose-type='new']").click();
-    document.getElementById("type-name").value = "Крани";
-    document.getElementById("type-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector("[data-open-card-constructor='people']").click();
+    check(!!document.getElementById("card-constructor-overlay") && !!document.getElementById("constructor-label") && document.getElementById("card-constructor-overlay").textContent.indexOf("Картка особового складу +") !== -1, "конструктор о/с відкривається");
+    check(!!document.getElementById("card-constructor-preview") && document.getElementById("card-constructor-preview").textContent.indexOf("Позивний") !== -1, "live preview у конструкторі");
+    document.querySelector("[data-constructor-add-kind='list']").click();
+    check(!!document.getElementById("constructor-items"), "форма списку в конструкторі");
+    document.querySelector("[data-constructor-add-kind='field']").click();
+    document.getElementById("constructor-label").value = "Посада штатна";
+    document.getElementById("card-constructor-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(cardSchema("people").some(function (b) { return b.label === "Посада штатна" && b.kind === "field"; }), "конструктор додає поле в схему");
+    document.querySelector("[data-close-card-constructor]").click();
+    document.querySelector("[data-open-card-constructor='gear']").click();
+    check(document.getElementById("card-constructor-overlay").textContent.indexOf("Картка ОВТ +") !== -1, "конструктор ОВТ");
+    document.querySelector("[data-constructor-add-kind='list']").click();
+    document.getElementById("constructor-label").value = "Клас";
+    document.getElementById("constructor-items").value = "А\nБ";
+    document.getElementById("card-constructor-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check(cardSchema("gear").some(function (b) { return b.label === "Клас" && b.kind === "list" && b.items.indexOf("А") !== -1; }), "конструктор додає список ОВТ");
+    // Типи ОВТ як і раніше через API каталогу (UI довідника прибрано).
+    addMachineType("Крани");
     check(state.customTypes.some(function (item) { return item.name === "Крани" && item.id !== "other"; }), "служба додає тип ОВТ");
-    document.getElementById("type-name").value = "Інше";
-    document.getElementById("type-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    addMachineType("Інше");
     check(!state.customTypes.some(function (item) { return item.name === "Інше" || item.id === "other"; }), "Інше не додається як тип");
+    document.querySelector("[data-close-card-constructor]").click();
     var unitName = document.getElementById("unit-name");
     check(unitName && document.getElementById("profile-overlay").contains(unitName) && !document.getElementById("main").contains(unitName), "підрозділ у профілі");
     unitName.value = "Туз";
@@ -14504,19 +15175,10 @@ button.count-toggle {
     reportList.querySelector("[data-pick-toggle]").click();
     check(unitReportStatus(state.units[0].code) === "merged" && document.querySelector("#report-switch [data-unit-status='" + state.units[0].code + "']").classList.contains("is-merged") && !document.querySelector("[data-merge-unit]"), "після merge лише статус додано");
     reportList.querySelector("[data-pick-toggle]").click();
-    document.querySelector("[data-open-profile]").click();
-    document.querySelector("[data-profile-pane='people']").click();
-    var statusName = document.getElementById("status-name");
-    statusName.value = "Наряд";
-    var statusCount = document.getElementById("status-count");
-    check(statusCount && statusCount.tagName !== "SELECT", "рахунок не системне вікно");
-    statusCount.querySelector("[data-pick-toggle]").click();
-    check(document.getElementById("profile-overlay").contains(statusCount.querySelector(".pick-list")) && statusCount.textContent.indexOf("Мінус") !== -1 && statusCount.textContent.indexOf("Плюс") !== -1, "рахунок у профілі");
-    statusCount.querySelector("[data-pick-value='minus']").click();
-    document.getElementById("status-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    addPersonStatus("Наряд", false);
     check(state.customDuties.some(function (item) { return item.label === "Наряд" && item.plus === false; }), "служба створила мінус-статус");
     applyCode("lead");
-    check(!document.getElementById("status-create") && !document.getElementById("profile-overlay"), "після підрозділу форми статусу немає");
+    check(!document.getElementById("card-constructor-overlay") && !document.getElementById("profile-overlay"), "після підрозділу конструктор закритий");
     toggle("unit:v1");
     toggle("unit:s1");
     toggle("person:p4");
@@ -14851,42 +15513,12 @@ button.count-toggle {
     check(!!state.removed.machines[createdMachine.id] && document.querySelector("#equipment .frac").getAttribute("data-total") === "8", "повторне архівування ховає машину з дробу");
     applyCode("lead");
     document.querySelector("[data-open-profile]").click();
-    document.querySelector("[data-profile-pane='people']").click();
-    var statusList = document.getElementById("status-list");
-    check(document.querySelectorAll("#status-create input[type='text']").length === 1 && !!document.getElementById("status-name") && statusList.contains(document.getElementById("status-name")), "у редакторі статусів одне поле в тому ж контролі");
-    check(!!statusList && statusList.tagName !== "SELECT" && !statusList.classList.contains("is-open") && document.getElementById("profile-overlay").contains(statusList) && !document.getElementById("main").contains(statusList), "список статусів згорнутий у профілі");
-    check(!document.querySelector("[data-edit-duty]") && !document.querySelector("[data-delete-duty]"), "статуси не розкриті окремими кнопками");
-    var countPick = document.getElementById("status-count");
-    var countNext = document.querySelector("#status-form button[type='submit']");
-    var profileSheet = document.querySelector("#profile-overlay .overlay-sheet");
-    var countTop = countNext.offsetTop;
-    var countH = profileSheet.scrollHeight;
-    countPick.querySelector("[data-pick-toggle]").click();
-    check(countPick.tagName !== "SELECT" && countNext.offsetTop === countTop && profileSheet.scrollHeight === countH && (layerPos(countPick.querySelector(".pick-list")) === "fixed" || layerPos(countPick.querySelector(".pick-list")) === "absolute"), "плюс і мінус поверх, без зсуву");
-    countPick.querySelector("[data-pick-toggle]").click();
-    var gearPane = document.querySelector("[data-profile-pane='gear']");
-    var statusTop = gearPane.offsetTop;
-    var statusH = profileSheet.scrollHeight;
-    statusList.querySelector("[data-pick-toggle]").click();
-    check(gearPane.offsetTop === statusTop && profileSheet.scrollHeight === statusH && (layerPos(statusList.querySelector(".pick-list")) === "fixed" || layerPos(statusList.querySelector(".pick-list")) === "absolute") && motionOn(statusList.querySelector(".pick-list")), "наявні статуси поверх, без зсуву");
-    var firstDuty = statusList.querySelector("[data-choose-duty]");
-    check(statusList.classList.contains("is-open") && firstDuty && firstDuty.getAttribute("data-choose-duty") === "new" && firstDuty.textContent === "Новий статус" && statusList.textContent.indexOf("Відпустка") !== -1, "перший пункт — новий статус");
-    document.querySelector("[data-choose-duty='new']").click();
-    check(document.getElementById("status-name").value === "" && !document.getElementById("status-list").classList.contains("is-open"), "новий статус очищує поле");
-    document.querySelector("[data-profile-pane='gear']").click();
-    var machineList = document.getElementById("machine-status-list");
-    check(document.querySelectorAll("#machine-status-create input[type='text']").length === 1 && machineList.contains(document.getElementById("machine-status-name")), "у редакторі станів одне поле в тому ж контролі");
-    check(!!machineList && machineList.tagName !== "SELECT" && !machineList.classList.contains("is-open") && !document.getElementById("main").contains(machineList), "список станів згорнутий у профілі");
-    machineList.querySelector("[data-pick-toggle]").click();
-    var firstMachine = machineList.querySelector("[data-choose-machine-duty]");
-    check(machineList.classList.contains("is-open") && firstMachine && firstMachine.getAttribute("data-choose-machine-duty") === "new" && firstMachine.textContent === "Новий стан" && machineList.textContent.indexOf("Ремонт") !== -1 && machineList.textContent.indexOf("У строю") !== -1 && !!machineList.querySelector("[data-choose-machine-duty='repair']"), "перший пункт — новий стан");
-    document.querySelector("[data-profile-pane='people']").click();
-    chooseStatus("leave");
-    var dutyEditName = document.getElementById("status-name");
-    var dutyEditCount = document.getElementById("status-count");
-    check(dutyEditName && dutyEditName.value === "Відпустка" && dutyEditCount && dutyEditCount.tagName !== "SELECT" && dutyEditCount.getAttribute("data-value") === "minus" && document.querySelectorAll("#status-create input[type='text']").length === 1 && document.getElementById("status-list").contains(dutyEditName), "наявний статус заповнює те саме поле");
-    dutyEditName.value = "Канікули";
-    document.getElementById("status-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector("[data-open-card-constructor='people']").click();
+    check(!!document.getElementById("card-constructor-overlay") && !!document.getElementById("constructor-label") && !!document.getElementById("card-constructor-blocks"), "конструктор о/с замість старого редактора статусів");
+    check(document.getElementById("card-constructor-preview").textContent.indexOf("Стан") !== -1, "preview має стан");
+    document.querySelector("[data-close-card-constructor]").click();
+    // Каталог станів лишається через API (UI довідника прибрано з профілю).
+    saveDutyEdit(false, "leave", "Канікули", false);
     check(state.dutyOverrides.leave && state.dutyOverrides.leave.label === "Канікули" && state.dutyOverrides.leave.plus === false, "перейменування не змінює мінус");
     document.querySelector("[data-close-profile]").click();
     toggle("unit:v1");
@@ -14898,25 +15530,14 @@ button.count-toggle {
     check(renamedRow && renamedRow.textContent.indexOf("Канікули") !== -1, "рядок показує нову назву");
     var fracRenamed = document.querySelector("#people .frac");
     check(fracRenamed && fracRenamed.getAttribute("data-plus") === "14" && fracRenamed.getAttribute("data-total") === "18", "мінус лишається поза чисельником");
-    document.querySelector("[data-open-profile]").click();
-    document.querySelector("[data-profile-pane='people']").click();
-    chooseStatus("leave");
-    document.querySelector("[data-delete-duty='leave']").click();
-    check(document.getElementById("confirm-ask") && document.getElementById("confirm-ask").textContent.indexOf("Видалити") !== -1 && !!document.querySelector("[data-cancel-delete]"), "видалення статусу питає підтвердження");
-    document.querySelector("[data-delete-duty='leave']").click();
-    check(!document.getElementById("confirm-ask") && !state.dutyRemoved.leave, "другий раз скасовує видалення статусу");
-    document.querySelector("[data-delete-duty='leave']").click();
-    document.querySelector("[data-confirm-delete]").click();
+    deleteDuty("duty", "leave");
     var clearedDuty = document.getElementById("duty-p6");
     var clearedRow = document.querySelector("[data-toggle='person:p6']");
     check(!!state.dutyRemoved.leave && clearedDuty && clearedDuty.tagName !== "SELECT" && clearedDuty.getAttribute("data-value") === "" && clearedDuty.querySelector(".pick-current").textContent === "", "після видалення поле стану порожнє");
     check(clearedRow && clearedRow.textContent.indexOf("Канікули") === -1 && clearedRow.textContent.indexOf("Відпустка") === -1 && clearedRow.textContent.indexOf("У строю") === -1, "рядок без підміненого статусу");
     var fracCleared = document.querySelector("#people .frac");
     check(fracCleared && fracCleared.getAttribute("data-plus") === "14" && fracCleared.getAttribute("data-total") === "18", "видалений мінус не входить у чисельник");
-    chooseStatus("in");
-    check(document.getElementById("status-name") && document.getElementById("status-name").value === "У строю", "після видалення те саме поле бере інший статус");
-    document.querySelector("[data-delete-duty='in']").click();
-    document.querySelector("[data-confirm-delete]").click();
+    deleteDuty("duty", "in");
     var fracDropped = document.querySelector("#people .frac");
     check(fracDropped && fracDropped.getAttribute("data-plus") === "0" && fracDropped.getAttribute("data-total") === "18", "видалений плюс виходить із чисельника");
     state.dutyRemoved = {};
@@ -14932,10 +15553,9 @@ button.count-toggle {
     state.settingsFolderAdminHash = "";
     applyCode("lead");
     document.querySelector("[data-open-profile]").click();
-    document.querySelector("[data-profile-pane='people']").click();
-    document.querySelector("[data-profile-pane='gear']").click();
-    check(!document.getElementById("status-name") && !document.getElementById("machine-status-name") && !document.getElementById("type-name") && !document.querySelector("[data-choose-duty]") && !document.querySelector("[data-delete-duty]") && !document.querySelector("[data-choose-machine-duty]") && !document.querySelector("[data-delete-machine-duty]") && !document.querySelector("[data-choose-type]") && !document.querySelector("[data-delete-type]") && !document.querySelector("[data-edit-duty]") && !document.querySelector("[data-edit-machine-duty]"), "без відбитка адміна довідники не правлять");
-    check(document.getElementById("profile-overlay").textContent.indexOf("Редагування статусів військовослужбовців") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування станів ОВТ") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Редагування типів ОВТ") !== -1, "підрозділ бачить назви розділів");
+    document.querySelector("[data-open-card-constructor='people']").click();
+    check(!document.getElementById("card-constructor-overlay") && !document.getElementById("constructor-label"), "без відбитка адміна конструктор не правлять");
+    check(document.getElementById("profile-overlay").textContent.indexOf("Картка особового складу +") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Картка ОВТ +") !== -1 && document.getElementById("profile-overlay").textContent.indexOf("Картка завдання +") !== -1, "підрозділ бачить назви інструментів карток");
     document.querySelector("[data-close-profile]").click();
     check(!canWriteDriveSettings() && !canEditCatalogs(), "без ключа немає прав на settings і довідники");
     state.driveEncryptKey = "секрет-адміна";
@@ -14944,6 +15564,7 @@ button.count-toggle {
     check(!!canWriteDriveSettings() && !!canEditCatalogs(), "ключ без settings дає права першому запису");
     var settingsPayload = buildSettingsPayload();
     check(settingsPayload && settingsPayload.version === 1 && Array.isArray(settingsPayload.types) && Array.isArray(settingsPayload.duties) && Array.isArray(settingsPayload.machineDuties) && settingsPayload.reserve && typeof settingsPayload.reserve === "object", "settings має типи, стани і запас");
+    check(settingsPayload.cardSchemas && Array.isArray(settingsPayload.cardSchemas.people) && Array.isArray(settingsPayload.cardSchemas.gear) && Array.isArray(settingsPayload.cardSchemas.tasks) && settingsPayload.cardSchemas.people.length >= 3, "settings має схеми карток");
     check(settingsPayload.folderAdmin === true && typeof settingsPayload.folderAdminKeyHash === "string" && settingsPayload.folderAdminKeyHash.length === 64, "settings має позначку адміна і відбиток");
     check(settingsPayload.folderAdminKeyHash === keyFingerprint("секрет-адміна"), "відбиток збігається з локальним ключем");
     check(settingsPayload.unitFingerprints && typeof settingsPayload.unitFingerprints === "object", "settings має unitFingerprints");
