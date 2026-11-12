@@ -2152,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T10:12:14.000Z";
+  var APP_BUILD_AT = "2026-11-12T11:22:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3891,8 +3891,8 @@ button.count-toggle {
   function unitFingerprintAllowed(code) {
     var key = String(code || "").trim();
     if (!key || !looksLikeUnitCode(key)) return true;
-    // Старі settings без поля — не блокуємо, доки lead раз не запише відбитки.
-    if (!state.settingsUnitFingerprintsReady) return true;
+    // ZS-164: fail-closed — без поля unitFingerprints або без свого відбитка unit не пише vu-*.bin.
+    if (!state.settingsUnitFingerprintsReady) return false;
     var fp = keyFingerprint(key);
     if (!fp) return false;
     var map = state.settingsUnitFingerprints && typeof state.settingsUnitFingerprints === "object"
@@ -3901,8 +3901,39 @@ button.count-toggle {
     return Object.prototype.hasOwnProperty.call(map, fp);
   }
 
+  // ZS-164: перед записом vu unit — свіжий settings з Диска (або Ready=false → gate закритий).
+  function refreshUnitFingerprintsFromDrive(token, folderId) {
+    if (!token || !folderId) {
+      rememberSettingsUnitFingerprints({}, false);
+      return Promise.resolve({ refreshed: false, reason: "nodrive" });
+    }
+    return findSettingsFile(token, folderId).then(function (file) {
+      if (!file || !file.id) {
+        rememberSettingsUnitFingerprints({}, false);
+        return { refreshed: false, reason: "missing" };
+      }
+      return downloadSettingsFile(token, file.id).then(function (json) {
+        rememberSettingsAdmin(json);
+        if (json && Object.prototype.hasOwnProperty.call(json, "unitFingerprints")) {
+          rememberSettingsUnitFingerprints(json, true);
+          return { refreshed: true, ready: true };
+        }
+        rememberSettingsUnitFingerprints({}, false);
+        return { refreshed: true, ready: false };
+      });
+    }).catch(function () {
+      rememberSettingsUnitFingerprints({}, false);
+      return { refreshed: false, reason: "error" };
+    });
+  }
+
   function syncSettingsFileNow(token, folderId) {
-    if (!token || !folderId || !canWriteDriveSettings()) return Promise.resolve({ wroteSettings: false });
+    if (!token || !folderId) {
+      return Promise.resolve({ wroteSettings: false, reason: "nodrive" });
+    }
+    if (!canWriteDriveSettings()) {
+      return Promise.resolve({ wroteSettings: false, reason: "nowrite" });
+    }
     return findSettingsFile(token, folderId).then(function (file) {
       return uploadSettingsFile(token, folderId, file && file.id).then(function () {
         var payload = buildSettingsPayload();
@@ -3911,6 +3942,13 @@ button.count-toggle {
         return { wroteSettings: true };
       });
     });
+  }
+
+  function settingsWriteBlockedNote(action) {
+    var what = action === "create" ? "додано" : (action === "rotate" ? "змінено" : "прибрано");
+    return "Ланку " + what + " локально, але довідники на Диск не записано (немає права писати settings). "
+      + "Поки vistovyi-settings.json без актуальних відбитків — захист від запису звіту на Диску не діє. "
+      + "Перевірте код доступу адміна теки і зробіть sync.";
   }
 
   function canEditCatalogs() {
@@ -8392,10 +8430,19 @@ button.count-toggle {
     var folderId = driveFolderId(state.driveFolder);
     var key = String(state.driveEncryptKey || "").trim();
     if (!folderId || !key || !driveTokenValid()) return;
-    upsertOwnUnitFile(driveToken, folderId).then(function () {
+    // ZS-164: перед записом — свіжий settings (fail-closed якщо поля немає).
+    upsertOwnUnitFile(driveToken, folderId).then(function (own) {
+      if (own && (own.reason === "nofingerprint" || own.error === "nofingerprint")) {
+        state.driveNote = "Цю ланку прибрано зі списку — звіт на Диск не записано.";
+      }
       save({ force: true });
       render();
-    }).catch(function () {});
+    }).catch(function (err) {
+      if (err && err.message === "nofingerprint") {
+        state.driveNote = "Цю ланку прибрано зі списку — звіт на Диск не записано.";
+        render();
+      }
+    });
   }
 
   function personFioKey(person) {
@@ -8654,7 +8701,7 @@ button.count-toggle {
     return snap;
   }
 
-  function upsertOwnUnitFile(token, folderId) {
+  function upsertOwnUnitFileBody(token, folderId) {
     var parentKey = String(state.driveEncryptKey || "").trim();
     if (!parentKey) return Promise.reject(new Error("nocode"));
     materializeOverlays();
@@ -8687,7 +8734,7 @@ button.count-toggle {
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
       }).filter(function (item) { return !!item && !!item.code; });
-      // ZS-163: відкрита вкладка unit без відбитка — не писати її vu-*.bin.
+      // ZS-163/164: відкрита вкладка unit без відбитка — не писати її vu-*.bin.
       if (looksLikeUnitCode(child) && !unitFingerprintAllowed(child)) {
         return Promise.resolve({ ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" });
       }
@@ -8722,11 +8769,23 @@ button.count-toggle {
     if (!unitDriveFileName(parentKey) && looksLikeUnitCode(parentKey)) {
       return Promise.resolve({ ok: false, skipped: true, reason: "noname", error: "noname" });
     }
-    // ZS-163: unit без відбитка в settings — не писати свій vu-*.bin (навіть якщо Google ще пускає).
+    // ZS-163/164: unit без відбитка в settings — не писати свій vu-*.bin.
     if (looksLikeUnitCode(parentKey) && !unitFingerprintAllowed(parentKey)) {
       return Promise.resolve({ ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" });
     }
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
+  }
+
+  function upsertOwnUnitFile(token, folderId, opts) {
+    var skipRefresh = !!(opts && opts.skipFingerprintRefresh);
+    // ZS-164: перед будь-яким записом unit — свіжий settings з Диска (або fail-closed).
+    var needsGate = looksLikeUnitCode(state.driveEncryptKey) || looksLikeUnitCode(driveChildWriteCode());
+    if (skipRefresh || !needsGate) {
+      return upsertOwnUnitFileBody(token, folderId);
+    }
+    return refreshUnitFingerprintsFromDrive(token, folderId).then(function () {
+      return upsertOwnUnitFileBody(token, folderId);
+    });
   }
 
   function mergeIdPrefix(code) {
@@ -9298,7 +9357,7 @@ button.count-toggle {
       var prepare = file
         ? downloadSettingsFile(token, file.id).then(function (json) {
             rememberSettingsAdmin(json);
-            // ZS-163: unit читає відбитки до будь-якого запису vu-*.bin.
+            // ZS-163/164: unit читає відбитки до запису; без поля — Ready=false → fail-closed.
             if (json && Object.prototype.hasOwnProperty.call(json, "unitFingerprints")) {
               rememberSettingsUnitFingerprints(json, true);
             } else {
@@ -10060,17 +10119,27 @@ button.count-toggle {
       state.accessChange = null;
       save();
       if (!token || !folderId) {
+        state.driveNote = "Ланку прибрано локально. Без Диска довідники з відбитками не оновлено.";
         render();
         return Promise.resolve();
       }
-      // ZS-163: прибрати відбиток з settings і одразу sync settings, потім файл lead.
-      return syncSettingsFileNow(token, folderId).then(function () {
-        return upsertOwnUnitFile(token, folderId);
-      }).then(function () {
-        state.driveNote = "Список нижчих оновлено.";
-        render();
+      // ZS-163/164: прибрати відбиток з settings і одразу upload; без canWrite — чітка помилка.
+      return syncSettingsFileNow(token, folderId).then(function (settingsRes) {
+        if (!settingsRes || !settingsRes.wroteSettings) {
+          state.driveNote = settingsWriteBlockedNote("delete");
+          // Файл lead все одно оновимо (children), але без брехні про успішний gate.
+          return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
+            render();
+          }).catch(function () {
+            render();
+          });
+        }
+        return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
+          state.driveNote = "Список нижчих оновлено.";
+          render();
+        });
       }).catch(function () {
-        state.driveNote = "Ланку прибрано локально; синхрон файлу не вдався.";
+        state.driveNote = "Ланку прибрано локально; синхрон довідників/файлу не вдався.";
         render();
       });
     }
@@ -10092,15 +10161,22 @@ button.count-toggle {
       return Promise.resolve();
     }
     return resealChildUnitFile(token, folderId, oldCode, nextCode).then(function (reseal) {
-      // ZS-163: оновити відбиток нового коду в settings.
-      return syncSettingsFileNow(token, folderId).then(function () {
-        return upsertOwnUnitFile(token, folderId).then(function () {
-          return reseal;
+      // ZS-163/164: оновити відбиток нового коду в settings.
+      return syncSettingsFileNow(token, folderId).then(function (settingsRes) {
+        return upsertOwnUnitFile(token, folderId, { skipFingerprintRefresh: true }).then(function () {
+          return { reseal: reseal, settingsRes: settingsRes };
         });
       });
-    }).then(function (reseal) {
-      if (reseal && reseal.ok) state.driveNote = "Доступ змінено, файл підлеглого перезапечатано.";
-      else state.driveNote = "Новий код збережено; файл підлеглого не перезапечатано.";
+    }).then(function (bundle) {
+      var reseal = bundle && bundle.reseal;
+      var settingsRes = bundle && bundle.settingsRes;
+      if (!settingsRes || !settingsRes.wroteSettings) {
+        state.driveNote = settingsWriteBlockedNote("rotate");
+      } else if (reseal && reseal.ok) {
+        state.driveNote = "Доступ змінено, файл підлеглого перезапечатано.";
+      } else {
+        state.driveNote = "Новий код збережено; файл підлеглого не перезапечатано.";
+      }
       render();
     }).catch(function () {
       state.driveNote = "Новий код збережено локально; синхрон не вдався.";
@@ -11754,6 +11830,25 @@ button.count-toggle {
     offerReportFile(doc);
     save();
     render();
+    // ZS-164: одразу upload settings з новим fingerprint (або чітка помилка без canWrite).
+    var folderId = folderIdFromLink(state.driveFolder);
+    var token = driveToken || "";
+    if (!token || !folderId) {
+      state.driveNote = "Ланку додано локально. Без Диска довідники з відбитками не оновлено.";
+      render();
+      return;
+    }
+    syncSettingsFileNow(token, folderId).then(function (settingsRes) {
+      if (!settingsRes || !settingsRes.wroteSettings) {
+        state.driveNote = settingsWriteBlockedNote("create");
+      } else {
+        state.driveNote = "Ланку додано, список на Диску оновлено.";
+      }
+      render();
+    }).catch(function () {
+      state.driveNote = "Ланку додано локально; довідники на Диск не записано.";
+      render();
+    });
   }
 
   function applyFieldEdit(node) {
@@ -12897,8 +12992,26 @@ button.count-toggle {
     check(!unitFingerprintAllowed(code163), "ZS-163: видалена ланка не проходить gate");
     var summary163 = driveSyncSummary({}, { ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" }, null, null);
     check(summary163.indexOf("прибрано зі списку") !== -1 && summary163.indexOf("не записано") !== -1, "ZS-163: зрозуміле повідомлення без запису");
+    // ZS-164: fail-closed — без поля unitFingerprints unit не пише.
     state.settingsUnitFingerprintsReady = false;
-    check(unitFingerprintAllowed(code163), "ZS-163: без поля unitFingerprints gate ще мовчить");
+    state.settingsUnitFingerprints = {};
+    check(!unitFingerprintAllowed(code163), "ZS-164: без поля unitFingerprints gate закритий");
+    rememberSettingsUnitFingerprints({ unitFingerprints: {} }, true);
+    check(!unitFingerprintAllowed(code163), "ZS-164: порожній map — свого fingerprint немає → блок");
+    var alienFp = {};
+    alienFp[keyFingerprint("WXYZ-ABCD-EFGH-JKLM-NPQR")] = "Чужа";
+    rememberSettingsUnitFingerprints({ unitFingerprints: alienFp }, true);
+    check(!unitFingerprintAllowed(code163), "ZS-164: чужий fingerprint — блок");
+    var ownFp = {};
+    ownFp[fp163] = "Взвод зв’язку";
+    rememberSettingsUnitFingerprints({ unitFingerprints: ownFp }, true);
+    check(unitFingerprintAllowed(code163), "ZS-164: свій fingerprint — дозволено");
+    var noteNowrite = settingsWriteBlockedNote("delete");
+    check(noteNowrite.indexOf("довідники на Диск не записано") !== -1 && noteNowrite.indexOf("Список нижчих оновлено") === -1, "ZS-164: без canWrite — чітка помилка, не фальшивий успіх");
+    var payloadCreate164 = buildSettingsPayload();
+    check(payloadCreate164.unitFingerprints && typeof payloadCreate164.unitFingerprints === "object", "ZS-164: create/delete шлях будує unitFingerprints у payload");
+    check(typeof refreshUnitFingerprintsFromDrive === "function" && typeof syncSettingsFileNow === "function", "ZS-164: refresh settings і syncSettingsFileNow є");
+    check(typeof settingsWriteBlockedNote === "function", "ZS-164: settingsWriteBlockedNote є");
     state.units = keepUnits163;
     state.deletedUnits = keepDeleted163;
     state.settingsUnitFingerprints = keepFp163;
