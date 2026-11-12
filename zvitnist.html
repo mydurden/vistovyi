@@ -2147,7 +2147,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T07:36:26.000Z";
+  var APP_BUILD_AT = "2026-11-12T09:20:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -8504,8 +8504,13 @@ button.count-toggle {
 
   function generalBundleKey() {
     // ZS-125: ціль merge — канонічний bundle власника файлу (lead), не збитий reportRoot.
-    var own = canonicalOwnBundleKey(state.driveEncryptKey);
-    if (own) return own;
+    // ZS-159: без коду доступу не брати поточний reportKey вкладки з canonicalOwnBundleKey —
+    // інакше ensureGeneralBundle / merge-into-general цілить дочірню вкладку замість lead.
+    var encrypt = String(state.driveEncryptKey || "").trim();
+    if (encrypt) {
+      var own = canonicalOwnBundleKey(encrypt);
+      if (own) return own;
+    }
     var root = String(state.reportRoot || "").trim();
     if (root) return reportKey(root) || "lead";
     return "lead";
@@ -12533,13 +12538,21 @@ button.count-toggle {
     var snap158 = currentUnitSnapshot();
     check(snap158 && snap158.name === "" && (!snap158.unit || snap158.unit.name === ""), "знімок lead без імені Служба");
     var keepKey158 = state.reportKey;
+    var keepRoot158 = state.reportRoot;
+    var keepEncrypt158 = state.driveEncryptKey;
     var keepBundles158 = bundles;
     bundles = {};
+    state.driveEncryptKey = "";
+    state.reportRoot = "lead";
     state.reportKey = "CHILD158";
+    check(generalBundleKey() === "lead", "ZS-159: generalBundleKey без коду → lead, не вкладка");
     var genKey158 = ensureGeneralBundle();
     check(genKey158 === "lead" && bundles.lead && bundles.lead.report && bundles.lead.report.name === "" && bundles.lead.report.unit.name === "", "ensureGeneralBundle не сіє Служба");
+    check(!bundles.CHILD158, "ZS-159: без коду не створює bundle поточної вкладки");
     bundles = keepBundles158;
     state.reportKey = keepKey158;
+    state.reportRoot = keepRoot158;
+    state.driveEncryptKey = keepEncrypt158;
     // ZS-118: міграція старого bundles["1rota"] → "lead".
     var savedBundles = bundles;
     var savedReportKey = state.reportKey;
