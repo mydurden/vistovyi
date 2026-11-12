@@ -2152,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T11:22:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T12:16:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3956,12 +3956,15 @@ button.count-toggle {
   }
 
   function canWriteDriveSettings() {
+    // ZS-165: unit НІКОЛИ не пише vistovyi-settings.json / unitFingerprints — лише lead (господар).
+    var encrypt = String(state.driveEncryptKey || "").trim();
+    if (!encrypt || looksLikeUnitCode(encrypt)) return false;
     var localHash = localAdminKeyHash();
     if (!localHash) return false;
     if (state.settingsFolderAdmin && state.settingsFolderAdminHash) {
       return localHash === state.settingsFolderAdminHash;
     }
-    // Файл ще без адміна — перший запис settings ставить відбиток ключа.
+    // Ще без господаря — перший запис лише з ключа lead (не коду ланки).
     return true;
   }
 
@@ -7527,6 +7530,10 @@ button.count-toggle {
   }
 
   function uploadSettingsFile(token, folderId, existingId) {
+    // ZS-165: подвійний замок — unit / без права господаря сюди не доходить.
+    if (!canWriteDriveSettings()) {
+      return Promise.reject(new Error("nowrite"));
+    }
     var payload = JSON.stringify(buildSettingsPayload());
     var boundary = "vistovyi" + Date.now().toString(36);
     if (existingId) {
@@ -13012,6 +13019,64 @@ button.count-toggle {
     check(payloadCreate164.unitFingerprints && typeof payloadCreate164.unitFingerprints === "object", "ZS-164: create/delete шлях будує unitFingerprints у payload");
     check(typeof refreshUnitFingerprintsFromDrive === "function" && typeof syncSettingsFileNow === "function", "ZS-164: refresh settings і syncSettingsFileNow є");
     check(typeof settingsWriteBlockedNote === "function", "ZS-164: settingsWriteBlockedNote є");
+    // ZS-165: settings / unitFingerprints пише лише lead; unit не reinject і не пише vu після delete.
+    var code165 = "WD2K-97WQ-FFVC-PKDF-WJTX";
+    var keepUnits165 = state.units;
+    var keepDeleted165 = state.deletedUnits;
+    var keepFp165 = state.settingsUnitFingerprints;
+    var keepFpReady165 = state.settingsUnitFingerprintsReady;
+    var keepAdmin165 = state.settingsFolderAdmin;
+    var keepAdminHash165 = state.settingsFolderAdminHash;
+    var keepEncrypt165 = state.driveEncryptKey;
+    var keepOpen165 = state.openCode;
+    state.units = [{ id: "u-165", name: "Взвод альфа", code: code165, parent: "lead" }];
+    state.deletedUnits = {};
+    state.driveEncryptKey = "секрет-lead-165";
+    state.settingsFolderAdmin = false;
+    state.settingsFolderAdminHash = "";
+    state.openCode = "lead";
+    check(!!canWriteDriveSettings(), "ZS-165: lead без господаря може перший записати settings");
+    var payload165Lead = buildSettingsPayload();
+    var fp165 = keyFingerprint(code165);
+    check(payload165Lead.unitFingerprints && payload165Lead.unitFingerprints[fp165] === "Взвод альфа", "ZS-165: lead збирає відбиток живої ланки");
+    rememberSettingsAdmin(payload165Lead);
+    rememberSettingsUnitFingerprints(payload165Lead, true);
+    removeIssuedUnit("u-165");
+    var payload165Del = buildSettingsPayload();
+    check(!payload165Del.unitFingerprints[fp165] && isUnitDeleted(code165), "ZS-165: після delete lead у payload немає відбитка");
+    rememberSettingsUnitFingerprints(payload165Del, true);
+    // Пристрій unit: tomb lead локально немає; після запрошення себе видно в units.
+    state.deletedUnits = {};
+    state.units = [{ id: "u-165-self", name: "Взвод альфа", code: code165, parent: "" }];
+    state.driveEncryptKey = code165;
+    state.openCode = code165;
+    state.settingsFolderAdmin = false;
+    state.settingsFolderAdminHash = "";
+    check(!canWriteDriveSettings(), "ZS-165: unit без folderAdmin не пише settings");
+    check(!unitFingerprintAllowed(code165), "ZS-165: після delete порожній map — unit не пише vu-*.bin");
+    var reinjectAttempt = collectUnitFingerprintsForSettings();
+    check(!!reinjectAttempt[fp165], "ZS-165: локально unit бачить себе в units (було б reinject)");
+    check(!canWriteDriveSettings(), "ZS-165: навіть із собою в units unit не uploadSettingsFile");
+    state.settingsFolderAdmin = true;
+    state.settingsFolderAdminHash = "";
+    check(!canWriteDriveSettings(), "ZS-165: unit при зламаному folderAdmin (без hash) не пише settings");
+    state.settingsFolderAdmin = true;
+    state.settingsFolderAdminHash = keyFingerprint("секрет-lead-165");
+    check(!canWriteDriveSettings() && !unitFingerprintAllowed(code165), "ZS-165: unit при господарі lead не пише settings і не пише vu");
+    state.driveEncryptKey = "секрет-lead-165";
+    state.openCode = "lead";
+    state.settingsFolderAdmin = false;
+    state.settingsFolderAdminHash = "";
+    check(!!canWriteDriveSettings(), "ZS-165: lead знову може писати settings після сценарію unit");
+    check(typeof safeDedupeDriveFiles === "function", "ZS-165: один settings — dedupe newer-wins лишається");
+    state.units = keepUnits165;
+    state.deletedUnits = keepDeleted165;
+    state.settingsUnitFingerprints = keepFp165;
+    state.settingsUnitFingerprintsReady = keepFpReady165;
+    state.settingsFolderAdmin = keepAdmin165;
+    state.settingsFolderAdminHash = keepAdminHash165;
+    state.driveEncryptKey = keepEncrypt165;
+    state.openCode = keepOpen165;
     state.units = keepUnits163;
     state.deletedUnits = keepDeleted163;
     state.settingsUnitFingerprints = keepFp163;
