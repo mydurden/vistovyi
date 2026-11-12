@@ -1596,6 +1596,8 @@ button.count-toggle {
     codeError: "",
     units: [],
     unitReportStatus: {},
+    // ZS-161: tomb видалених ланок — не sync і не воскрешати з remote children.
+    deletedUnits: {},
     unitNameDraft: "",
     unitError: "",
     edits: { people: {}, machines: {} },
@@ -2147,7 +2149,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T09:20:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T09:46:56.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3334,10 +3336,12 @@ button.count-toggle {
     var unitKey = activeDriveUnitKey() || String(state.driveEncryptKey || "").trim();
     var children = unitsOwnedHere().map(function (unit) {
       var code = String(unit.code || "");
+      if (!code || isUnitDeleted(code) || isSluzhbaArtifactName(unit.name)) return null;
       var label = preferUnitName(unit.name, unitNameFromBundle(code));
+      if (isSluzhbaArtifactName(label)) return null;
       if (label && unit.name !== label) unit.name = label;
       return { name: String(label || unit.name || "").slice(0, 80), code: code };
-    }).filter(function (item) { return !!item.code; });
+    }).filter(function (item) { return !!item && !!item.code; });
     var report = state.report || sampleReportDocument();
     syncRemovedFlagsFromCards();
     ensurePurgedStores();
@@ -3518,10 +3522,12 @@ button.count-toggle {
       days: days,
       children: subordinatesFor(unitKey).map(function (unit) {
         var code = String(unit.code || "");
+        if (!code || isUnitDeleted(code) || isSluzhbaArtifactName(unit.name)) return null;
         var label = preferUnitName(unit.name, unitNameFromBundle(code));
+        if (isSluzhbaArtifactName(label)) return null;
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: code };
-      }).filter(function (item) { return !!item.code; }),
+      }).filter(function (item) { return !!item && !!item.code; }),
       removedPeople: peopleTombs,
       removedMachines: machineTombs,
       // ZS-142: картки вкладки потрібні для 3-way lead↔файл unit.
@@ -3537,6 +3543,7 @@ button.count-toggle {
     var unit = raw.unit && typeof raw.unit === "object" ? cloneData(raw.unit) : { id: "root", name: rawName, people: [] };
     if (!unit.id) unit.id = "root";
     if (isDefaultUnitName(unit.name)) unit.name = rawName;
+    scrubDefaultUnitTreeNames(unit);
     var doc = {
       name: rawName,
       code: String(code || raw.code || "").trim(),
@@ -3588,6 +3595,8 @@ button.count-toggle {
       if (!item || !item.code) return;
       var code = String(item.code).trim();
       if (!code) return;
+      // ZS-161: tomb — не воскрешати видалену ланку з remote children.
+      if (isUnitDeleted(code)) return;
       var incoming = String(item.name || "").trim().slice(0, 80);
       var bundleName = unitNameFromBundle(code);
       var existing = findUnitByCode(code);
@@ -3612,6 +3621,11 @@ button.count-toggle {
         return;
       }
       var seed = preferUnitName(incoming, bundleName);
+      // ZS-160: артефакт «Служба» — не заводити живий unit slot.
+      if (isSluzhbaArtifactName(seed) || isSluzhbaArtifactName(incoming)) {
+        if (!bundleName || isSluzhbaArtifactName(bundleName) || isDefaultUnitName(bundleName)) return;
+        seed = bundleName;
+      }
       state.units.push({
         id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36) + Math.floor(Math.random() * 36).toString(36),
         name: String(seed || "Підрозділ").slice(0, 80),
@@ -3632,15 +3646,21 @@ button.count-toggle {
     if (!pass || !looksLikeUnitCode(pass)) return null;
     var lower = pass.toLowerCase();
     if (CODES[lower] || lower === "sluzhba") return null;
+    // ZS-161: tomb — інвайт видаленої ланки не воскрешає слот сам по собі.
+    if (isUnitDeleted(pass)) return null;
     var existing = findUnitByCode(pass);
     if (existing) {
       var keptInvite = preferUnitName(existing.name, name);
-      if (keptInvite) existing.name = keptInvite;
+      if (keptInvite && !isSluzhbaArtifactName(keptInvite)) existing.name = keptInvite;
+      else if (isSluzhbaArtifactName(existing.name)) existing.name = "Підрозділ";
       return existing;
     }
+    var inviteLabel = String(name || "").trim().slice(0, 80);
+    // ZS-160: інвайт із «Служба» — не сіємо артефакт; тимчасово «Підрозділ».
+    if (isSluzhbaArtifactName(inviteLabel) || !inviteLabel) inviteLabel = "Підрозділ";
     var created = {
       id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
-      name: String(name || "Підрозділ").slice(0, 80),
+      name: inviteLabel.slice(0, 80),
       code: pass,
       parent: ""
     };
@@ -3655,10 +3675,52 @@ button.count-toggle {
     return !label || label === "Підрозділ" || label === "Служба";
   }
 
+  // ZS-160: саме leftover-слот «Служба» (не загальний «Підрозділ»).
+  function isSluzhbaArtifactName(name) {
+    return String(name || "").trim() === "Служба";
+  }
+
+  function isUnitDeleted(code) {
+    var key = String(code || "").trim();
+    if (!key) return false;
+    var map = state.deletedUnits && typeof state.deletedUnits === "object" ? state.deletedUnits : {};
+    return !!(map[key] || map[key.toLowerCase()]);
+  }
+
+  function markUnitDeleted(code, name) {
+    var key = String(code || "").trim();
+    if (!key || !looksLikeUnitCode(key)) return;
+    if (!state.deletedUnits || typeof state.deletedUnits !== "object") state.deletedUnits = {};
+    state.deletedUnits[key] = {
+      at: stampNow(),
+      name: String(name || "").trim().slice(0, 80)
+    };
+    state.deletedUnits[key.toLowerCase()] = state.deletedUnits[key];
+  }
+
+  function clearUnitDeleted(code) {
+    var key = String(code || "").trim();
+    if (!key || !state.deletedUnits || typeof state.deletedUnits !== "object") return;
+    delete state.deletedUnits[key];
+    delete state.deletedUnits[key.toLowerCase()];
+  }
+
+  // ZS-160: прибрати артефакт «Служба» / дефолт з дерева о/с (гілки children).
+  function scrubDefaultUnitTreeNames(node) {
+    if (!node || typeof node !== "object") return node;
+    if (isDefaultUnitName(node.name)) node.name = "";
+    var kids = Array.isArray(node.children) ? node.children : [];
+    kids.forEach(scrubDefaultUnitTreeNames);
+    return node;
+  }
+
   function scrubDefaultReportNames(doc) {
     if (!doc || typeof doc !== "object") return doc;
     if (isDefaultUnitName(doc.name)) doc.name = "";
-    if (doc.unit && typeof doc.unit === "object" && isDefaultUnitName(doc.unit.name)) doc.unit.name = "";
+    if (doc.unit && typeof doc.unit === "object") {
+      if (isDefaultUnitName(doc.unit.name)) doc.unit.name = "";
+      scrubDefaultUnitTreeNames(doc.unit);
+    }
     return doc;
   }
 
@@ -3667,9 +3729,60 @@ button.count-toggle {
     Object.keys(archive).forEach(function (day) {
       var slice = archive[day];
       if (!slice || typeof slice !== "object") return;
-      if (slice.unit && typeof slice.unit === "object" && isDefaultUnitName(slice.unit.name)) slice.unit.name = "";
+      if (slice.unit && typeof slice.unit === "object") {
+        if (isDefaultUnitName(slice.unit.name)) slice.unit.name = "";
+        scrubDefaultUnitTreeNames(slice.unit);
+      }
     });
     return archive;
+  }
+
+  // ZS-160: не тримати «Служба» як живий unit у prefs; tomb при потребі.
+  function scrubArtifactIssuedUnits() {
+    var kept = [];
+    var removed = [];
+    (state.units || []).forEach(function (unit) {
+      if (!unit) return;
+      var name = String(unit.name || "").trim();
+      var code = String(unit.code || "").trim();
+      if (code && isSluzhbaArtifactName(name)) {
+        removed.push(unit);
+        return;
+      }
+      kept.push(unit);
+    });
+    if (!removed.length) return 0;
+    state.units = kept;
+    removed.forEach(function (unit) {
+      var code = String(unit.code || "").trim();
+      if (!code) return;
+      markUnitDeleted(code, unit.name);
+      delete state.unitReportStatus[code];
+      delete bundles[code];
+      if (state.driveUnitNames && typeof state.driveUnitNames === "object") {
+        delete state.driveUnitNames[code];
+        delete state.driveUnitNames[code.toLowerCase()];
+      }
+      if (state.driveUnitFileLabel && typeof state.driveUnitFileLabel === "object") {
+        delete state.driveUnitFileLabel[code];
+      }
+    });
+    return removed.length;
+  }
+
+  // ZS-160: локальний wipe leftover «Служба» у prefs + кеш-дереві (не чіпає Drive файли автора).
+  function wipeLocalSluzhbaArtifacts() {
+    var n = scrubArtifactIssuedUnits();
+    if (state.report) scrubDefaultReportNames(state.report);
+    scrubDefaultDayArchiveNames(state.daysArchive);
+    Object.keys(bundles || {}).forEach(function (key) {
+      var b = bundles[key];
+      if (!b || !b.report) return;
+      scrubDefaultReportNames(b.report);
+      scrubDefaultDayArchiveNames(b.daysArchive);
+    });
+    if (isSluzhbaArtifactName(state.holder) || isDefaultUnitName(state.holder)) state.holder = "";
+    return n;
   }
 
   function journalWho() {
@@ -4916,14 +5029,32 @@ button.count-toggle {
       if (typeof data.driveEncryptKey === "string") state.driveEncryptKey = data.driveEncryptKey.slice(0, 500);
       if (typeof data.driveGoogleEmail === "string") state.driveGoogleEmail = data.driveGoogleEmail.slice(0, 120);
       if (typeof data.reportRoot === "string") state.reportRoot = data.reportRoot.slice(0, 80);
+      if (data.deletedUnits && typeof data.deletedUnits === "object") {
+        var nextDeleted = {};
+        Object.keys(data.deletedUnits).forEach(function (key) {
+          var row = data.deletedUnits[key];
+          var code = String(key || "").trim();
+          if (!code || !looksLikeUnitCode(code)) return;
+          nextDeleted[code] = {
+            at: String(row && row.at || stampNow()).slice(0, 40),
+            name: String(row && row.name || "").trim().slice(0, 80)
+          };
+          nextDeleted[code.toLowerCase()] = nextDeleted[code];
+        });
+        state.deletedUnits = nextDeleted;
+      }
       if (Array.isArray(data.units)) {
         var nextUnits = [];
         data.units.forEach(function (item) {
           if (!item || typeof item.code !== "string" || !item.code.trim()) return;
+          var code = String(item.code).trim().slice(0, 80);
+          var name = String(item.name || "Підрозділ").slice(0, 80);
+          // ZS-160/161: tomb і артефакт «Служба» не піднімати як живий unit.
+          if (isUnitDeleted(code) || isSluzhbaArtifactName(name)) return;
           nextUnits.push({
             id: String(item.id || ("u" + nextUnits.length)).slice(0, 40),
-            name: String(item.name || "Підрозділ").slice(0, 80),
-            code: String(item.code).trim().slice(0, 80),
+            name: name,
+            code: code,
             parent: String(item.parent || "").slice(0, 80)
           });
         });
@@ -4932,6 +5063,7 @@ button.count-toggle {
       if (data.unitReportStatus && typeof data.unitReportStatus === "object") {
         var nextStatus = {};
         Object.keys(data.unitReportStatus).forEach(function (key) {
+          if (isUnitDeleted(key)) return;
           var value = data.unitReportStatus[key];
           if (value === "received" || value === "missing" || value === "merged") nextStatus[key] = value;
         });
@@ -4964,6 +5096,17 @@ button.count-toggle {
   function saveDrivePrefs() {
     try {
       if (typeof localStorage === "undefined") return;
+      var deletedOut = {};
+      Object.keys(state.deletedUnits || {}).forEach(function (key) {
+        if (key !== String(key).toLowerCase() && state.deletedUnits[key] && state.deletedUnits[String(key).toLowerCase()]) return;
+        var code = String(key || "").trim();
+        if (!code || !looksLikeUnitCode(code)) return;
+        var row = state.deletedUnits[code] || state.deletedUnits[key];
+        deletedOut[code] = {
+          at: String(row && row.at || stampNow()).slice(0, 40),
+          name: String(row && row.name || "").trim().slice(0, 80)
+        };
+      });
       localStorage.setItem(DRIVE_KEY, JSON.stringify({
         driveFolder: String(state.driveFolder || "").slice(0, 240),
         driveEncryptKey: String(state.driveEncryptKey || "").slice(0, 500),
@@ -4976,7 +5119,10 @@ button.count-toggle {
             code: String(unit.code || "").slice(0, 80),
             parent: String(unit.parent || "").slice(0, 80)
           };
+        }).filter(function (unit) {
+          return unit.code && !isUnitDeleted(unit.code) && !isSluzhbaArtifactName(unit.name);
         }),
+        deletedUnits: deletedOut,
         unitReportStatus: state.unitReportStatus || {},
         driveUnitNames: collectCanonUnitNamesForSettings(),
         driveUnitFileLabel: state.driveUnitFileLabel && typeof state.driveUnitFileLabel === "object" ? state.driveUnitFileLabel : {},
@@ -5010,6 +5156,8 @@ button.count-toggle {
       }
     } catch (err) {}
     loadDrivePrefs();
+    // ZS-160: одразу прибрати leftover «Служба» зі списку ланок на пристрої.
+    scrubArtifactIssuedUnits();
   }
 
   function loadEdits(edits) {
@@ -7140,7 +7288,7 @@ button.count-toggle {
     return true;
   }
 
-  // ZS-108: auto-trash лише ідентичні або порожні/биті копії; різні — лише позначка.
+  // ZS-108/ZS-162: settings — жорстко один файл (newer wins); binary — identical/empty або позначка.
   function safeDedupeDriveFiles(token, files, opts) {
     var primary = newestDriveFile(files);
     if (!primary || !files || files.length < 2) {
@@ -7149,11 +7297,25 @@ button.count-toggle {
     var others = files.filter(function (item) { return item && item.id !== primary.id; });
     var kind = opts && opts.kind ? opts.kind : "binary";
     var decryptKey = opts && opts.decryptKey ? opts.decryptKey : "";
-    var loadPrimary = kind === "settings"
-      ? downloadSettingsFile(token, primary.id).then(function (json) {
-          return { text: JSON.stringify(json), bytes: null, raw: json };
-        }).catch(function () { return { text: "", bytes: null, raw: null }; })
-      : downloadBinaryFile(token, primary.id).then(function (bytes) {
+    // ZS-162: vistovyi-settings.json — завжди newer wins: лишаємо найновіший, решту trash.
+    if (kind === "settings") {
+      var trashedSettings = 0;
+      var ambiguousSettings = false;
+      var chainSettings = Promise.resolve();
+      others.forEach(function (item) {
+        chainSettings = chainSettings.then(function () {
+          return trashDriveFile(token, item.id).then(function (ok) {
+            if (ok) trashedSettings += 1;
+            else ambiguousSettings = true;
+          });
+        });
+      });
+      return chainSettings.then(function () {
+        if (ambiguousSettings) noteDriveNameDupes(primary.name || "", files.length);
+        return { file: primary, trashed: trashedSettings, policy: "newer-wins" };
+      });
+    }
+    var loadPrimary = downloadBinaryFile(token, primary.id).then(function (bytes) {
           if (!decryptKey) return { text: "", bytes: bytes, raw: null };
           return decryptWithCode(decryptKey, bytes).then(function (text) {
             var raw = null;
@@ -7167,25 +7329,6 @@ button.count-toggle {
       var chain = Promise.resolve();
       others.forEach(function (item) {
         chain = chain.then(function () {
-          if (kind === "settings") {
-            return downloadSettingsFile(token, item.id).then(function (json) {
-              var text = JSON.stringify(json);
-              var empty = !json || typeof json !== "object" || !Object.keys(json).length;
-              if (empty || (primaryBody.text && text === primaryBody.text)) {
-                return trashDriveFile(token, item.id).then(function (ok) {
-                  if (ok) trashed += 1;
-                  else ambiguous = true;
-                });
-              }
-              ambiguous = true;
-              return null;
-            }).catch(function () {
-              return trashDriveFile(token, item.id).then(function (ok) {
-                if (ok) trashed += 1;
-                else ambiguous = true;
-              });
-            });
-          }
           return downloadBinaryFile(token, item.id).then(function (bytes) {
             if (!bytes || !bytes.length) {
               return trashDriveFile(token, item.id).then(function (ok) {
@@ -8334,47 +8477,35 @@ button.count-toggle {
     return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
       var file = resolved && resolved.file;
       var fromLegacy = !!(resolved && resolved.fromLegacy);
-      var preserve = Promise.resolve(null);
-      // Не затирати на Диску непорожній children порожнім локальним списком.
-      if (file && file.id && subordinatesFor(key).length === 0) {
-        preserve = downloadBinaryFile(token, file.id).then(function (bytes) {
-          return decryptWithCode(key, bytes).then(function (text) {
-            var raw;
-            try { raw = JSON.parse(text); } catch (err) { return null; }
-            if (!raw || !Array.isArray(raw.children) || !raw.children.length) return null;
-            if (!driveChildWriteCode()) mergeChildrenFromSnapshot(raw);
-            return raw.children;
-          });
-        }).catch(function () { return null; });
-      }
-      return preserve.then(function (remoteChildren) {
-        var payload = snap ? cloneData(snap) : currentUnitSnapshot();
-        payload.code = key;
-        if ((!payload.children || !payload.children.length) && remoteChildren && remoteChildren.length) {
-          payload.children = remoteChildren.map(function (item) {
-            return { name: String(item && item.name || "").slice(0, 80), code: String(item && item.code || "") };
-          }).filter(function (item) { return !!item.code; });
-        }
-        // З legacy hash — створюємо нове ім’я (не PATCH старого), потім trash hash.
-        var writeId = fromLegacy ? null : (file && file.id);
-        return encryptWithCode(key, JSON.stringify(payload)).then(function (bytes) {
-          return uploadBinaryFile(token, folderId, name, bytes, writeId).then(function (result) {
-            var done = Promise.resolve(result);
-            if (fromLegacy && file && file.id) {
-              done = trashDriveFile(token, file.id).then(function () { return result; });
-            }
-            return done.then(function (out) {
-              // ZS-126/128: база для наступного 3-way — і для lead, і для файлу підрозділу.
-              saveMergeBase(key, payload);
-              if (looksLikeUnitCode(key)) {
-                var canonLabel = canonUnitDriveName(key);
-                if (canonLabel) {
-                  if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
-                  state.driveUnitFileLabel[key] = canonLabel;
-                }
+      // ZS-161: локальний список units — джерело правди для children[].
+      // Не підмішувати remote children і не mergeChildren (воскресіння видалених).
+      var payload = snap ? cloneData(snap) : currentUnitSnapshot();
+      payload.code = key;
+      payload.children = (Array.isArray(payload.children) ? payload.children : []).filter(function (item) {
+        var childCode = String(item && item.code || "").trim();
+        if (!childCode || isUnitDeleted(childCode) || isSluzhbaArtifactName(item && item.name)) return false;
+        if (isSluzhbaArtifactName(item && item.name)) return false;
+        return !!findUnitByCode(childCode);
+      });
+      // З legacy hash — створюємо нове ім’я (не PATCH старого), потім trash hash.
+      var writeId = fromLegacy ? null : (file && file.id);
+      return encryptWithCode(key, JSON.stringify(payload)).then(function (bytes) {
+        return uploadBinaryFile(token, folderId, name, bytes, writeId).then(function (result) {
+          var done = Promise.resolve(result);
+          if (fromLegacy && file && file.id) {
+            done = trashDriveFile(token, file.id).then(function () { return result; });
+          }
+          return done.then(function (out) {
+            // ZS-126/128: база для наступного 3-way — і для lead, і для файлу підрозділу.
+            saveMergeBase(key, payload);
+            if (looksLikeUnitCode(key)) {
+              var canonLabel = canonUnitDriveName(key);
+              if (canonLabel) {
+                if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
+                state.driveUnitFileLabel[key] = canonLabel;
               }
-              return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
-            });
+            }
+            return { ok: true, name: name, key: key, updated: !!(out && out.updated), migrated: fromLegacy };
           });
         });
       });
@@ -8428,10 +8559,12 @@ button.count-toggle {
     snap.code = code;
     snap.children = subordinatesFor(code).map(function (unit) {
       var childCode = String(unit.code || "");
+      if (!childCode || isUnitDeleted(childCode) || isSluzhbaArtifactName(unit.name)) return null;
       var label = preferUnitName(unit.name, unitNameFromBundle(childCode));
+      if (isSluzhbaArtifactName(label)) return null;
       if (label && unit.name !== label) unit.name = label;
       return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
-    }).filter(function (item) { return !!item.code; });
+    }).filter(function (item) { return !!item && !!item.code; });
     return snap;
   }
 
@@ -8440,6 +8573,8 @@ button.count-toggle {
     if (!parentKey) return Promise.reject(new Error("nocode"));
     materializeOverlays();
     var child = driveChildWriteCode();
+    // ZS-161: видалену ланку не sync’ити (навіть якщо вкладка ще відкрита).
+    if (child && isUnitDeleted(child)) child = "";
     var ownBundleKey = canonicalOwnBundleKey(parentKey);
     if (child && child.toLowerCase() !== parentKey.toLowerCase()) {
       captureBundle(state.reportKey);
@@ -8460,10 +8595,12 @@ button.count-toggle {
       childSnap.code = child;
       childSnap.children = subordinatesFor(child).map(function (unit) {
         var childCode = String(unit.code || "");
+        if (!childCode || isUnitDeleted(childCode) || isSluzhbaArtifactName(unit.name)) return null;
         var label = preferUnitName(unit.name, unitNameFromBundle(childCode));
+        if (isSluzhbaArtifactName(label)) return null;
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
-      }).filter(function (item) { return !!item.code; });
+      }).filter(function (item) { return !!item && !!item.code; });
       // ZS-128: не писати файл unit до успішного pull+merge у цьому sync,
       // і не затирати Диск порожньою вкладкою, якщо файл unit не підтягнули.
       var pulledChild = !!(state.childFilesPulledThisSync && state.childFilesPulledThisSync[String(child)]);
@@ -8881,7 +9018,13 @@ button.count-toggle {
   }
 
   function syncChildUnits(token, folderId) {
-    var list = unitsOwnedHere();
+    // ZS-161: лише живі локальні ланки; tomb / артефакт «Служба» — не sync vu-*.bin.
+    var list = unitsOwnedHere().filter(function (unit) {
+      var code = String(unit && unit.code || "").trim();
+      if (!code || isUnitDeleted(code)) return false;
+      if (isSluzhbaArtifactName(unit && unit.name)) return false;
+      return true;
+    });
     state.childFilesPulledThisSync = {};
     if (!list.length) return Promise.resolve({ received: 0, missing: 0, merged: 0, conflicts: 0 });
     var received = 0;
@@ -8895,7 +9038,7 @@ button.count-toggle {
     list.forEach(function (unit) {
       chain = chain.then(function () {
         var code = String(unit.code || "").trim();
-        if (!code) {
+        if (!code || isUnitDeleted(code)) {
           missing += 1;
           return;
         }
@@ -8968,10 +9111,12 @@ button.count-toggle {
               snapToWrite.code = code;
               snapToWrite.children = subordinatesFor(code).map(function (row) {
                 var childCode = String(row.code || "");
+                if (!childCode || isUnitDeleted(childCode) || isSluzhbaArtifactName(row.name)) return null;
                 var label = preferUnitName(row.name, unitNameFromBundle(childCode));
+                if (isSluzhbaArtifactName(label)) return null;
                 if (label && row.name !== label) row.name = label;
                 return { name: String(label || row.name || "").slice(0, 80), code: childCode };
-              }).filter(function (item) { return !!item.code; });
+              }).filter(function (item) { return !!item && !!item.code; });
               return upsertKeyedUnitFile(token, folderId, code, snapToWrite).catch(function () {
                 return null;
               });
@@ -9771,8 +9916,18 @@ button.count-toggle {
       return true;
     });
     if (removed) {
-      delete state.unitReportStatus[removed.code];
-      delete bundles[removed.code];
+      var code = String(removed.code || "").trim();
+      // ZS-161: tomb — далі sync/mergeChildren не піднімають цю ланку.
+      markUnitDeleted(code, removed.name);
+      delete state.unitReportStatus[code];
+      delete bundles[code];
+      if (state.driveUnitNames && typeof state.driveUnitNames === "object") {
+        delete state.driveUnitNames[code];
+        delete state.driveUnitNames[code.toLowerCase()];
+      }
+      if (state.driveUnitFileLabel && typeof state.driveUnitFileLabel === "object") {
+        delete state.driveUnitFileLabel[code];
+      }
     }
     return removed;
   }
@@ -11456,12 +11611,19 @@ button.count-toggle {
       render();
       return;
     }
+    // ZS-160: «Служба» / «Підрозділ» — артефакт, не назва нової ланки.
+    if (isDefaultUnitName(name)) {
+      state.unitError = "Впишіть справжню назву підрозділу.";
+      render();
+      return;
+    }
     var created = {
       id: "u" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36),
       name: name,
       code: generateUnitCode(),
       parent: actorKey()
     };
+    clearUnitDeleted(created.code);
     state.units.push(created);
     rememberCanonUnitName(created.code, created.name);
     if (!state.driveUnitFileLabel || typeof state.driveUnitFileLabel !== "object") state.driveUnitFileLabel = {};
@@ -12305,6 +12467,7 @@ button.count-toggle {
     state.codeError = "";
     state.units = [];
     state.unitReportStatus = {};
+    state.deletedUnits = {};
     state.unitNameDraft = "";
     state.unitError = "";
     state.edits = { people: {}, machines: {} };
@@ -12553,6 +12716,51 @@ button.count-toggle {
     state.reportKey = keepKey158;
     state.reportRoot = keepRoot158;
     state.driveEncryptKey = keepEncrypt158;
+    // ZS-160/161/162: leftover «Служба», tomb delete, settings newer-wins.
+    var code160 = "WXYZ-ABCD-EFGH-JKLM-NPQR";
+    state.units = [{ id: "u-sluzhba-art", name: "Служба", code: code160, parent: "lead" }];
+    state.deletedUnits = {};
+    state.report = {
+      name: "Служба",
+      code: "lead",
+      unit: { id: "root", name: "Служба", people: [], children: [{ id: "c-sl", name: "Служба", people: [] }] },
+      machines: [],
+      tasks: [],
+      events: [],
+      people: []
+    };
+    var wiped160 = wipeLocalSluzhbaArtifacts();
+    check(wiped160 === 1 && state.units.length === 0 && isUnitDeleted(code160), "ZS-160: wipe прибирає unit «Служба» і ставить tomb");
+    check(state.report.name === "" && state.report.unit.name === "" && state.report.unit.children[0].name === "", "ZS-160: scrub кореня й children «Служба»");
+    state.unitNameDraft = "Служба";
+    createUnit("Служба");
+    check(state.units.length === 0 && state.unitError.indexOf("справжню назву") !== -1, "ZS-160: createUnit не сіє «Служба»");
+    state.unitError = "";
+    state.unitNameDraft = "";
+    var code161 = "QRST-UVWX-YZ12-3456-789A";
+    state.units = [{ id: "u-eng", name: "Взвод інженерної розвідки", code: code161, parent: "lead" }];
+    state.deletedUnits = {};
+    removeIssuedUnit("u-eng");
+    check(state.units.length === 0 && isUnitDeleted(code161), "ZS-161: delete ставить tomb");
+    mergeChildrenFromSnapshot({ children: [{ code: code161, name: "Взвод інженерної розвідки" }] });
+    check(state.units.length === 0 && isUnitDeleted(code161), "ZS-161: mergeChildren не воскрешає tomb");
+    var snap161 = { children: [{ code: code161, name: "Взвод інженерної розвідки" }], unit: { id: "root", name: "", people: [] }, machines: [], tasks: [], people: [] };
+    var filtered161 = (snap161.children || []).filter(function (item) {
+      var childCode = String(item && item.code || "").trim();
+      return childCode && !isUnitDeleted(childCode) && !!findUnitByCode(childCode);
+    });
+    check(filtered161.length === 0, "ZS-161: children payload без tomb-ланки");
+    check(typeof safeDedupeDriveFiles === "function", "ZS-162: safeDedupeDriveFiles є");
+    var pageSrc162 = "";
+    document.querySelectorAll("script").forEach(function (node) { pageSrc162 += node.textContent || ""; });
+    check(pageSrc162.indexOf("newer-wins") !== -1 && pageSrc162.indexOf("ZS-162") !== -1, "ZS-162: політика newer-wins для settings у коді");
+    state.units = [];
+    state.deletedUnits = {};
+    state.unitError = "";
+    state.unitNameDraft = "";
+    installSample();
+    indexPeople(viewUnit());
+    render();
     // ZS-118: міграція старого bundles["1rota"] → "lead".
     var savedBundles = bundles;
     var savedReportKey = state.reportKey;
@@ -16850,6 +17058,8 @@ button.count-toggle {
     migrateLegacyRotaKeys();
     // ZS-151: підняти zvitnist.cache.v1 ДО applyCode/save — інакше порожній live затирає кеш.
     applyReportCache(loadReportCache());
+    // ZS-160: scrub артефактів «Служба» у units + дереві після підйому кешу.
+    wipeLocalSluzhbaArtifacts();
     root.addEventListener("click", onClick);
     root.addEventListener("keydown", function (event) {
       if (event.key !== "Enter" && event.key !== " ") return;
