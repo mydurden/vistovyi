@@ -1668,6 +1668,9 @@ button.count-toggle {
     accessChange: null,
     settingsFolderAdmin: false,
     settingsFolderAdminHash: "",
+    // ZS-163: відбитки ключів живих unit з vistovyi-settings.json (не сирий ключ).
+    settingsUnitFingerprints: {},
+    settingsUnitFingerprintsReady: false,
     driveClient: "",
     driveQueue: [],
     driveFrom: "",
@@ -2149,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T09:46:56.000Z";
+  var APP_BUILD_AT = "2026-11-12T10:12:14.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3836,6 +3839,78 @@ button.count-toggle {
     var active = folderAdmin && !!hash;
     state.settingsFolderAdmin = active;
     state.settingsFolderAdminHash = active ? hash : "";
+  }
+
+  // ZS-163: відбитки живих unit у settings (sha256 → назва); сирий ключ не пишемо.
+  function collectUnitFingerprintsForSettings() {
+    var out = {};
+    (state.units || []).forEach(function (unit) {
+      if (!unit) return;
+      var code = String(unit.code || "").trim();
+      if (!code || !looksLikeUnitCode(code) || isUnitDeleted(code)) return;
+      if (isSluzhbaArtifactName(unit.name)) return;
+      var fp = keyFingerprint(code);
+      if (!fp) return;
+      var label = String(unit.name || "").trim().slice(0, 80);
+      out[fp] = label && !isDefaultUnitName(label) ? label : "";
+    });
+    return out;
+  }
+
+  function parseUnitFingerprintsMap(rawMap) {
+    var out = {};
+    if (!rawMap || typeof rawMap !== "object" || Array.isArray(rawMap)) return out;
+    Object.keys(rawMap).forEach(function (key) {
+      var fp = String(key || "").trim().toLowerCase().slice(0, 128);
+      if (!/^[0-9a-f]{64}$/.test(fp)) return;
+      var label = String(rawMap[key] == null ? "" : rawMap[key]).trim().slice(0, 80);
+      if (label && isDefaultUnitName(label)) label = "";
+      out[fp] = label;
+    });
+    return out;
+  }
+
+  function rememberSettingsUnitFingerprints(raw, ready) {
+    var hasField = !!(raw && Object.prototype.hasOwnProperty.call(raw, "unitFingerprints"));
+    if (hasField) {
+      state.settingsUnitFingerprints = parseUnitFingerprintsMap(raw.unitFingerprints);
+      state.settingsUnitFingerprintsReady = true;
+      return;
+    }
+    if (ready === true) {
+      state.settingsUnitFingerprints = parseUnitFingerprintsMap(raw && raw.unitFingerprints);
+      state.settingsUnitFingerprintsReady = true;
+      return;
+    }
+    if (ready === false) {
+      state.settingsUnitFingerprints = {};
+      state.settingsUnitFingerprintsReady = false;
+    }
+  }
+
+  function unitFingerprintAllowed(code) {
+    var key = String(code || "").trim();
+    if (!key || !looksLikeUnitCode(key)) return true;
+    // Старі settings без поля — не блокуємо, доки lead раз не запише відбитки.
+    if (!state.settingsUnitFingerprintsReady) return true;
+    var fp = keyFingerprint(key);
+    if (!fp) return false;
+    var map = state.settingsUnitFingerprints && typeof state.settingsUnitFingerprints === "object"
+      ? state.settingsUnitFingerprints
+      : {};
+    return Object.prototype.hasOwnProperty.call(map, fp);
+  }
+
+  function syncSettingsFileNow(token, folderId) {
+    if (!token || !folderId || !canWriteDriveSettings()) return Promise.resolve({ wroteSettings: false });
+    return findSettingsFile(token, folderId).then(function (file) {
+      return uploadSettingsFile(token, folderId, file && file.id).then(function () {
+        var payload = buildSettingsPayload();
+        rememberSettingsAdmin(payload);
+        rememberSettingsUnitFingerprints(payload, true);
+        return { wroteSettings: true };
+      });
+    });
   }
 
   function canEditCatalogs() {
@@ -7124,7 +7199,9 @@ button.count-toggle {
       machineDuties: serializeDutyList(true),
       reserve: state.settingsReserve && typeof state.settingsReserve === "object" ? state.settingsReserve : {},
       // ZS-128: назви підрозділів для спільного vu-*.bin (не коди доступу).
-      unitNames: collectCanonUnitNamesForSettings()
+      unitNames: collectCanonUnitNamesForSettings(),
+      // ZS-163: відбитки ключів живих unit (не сирий ключ).
+      unitFingerprints: collectUnitFingerprintsForSettings()
     };
     var hash = localAdminKeyHash();
     if (canWriteDriveSettings() && hash) {
@@ -7147,6 +7224,7 @@ button.count-toggle {
         unitNames[code] = name;
       });
     }
+    var hasFingerprints = Object.prototype.hasOwnProperty.call(raw, "unitFingerprints");
     return {
       version: Number(raw.version) || 1,
       types: Array.isArray(raw.types) ? raw.types : [],
@@ -7154,6 +7232,7 @@ button.count-toggle {
       machineDuties: Array.isArray(raw.machineDuties) ? raw.machineDuties : [],
       reserve: raw.reserve && typeof raw.reserve === "object" ? raw.reserve : {},
       unitNames: unitNames,
+      unitFingerprints: hasFingerprints ? parseUnitFingerprintsMap(raw.unitFingerprints) : null,
       folderAdmin: !!raw.folderAdmin && !!hash,
       folderAdminKeyHash: hash
     };
@@ -7225,6 +7304,9 @@ button.count-toggle {
     state.settingsReserve = data.reserve || {};
     applyCanonUnitNamesMap(data.unitNames);
     rememberSettingsAdmin(data);
+    // ZS-163: null = старий файл без поля → gate ще не вмикаємо.
+    if (data.unitFingerprints === null) rememberSettingsUnitFingerprints({}, false);
+    else rememberSettingsUnitFingerprints({ unitFingerprints: data.unitFingerprints }, true);
     return true;
   }
 
@@ -8474,6 +8556,10 @@ button.count-toggle {
     var name = unitDriveFileName(key);
     // ZS-128: без канонічної назви від lead не створюємо/не пишемо vu-*.bin.
     if (!name) return Promise.reject(new Error("noname"));
+    // ZS-163: немає себе / відбиток не збігається в settings → не писати vu-*.bin.
+    if (looksLikeUnitCode(key) && !unitFingerprintAllowed(key)) {
+      return Promise.reject(new Error("nofingerprint"));
+    }
     return resolveUnitDriveFile(token, folderId, key, { kind: "binary", decryptKey: key }).then(function (resolved) {
       var file = resolved && resolved.file;
       var fromLegacy = !!(resolved && resolved.fromLegacy);
@@ -8601,6 +8687,10 @@ button.count-toggle {
         if (label && unit.name !== label) unit.name = label;
         return { name: String(label || unit.name || "").slice(0, 80), code: childCode };
       }).filter(function (item) { return !!item && !!item.code; });
+      // ZS-163: відкрита вкладка unit без відбитка — не писати її vu-*.bin.
+      if (looksLikeUnitCode(child) && !unitFingerprintAllowed(child)) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" });
+      }
       // ZS-128: не писати файл unit до успішного pull+merge у цьому sync,
       // і не затирати Диск порожньою вкладкою, якщо файл unit не підтягнули.
       var pulledChild = !!(state.childFilesPulledThisSync && state.childFilesPulledThisSync[String(child)]);
@@ -8631,6 +8721,10 @@ button.count-toggle {
     // ZS-128/142: unit без канонічної назви від lead — не вигадувати slug; явна помилка в sync.
     if (!unitDriveFileName(parentKey) && looksLikeUnitCode(parentKey)) {
       return Promise.resolve({ ok: false, skipped: true, reason: "noname", error: "noname" });
+    }
+    // ZS-163: unit без відбитка в settings — не писати свій vu-*.bin (навіть якщо Google ще пускає).
+    if (looksLikeUnitCode(parentKey) && !unitFingerprintAllowed(parentKey)) {
+      return Promise.resolve({ ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" });
     }
     return upsertKeyedUnitFile(token, folderId, parentKey, null);
   }
@@ -9160,7 +9254,9 @@ button.count-toggle {
       if (pulled.dupes) parts.push("схожі картки: " + pulled.dupes);
     } else if (pulled && pulled.pulled && !pulled.keptLocal) parts.push("свій файл прочитано");
     // ZS-142: noname — явна помилка, не тихий «синхронізацію завершено».
-    if (own && (own.reason === "noname" || own.error === "noname" || own.skipped)) {
+    if (own && (own.reason === "nofingerprint" || own.error === "nofingerprint")) {
+      parts.push("цю ланку прибрано зі списку — звіт на Диск не записано");
+    } else if (own && (own.reason === "noname" || own.error === "noname" || own.skipped)) {
       parts.push("помилка: немає назви підрозділу для файлу на Диску — звіт unit не записано");
     } else if (own && own.updated) parts.push("свій файл оновлено");
     else if (own && own.ok) {
@@ -9202,13 +9298,21 @@ button.count-toggle {
       var prepare = file
         ? downloadSettingsFile(token, file.id).then(function (json) {
             rememberSettingsAdmin(json);
+            // ZS-163: unit читає відбитки до будь-якого запису vu-*.bin.
+            if (json && Object.prototype.hasOwnProperty.call(json, "unitFingerprints")) {
+              rememberSettingsUnitFingerprints(json, true);
+            } else {
+              rememberSettingsUnitFingerprints({}, false);
+            }
             return { file: file, json: json };
           })
         : Promise.resolve({ file: null, json: null });
       return prepare.then(function (info) {
         if (canWriteDriveSettings()) {
           return uploadSettingsFile(token, folderId, info.file && info.file.id).then(function () {
-            rememberSettingsAdmin(buildSettingsPayload());
+            var payload = buildSettingsPayload();
+            rememberSettingsAdmin(payload);
+            rememberSettingsUnitFingerprints(payload, true);
             return { wroteSettings: true, readSettings: false };
           });
         }
@@ -9292,6 +9396,7 @@ button.count-toggle {
       }
       if (err && err.message === "nocode") state.driveNote = "Впишіть код доступу.";
       else if (err && err.message === "noname") state.driveNote = "Помилка: немає назви підрозділу для файлу на Диску — звіт unit не записано.";
+      else if (err && err.message === "nofingerprint") state.driveNote = "Цю ланку прибрано зі списку — звіт на Диск не записано.";
       else state.driveNote = "Мережа не відповіла або файл не розшифрувався.";
       render();
     });
@@ -9958,7 +10063,10 @@ button.count-toggle {
         render();
         return Promise.resolve();
       }
-      return upsertOwnUnitFile(token, folderId).then(function () {
+      // ZS-163: прибрати відбиток з settings і одразу sync settings, потім файл lead.
+      return syncSettingsFileNow(token, folderId).then(function () {
+        return upsertOwnUnitFile(token, folderId);
+      }).then(function () {
         state.driveNote = "Список нижчих оновлено.";
         render();
       }).catch(function () {
@@ -9984,8 +10092,11 @@ button.count-toggle {
       return Promise.resolve();
     }
     return resealChildUnitFile(token, folderId, oldCode, nextCode).then(function (reseal) {
-      return upsertOwnUnitFile(token, folderId).then(function () {
-        return reseal;
+      // ZS-163: оновити відбиток нового коду в settings.
+      return syncSettingsFileNow(token, folderId).then(function () {
+        return upsertOwnUnitFile(token, folderId).then(function () {
+          return reseal;
+        });
       });
     }).then(function (reseal) {
       if (reseal && reseal.ok) state.driveNote = "Доступ змінено, файл підлеглого перезапечатано.";
@@ -12506,6 +12617,8 @@ button.count-toggle {
     state.settingsReserve = {};
     state.settingsFolderAdmin = false;
     state.settingsFolderAdminHash = "";
+    state.settingsUnitFingerprints = {};
+    state.settingsUnitFingerprintsReady = false;
     bundles = {};
     state.report = state.sampleReport;
     state.reportKey = "lead";
@@ -12754,8 +12867,45 @@ button.count-toggle {
     var pageSrc162 = "";
     document.querySelectorAll("script").forEach(function (node) { pageSrc162 += node.textContent || ""; });
     check(pageSrc162.indexOf("newer-wins") !== -1 && pageSrc162.indexOf("ZS-162") !== -1, "ZS-162: політика newer-wins для settings у коді");
-    state.units = [];
+    // ZS-163: відбитки живих unit у settings + gate запису vu-*.bin.
+    var code163 = "ABCD-EFGH-JKLM-NPQR-STUV";
+    var keepUnits163 = state.units;
+    var keepDeleted163 = state.deletedUnits;
+    var keepFp163 = state.settingsUnitFingerprints;
+    var keepFpReady163 = state.settingsUnitFingerprintsReady;
+    var keepAdmin163 = state.settingsFolderAdmin;
+    var keepAdminHash163 = state.settingsFolderAdminHash;
+    var keepEncrypt163 = state.driveEncryptKey;
+    state.driveEncryptKey = "секрет-адміна-163";
+    state.settingsFolderAdmin = false;
+    state.settingsFolderAdminHash = "";
+    state.units = [{ id: "u-163", name: "Взвод зв’язку", code: code163, parent: "lead" }];
     state.deletedUnits = {};
+    state.settingsUnitFingerprints = {};
+    state.settingsUnitFingerprintsReady = false;
+    var payload163 = buildSettingsPayload();
+    var fp163 = keyFingerprint(code163);
+    check(payload163.unitFingerprints && payload163.unitFingerprints[fp163] === "Взвод зв’язку", "ZS-163: settings має відбиток живої ланки");
+    check(JSON.stringify(payload163.unitFingerprints).indexOf(code163) === -1, "ZS-163: у відбитках немає сирого ключа");
+    check(JSON.stringify(payload163).indexOf(code163) !== -1, "ZS-163: unitNames як і раніше тримає код→назва");
+    rememberSettingsUnitFingerprints(payload163, true);
+    check(unitFingerprintAllowed(code163), "ZS-163: живий відбиток дозволений");
+    removeIssuedUnit("u-163");
+    var afterDel163 = buildSettingsPayload();
+    check(!afterDel163.unitFingerprints[fp163] && isUnitDeleted(code163), "ZS-163: після delete відбитка немає");
+    rememberSettingsUnitFingerprints(afterDel163, true);
+    check(!unitFingerprintAllowed(code163), "ZS-163: видалена ланка не проходить gate");
+    var summary163 = driveSyncSummary({}, { ok: false, skipped: true, reason: "nofingerprint", error: "nofingerprint" }, null, null);
+    check(summary163.indexOf("прибрано зі списку") !== -1 && summary163.indexOf("не записано") !== -1, "ZS-163: зрозуміле повідомлення без запису");
+    state.settingsUnitFingerprintsReady = false;
+    check(unitFingerprintAllowed(code163), "ZS-163: без поля unitFingerprints gate ще мовчить");
+    state.units = keepUnits163;
+    state.deletedUnits = keepDeleted163;
+    state.settingsUnitFingerprints = keepFp163;
+    state.settingsUnitFingerprintsReady = keepFpReady163;
+    state.settingsFolderAdmin = keepAdmin163;
+    state.settingsFolderAdminHash = keepAdminHash163;
+    state.driveEncryptKey = keepEncrypt163;
     state.unitError = "";
     state.unitNameDraft = "";
     installSample();
@@ -14383,6 +14533,7 @@ button.count-toggle {
     check(settingsPayload && settingsPayload.version === 1 && Array.isArray(settingsPayload.types) && Array.isArray(settingsPayload.duties) && Array.isArray(settingsPayload.machineDuties) && settingsPayload.reserve && typeof settingsPayload.reserve === "object", "settings має типи, стани і запас");
     check(settingsPayload.folderAdmin === true && typeof settingsPayload.folderAdminKeyHash === "string" && settingsPayload.folderAdminKeyHash.length === 64, "settings має позначку адміна і відбиток");
     check(settingsPayload.folderAdminKeyHash === keyFingerprint("секрет-адміна"), "відбиток збігається з локальним ключем");
+    check(settingsPayload.unitFingerprints && typeof settingsPayload.unitFingerprints === "object", "settings має unitFingerprints");
     check(JSON.stringify(settingsPayload).indexOf("секрет-адміна") === -1, "у settings немає самого ключа");
     check(!settingsPayload.types.some(function (item) { return item.id === "other" || item.name === "Інше"; }), "settings без Інше");
     check(!settingsPayload.reports && !settingsPayload.keys && !settingsPayload.people && !settingsPayload.units && !JSON.stringify(settingsPayload).includes("Бондар"), "settings без звітів, підрозділів і персональних даних");
@@ -17145,6 +17296,9 @@ button.count-toggle {
     applySettingsPayload: applySettingsPayload,
     keyFingerprint: keyFingerprint,
     rememberSettingsAdmin: rememberSettingsAdmin,
+    rememberSettingsUnitFingerprints: rememberSettingsUnitFingerprints,
+    unitFingerprintAllowed: unitFingerprintAllowed,
+    collectUnitFingerprintsForSettings: collectUnitFingerprintsForSettings,
     typeCatalog: typeCatalog,
     OTHER_TYPE: OTHER_TYPE,
     resolveMachineTypeId: resolveMachineTypeId,
