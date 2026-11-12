@@ -2152,7 +2152,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T13:25:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T14:05:00.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3841,6 +3841,13 @@ button.count-toggle {
     state.settingsFolderAdminHash = active ? hash : "";
   }
 
+  // ZS-171: немає vistovyi-settings.json на Диску — скинути господаря/відбитки в пам’яті,
+  // інакше stale hash блокує first-writer після wipe.
+  function clearRememberedSettingsGate() {
+    rememberSettingsAdmin(null);
+    rememberSettingsUnitFingerprints({}, false);
+  }
+
   // ZS-163: відбитки живих unit у settings (sha256 → назва); сирий ключ не пишемо.
   function collectUnitFingerprintsForSettings() {
     var out = {};
@@ -3909,7 +3916,8 @@ button.count-toggle {
     }
     return findSettingsFile(token, folderId).then(function (file) {
       if (!file || !file.id) {
-        rememberSettingsUnitFingerprints({}, false);
+        // ZS-171: wipe — не тримати старого господаря / Ready.
+        clearRememberedSettingsGate();
         return { refreshed: false, reason: "missing" };
       }
       return downloadSettingsFile(token, file.id).then(function (json) {
@@ -3931,10 +3939,12 @@ button.count-toggle {
     if (!token || !folderId) {
       return Promise.resolve({ wroteSettings: false, reason: "nodrive" });
     }
-    if (!canWriteDriveSettings()) {
-      return Promise.resolve({ wroteSettings: false, reason: "nowrite" });
-    }
+    // ZS-171: спочатку знайти файл — якщо wipe, скинути gate до перевірки canWrite.
     return findSettingsFile(token, folderId).then(function (file) {
+      if (!file || !file.id) clearRememberedSettingsGate();
+      if (!canWriteDriveSettings()) {
+        return { wroteSettings: false, reason: "nowrite" };
+      }
       return uploadSettingsFile(token, folderId, file && file.id).then(function () {
         var payload = buildSettingsPayload();
         rememberSettingsAdmin(payload);
@@ -9433,7 +9443,11 @@ button.count-toggle {
             }
             return { file: file, json: json };
           })
-        : Promise.resolve({ file: null, json: null });
+        : (function () {
+            // ZS-171: файлу немає (wipe/trash) — відкрити first-writer, не тримати stale hash.
+            clearRememberedSettingsGate();
+            return Promise.resolve({ file: null, json: null });
+          })();
       return prepare.then(function (info) {
         if (canWriteDriveSettings()) {
           return uploadSettingsFile(token, folderId, info.file && info.file.id).then(function () {
@@ -13259,6 +13273,19 @@ button.count-toggle {
     check(state.driveUnitFileLabel[code169] === "Взвод дельта", "ZS-169: restore вертає ярлик vu-файлу");
     check(settingsWriteBlockedNote("delete").indexOf("не видалено") !== -1, "ZS-169: nowrite delete каже «не видалено»");
     check(unitDriveFileName(code169) === "vu-vzvod-delta.bin" || !!unitDriveFileName(code169), "ZS-169: ім’я vu-*.bin відновлюється для trash");
+    // ZS-171: wipe settings — скинути stale admin, знову first-writer.
+    check(typeof clearRememberedSettingsGate === "function", "ZS-171: clearRememberedSettingsGate є");
+    state.driveEncryptKey = "qwerty";
+    state.openCode = "lead";
+    state.settingsFolderAdmin = true;
+    state.settingsFolderAdminHash = "70734884e9bf7fcc0d0adaac3d8ef7d4bd52ed00f2c746f7e172c8338e07039c";
+    state.settingsUnitFingerprints = { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "x" };
+    state.settingsUnitFingerprintsReady = true;
+    check(!canWriteDriveSettings(), "ZS-171: stale mismatch блокує canWrite до wipe-clear");
+    clearRememberedSettingsGate();
+    check(!state.settingsFolderAdmin && state.settingsFolderAdminHash === "", "ZS-171: clear скидає folderAdmin/hash");
+    check(!state.settingsUnitFingerprintsReady && Object.keys(state.settingsUnitFingerprints || {}).length === 0, "ZS-171: clear скидає fingerprint Ready");
+    check(!!canWriteDriveSettings() && !looksLikeUnitCode("qwerty"), "ZS-171: після clear qwerty знову first-writer");
     state.units = keepUnits169;
     state.deletedUnits = keepDeleted169;
     state.settingsUnitFingerprints = keepFp169;
@@ -17498,6 +17525,69 @@ button.count-toggle {
             check(false, "ZS-146: " + (err146 && err146.message ? err146.message : err146));
           }
         }).then(function () {
+          // ZS-171: stale admin + wipe (немає settings) → syncSettingsFileNow створює файл.
+          var keepEnc171 = state.driveEncryptKey;
+          var keepOpen171 = state.openCode;
+          var keepAdmin171 = state.settingsFolderAdmin;
+          var keepHash171 = state.settingsFolderAdminHash;
+          var keepFp171 = state.settingsUnitFingerprints;
+          var keepFpReady171 = state.settingsUnitFingerprintsReady;
+          state.driveEncryptKey = "qwerty";
+          state.openCode = "lead";
+          state.settingsFolderAdmin = true;
+          state.settingsFolderAdminHash = "70734884e9bf7fcc0d0adaac3d8ef7d4bd52ed00f2c746f7e172c8338e07039c";
+          state.settingsUnitFingerprintsReady = true;
+          state.settingsUnitFingerprints = { "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "y" };
+          check(!canWriteDriveSettings(), "ZS-171: до wipe-sync canWrite ще false");
+          var store171 = {};
+          var created171 = [];
+          var originalFetch171 = window.fetch;
+          window.fetch = function (url, opts) {
+            var href = String(url || "");
+            opts = opts || {};
+            if (href.indexOf("/drive/v3/files?") !== -1 && href.indexOf("q=") !== -1) {
+              var want = "";
+              try {
+                var dec = decodeURIComponent(href);
+                var m = dec.match(/name='([^']+)'/);
+                if (m) want = m[1];
+              } catch (errList171) {}
+              var files = want && store171[want] ? [{ id: store171[want].id, name: want }] : [];
+              return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ files: files }); } });
+            }
+            if (opts.method === "POST" && href.indexOf("uploadType=multipart") !== -1) {
+              var id = "settings-171";
+              created171.push(id);
+              store171["vistovyi-settings.json"] = { id: id, body: opts.body };
+              return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ id: id, name: "vistovyi-settings.json" }); } });
+            }
+            if (opts.method === "PATCH") {
+              return Promise.resolve({ ok: true, json: function () { return Promise.resolve({}); } });
+            }
+            return Promise.resolve({ ok: false, json: function () { return Promise.resolve({}); } });
+          };
+          return syncSettingsFileNow("tok171", "folder171").then(function (res171) {
+            window.fetch = originalFetch171;
+            check(res171 && res171.wroteSettings === true, "ZS-171: syncSettingsFileNow після wipe пише settings");
+            check(created171.length === 1 && !!store171["vistovyi-settings.json"], "ZS-171: POST create vistovyi-settings.json");
+            check(!!canWriteDriveSettings() && state.settingsFolderAdminHash === keyFingerprint("qwerty"), "ZS-171: після create господар = qwerty");
+            state.driveEncryptKey = keepEnc171;
+            state.openCode = keepOpen171;
+            state.settingsFolderAdmin = keepAdmin171;
+            state.settingsFolderAdminHash = keepHash171;
+            state.settingsUnitFingerprints = keepFp171;
+            state.settingsUnitFingerprintsReady = keepFpReady171;
+          }).catch(function (err171) {
+            window.fetch = originalFetch171;
+            check(false, "ZS-171 wipe-sync: " + (err171 && err171.message ? err171.message : err171));
+            state.driveEncryptKey = keepEnc171;
+            state.openCode = keepOpen171;
+            state.settingsFolderAdmin = keepAdmin171;
+            state.settingsFolderAdminHash = keepHash171;
+            state.settingsUnitFingerprints = keepFp171;
+            state.settingsUnitFingerprintsReady = keepFpReady171;
+          });
+        }).then(function () {
           finishSelfTest();
         }).catch(function (errDone142) {
           check(false, "ZS-142 finish: " + (errDone142 && errDone142.message ? errDone142.message : errDone142));
@@ -17681,6 +17771,7 @@ button.count-toggle {
     applySettingsPayload: applySettingsPayload,
     keyFingerprint: keyFingerprint,
     rememberSettingsAdmin: rememberSettingsAdmin,
+    clearRememberedSettingsGate: clearRememberedSettingsGate,
     rememberSettingsUnitFingerprints: rememberSettingsUnitFingerprints,
     unitFingerprintAllowed: unitFingerprintAllowed,
     collectUnitFingerprintsForSettings: collectUnitFingerprintsForSettings,
