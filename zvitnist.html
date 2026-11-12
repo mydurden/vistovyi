@@ -1607,7 +1607,7 @@ button.count-toggle {
     pending: null,
     editBaseline: null,
     eventLinkPick: null,
-    holder: "Служба",
+    holder: "",
     openCode: "lead",
     reportRoot: "lead",
     changes: [],
@@ -2147,7 +2147,7 @@ button.count-toggle {
   }
 
   // Час/дата цієї збірки (шапка профілю). Оновлювати при SW bump / ship.
-  var APP_BUILD_AT = "2026-11-12T06:42:00.000Z";
+  var APP_BUILD_AT = "2026-11-12T07:36:26.000Z";
 
   function pad2(n) {
     return n < 10 ? "0" + n : String(n);
@@ -3365,7 +3365,11 @@ button.count-toggle {
     });
     return {
       version: 2,
-      name: String(report.name || state.holder || "").slice(0, 80),
+      // ZS-158: не підставляти holder («Служба») у ім’я знімка — порожня назва лишається порожньою.
+      name: (function () {
+        var label = String(report.name || "").trim().slice(0, 80);
+        return isDefaultUnitName(label) ? "" : label;
+      })(),
       code: unitKey,
       day: liveKey,
       unit: live.unit,
@@ -3499,7 +3503,10 @@ button.count-toggle {
     }
     return {
       version: 2,
-      name: String(b.report.name || "").slice(0, 80),
+      name: (function () {
+        var label = String(b.report.name || "").trim().slice(0, 80);
+        return isDefaultUnitName(label) ? "" : label;
+      })(),
       code: String(unitKey || "").trim(),
       day: day,
       unit: live.unit,
@@ -3525,17 +3532,22 @@ button.count-toggle {
 
   function applyUnitSnapshot(raw, code) {
     if (!raw || typeof raw !== "object") return null;
+    var rawName = String(raw.name || "").trim().slice(0, 80);
+    if (isDefaultUnitName(rawName)) rawName = "";
+    var unit = raw.unit && typeof raw.unit === "object" ? cloneData(raw.unit) : { id: "root", name: rawName, people: [] };
+    if (!unit.id) unit.id = "root";
+    if (isDefaultUnitName(unit.name)) unit.name = rawName;
     var doc = {
-      name: String(raw.name || "").slice(0, 80),
+      name: rawName,
       code: String(code || raw.code || "").trim(),
       file: reportFileName(code || raw.code || ""),
-      unit: raw.unit && typeof raw.unit === "object" ? raw.unit : { id: "root", name: String(raw.name || "").slice(0, 80), people: [] },
+      unit: unit,
       machines: Array.isArray(raw.machines) ? raw.machines : [],
       tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
       events: Array.isArray(raw.events) ? raw.events : [],
       people: Array.isArray(raw.people) ? raw.people : []
     };
-    return doc;
+    return scrubDefaultReportNames(doc);
   }
 
   function loadDaysFromSnapshot(raw) {
@@ -3639,7 +3651,33 @@ button.count-toggle {
 
   function isDefaultUnitName(name) {
     var label = String(name || "").trim();
-    return !label || label === "Підрозділ";
+    // ZS-158: «Служба» — старий артефакт дефолту lead, не справжня назва підрозділу.
+    return !label || label === "Підрозділ" || label === "Служба";
+  }
+
+  function scrubDefaultReportNames(doc) {
+    if (!doc || typeof doc !== "object") return doc;
+    if (isDefaultUnitName(doc.name)) doc.name = "";
+    if (doc.unit && typeof doc.unit === "object" && isDefaultUnitName(doc.unit.name)) doc.unit.name = "";
+    return doc;
+  }
+
+  function scrubDefaultDayArchiveNames(archive) {
+    if (!archive || typeof archive !== "object") return archive;
+    Object.keys(archive).forEach(function (day) {
+      var slice = archive[day];
+      if (!slice || typeof slice !== "object") return;
+      if (slice.unit && typeof slice.unit === "object" && isDefaultUnitName(slice.unit.name)) slice.unit.name = "";
+    });
+    return archive;
+  }
+
+  function journalWho() {
+    var holder = String(state.holder || "").trim();
+    if (holder && !isDefaultUnitName(holder)) return holder.slice(0, 80);
+    var named = String(state.report && state.report.name || "").trim();
+    if (named && !isDefaultUnitName(named)) return named.slice(0, 80);
+    return "Звіт";
   }
 
   // ZS-114: не затирати справжню назву порожньою / «Підрозділ».
@@ -4643,6 +4681,10 @@ button.count-toggle {
     keys.forEach(function (key) {
       var src = data.bundles[key];
       if (!src || !src.report) return;
+      var cachedReport = cloneData(src.report);
+      scrubDefaultReportNames(cachedReport);
+      var cachedDays = src.daysArchive ? cloneData(src.daysArchive) : {};
+      scrubDefaultDayArchiveNames(cachedDays);
       bundles[key] = {
         edits: src.edits || { people: {}, machines: {} },
         removed: src.removed || { people: {}, machines: {} },
@@ -4655,8 +4697,8 @@ button.count-toggle {
         added: src.added || { people: [], machines: [] },
         positions: src.positions || {},
         changes: Array.isArray(src.changes) ? src.changes : [],
-        report: src.report,
-        daysArchive: src.daysArchive || {},
+        report: cachedReport,
+        daysArchive: cachedDays,
         fileDay: src.fileDay || todayISO(),
         viewDay: src.viewDay || src.fileDay || todayISO()
       };
@@ -4697,12 +4739,15 @@ button.count-toggle {
     state.positions = saved.positions;
     state.changes = saved.changes;
     state.report = saved.report;
+    scrubDefaultReportNames(state.report);
     state.daysArchive = saved.daysArchive ? cloneData(saved.daysArchive) : {};
+    scrubDefaultDayArchiveNames(state.daysArchive);
     state.fileDay = saved.fileDay || todayISO();
     state.viewDay = saved.viewDay || state.fileDay;
     migrateSlicesToCards();
     ensureDayRollover();
     projectCardsToLiveDay();
+    scrubDefaultReportNames(state.report);
     indexPeople(viewUnit());
     return true;
   }
@@ -7445,7 +7490,8 @@ button.count-toggle {
     state.report = doc;
     state.reportKey = bundleKey;
     loadDaysFromSnapshot(raw);
-    if (raw.name) state.holder = String(raw.name).slice(0, 80);
+    var pulledName = String(raw.name || "").trim();
+    state.holder = isDefaultUnitName(pulledName) ? "" : pulledName.slice(0, 80);
     migrateSlicesToCards(raw);
     projectCardsToLiveDay();
     captureBundle(bundleKey);
@@ -8469,8 +8515,10 @@ button.count-toggle {
     var key = generalBundleKey();
     if (String(state.reportKey || "") === key) captureBundle(key);
     if (bundles[key] && bundles[key].report) return key;
-    var base = emptyUnitReport({ name: key === "lead" ? "Служба" : key, code: key });
+    // ZS-158: lead без вигаданої назви «Служба».
+    var base = emptyUnitReport({ name: key === "lead" ? "" : key, code: key });
     if (String(state.reportKey || "") === key && state.report) base = cloneData(state.report);
+    scrubDefaultReportNames(base);
     bundles[key] = {
       edits: { people: {}, machines: {} },
       removed: { people: {}, machines: {} },
@@ -8534,8 +8582,10 @@ button.count-toggle {
       return false;
     }
 
-    var report = cloneData(lead.report || emptyUnitReport({ name: "Служба", code: leadKey }));
-    if (!report.unit || typeof report.unit !== "object") report.unit = { id: "root", name: report.name || "Служба", people: [] };
+    var report = cloneData(lead.report || emptyUnitReport({ name: "", code: leadKey }));
+    scrubDefaultReportNames(report);
+    if (!report.unit || typeof report.unit !== "object") report.unit = { id: "root", name: report.name || "", people: [] };
+    if (isDefaultUnitName(report.unit.name)) report.unit.name = report.name || "";
     if (!Array.isArray(report.machines)) report.machines = [];
     if (!Array.isArray(report.tasks)) report.tasks = [];
 
@@ -10462,12 +10512,13 @@ button.count-toggle {
     } else {
       state.scope = scope;
       state.openCode = code;
-      if (code === "lead") state.holder = "Служба";
-      else state.holder = "";
+      // ZS-158: lead без дефолтного holder «Служба».
+      state.holder = "";
     }
     activateReport(state.openCode);
-    if (!grant && !unit && code !== "lead" && scope === "all") {
-      state.holder = (state.report && state.report.name) || "";
+    if (!grant && !unit && scope === "all") {
+      var liveName = String(state.report && state.report.name || "").trim();
+      state.holder = isDefaultUnitName(liveName) ? "" : liveName;
     }
     // ZS-107: якщо відкриваємо відому unit поточного кореня — не збивати reportRoot на її код.
     if (state.scope === "all") {
@@ -10956,7 +11007,8 @@ button.count-toggle {
   };
 
   function canJournal() {
-    return state.scope === "all" && !!state.holder;
+    // ZS-158: журнал пише й без holder (lead більше не підставляє «Служба»).
+    return state.scope === "all";
   }
 
   function plainValue(value) {
@@ -11038,7 +11090,7 @@ button.count-toggle {
     if (!canJournal() || sameValue(before, after)) return;
     var label = FIELD_LABEL[fieldName] || fieldName;
     state.changes.push({
-      who: state.holder,
+      who: journalWho(),
       field: label,
       before: plainValue(before).slice(0, 80),
       after: plainValue(after).slice(0, 80)
@@ -12259,7 +12311,7 @@ button.count-toggle {
     state.pending = null;
     state.editBaseline = null;
     state.eventLinkPick = null;
-    state.holder = "Служба";
+    state.holder = "";
     state.openCode = "lead";
     state.reportRoot = "lead";
     state.changes = [];
@@ -12475,6 +12527,19 @@ button.count-toggle {
     check(state.reportKey === "lead" && !Object.prototype.hasOwnProperty.call(CODES, "1rota"), "канон reportKey=lead, немає CODES.1rota");
     check(reportKey("1rota") === "lead" && reportKey("sluzhba") === "lead" && reportKey("lead") === "lead", "reportKey alias 1rota/sluzhba → lead");
     check(document.getElementById("app").textContent.indexOf("1 рота") === -1, "на старті немає напису 1 рота");
+    // ZS-158: без дефолту «Служба» у holder / general bundle / snapshot.
+    check(state.holder === "" && isDefaultUnitName("Служба") && isDefaultUnitName("Підрозділ") && !isDefaultUnitName("Туз"), "Служба вважається дефолтним артефактом назви");
+    check(peopleFrac && peopleFrac.getAttribute("aria-label") === "Звіт: 0 у строю з 0", "порожній lead → дріб Звіт");
+    var snap158 = currentUnitSnapshot();
+    check(snap158 && snap158.name === "" && (!snap158.unit || snap158.unit.name === ""), "знімок lead без імені Служба");
+    var keepKey158 = state.reportKey;
+    var keepBundles158 = bundles;
+    bundles = {};
+    state.reportKey = "CHILD158";
+    var genKey158 = ensureGeneralBundle();
+    check(genKey158 === "lead" && bundles.lead && bundles.lead.report && bundles.lead.report.name === "" && bundles.lead.report.unit.name === "", "ensureGeneralBundle не сіє Служба");
+    bundles = keepBundles158;
+    state.reportKey = keepKey158;
     // ZS-118: міграція старого bundles["1rota"] → "lead".
     var savedBundles = bundles;
     var savedReportKey = state.reportKey;
@@ -12515,7 +12580,7 @@ button.count-toggle {
     var sampleFile = readSiblingJson("zvit-1rota.json");
     check(!sampleFile, "демо-файл zvit-1rota.json не підхоплюється");
     check(!document.getElementById("code-switch") && !document.getElementById("code-form") && !document.getElementById("code") && !document.getElementById("open-code") && document.getElementById("app").textContent.indexOf("Код розділу") === -1 && document.getElementById("app").textContent.indexOf("Профільні розділи") === -1 && !document.querySelector(".samples") && !document.querySelector(".code-picks") && !document.querySelector(".code-pick"), "немає коду розділу і перемикача служби");
-    check(state.openCode === "lead" && state.holder === "Служба" && !!document.getElementById("report-switch") && !document.getElementById("subordinates") && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1, "на старті відкрита служба без підпису ролі");
+    check(state.openCode === "lead" && state.holder === "" && !!document.getElementById("report-switch") && !document.getElementById("subordinates") && !document.querySelector(".sub") && !document.querySelector(".foot") && document.querySelector("header .title-row h1").textContent.trim() === "Вістовий" && document.getElementById("app").textContent.indexOf("на цьому пристрої") === -1 && document.getElementById("app").textContent.indexOf("Без сервера") === -1 && document.getElementById("app").textContent.indexOf("зразок першого екрана") === -1 && document.getElementById("app").textContent.indexOf("Служба") === -1 && (document.querySelector("#people .frac") || { getAttribute: function () { return ""; } }).getAttribute("aria-label").indexOf("Звіт:") === 0, "на старті відкритий lead без артефакту Служба");
     var startReport = document.getElementById("report-switch");
     check(!!startReport && startReport.querySelector("#open-report") && startReport.querySelector("#open-report").textContent === "Загальний звіт", "у шапці вибір звіту з загальним");
     checkReportSwitchLayout(window.innerWidth >= 840 ? "широкий старт" : "старт");
@@ -12952,7 +13017,7 @@ button.count-toggle {
     useCode("1rota");
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks"), "legacy 1rota відкриває ті самі блоки");
     check(!document.getElementById("wide-access") && !document.getElementById("section-access") && document.getElementById("main").textContent.indexOf("Доступ до розділу") === -1, "код підрозділу не тримає доступ на звіті");
-    check(state.openCode === "lead" && state.scope === "all" && state.holder === "Служба", "1rota alias → lead / Служба");
+    check(state.openCode === "lead" && state.scope === "all" && state.holder === "", "1rota alias → lead без дефолтного holder");
     check(!document.getElementById("status-create"), "lead на звіті не додає статус");
     check(document.getElementById("day-nav") && document.getElementById("app").textContent.indexOf("Змін ще немає") === -1 && !document.getElementById("changes"), "після lead рядок дати без порожніх змін");
     check(document.getElementById("app").textContent.indexOf("1 рота") === -1, "після alias немає напису 1 рота");
@@ -13469,11 +13534,11 @@ button.count-toggle {
     check(state.changes.length === journalBefore + 1, "закриття зберігає і додає запис");
     toggle("person:p4");
     check(document.getElementById("rank-p4").getAttribute("data-value") === "Майор", "звання збережене закриттям");
-    var serviceLine = "Служба. Звання. Було: Капітан. Стало: Майор.";
+    var serviceLine = "Звіт. Звання. Було: Капітан. Стало: Майор.";
     document.querySelector("[data-open-changes]").click();
     check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceLine) !== -1, "запис видно у вікні журналу");
     document.querySelector("[data-close-changes]").click();
-    check(state.changes.some(function (item) { return item.who === "Служба" && item.before === "Капітан" && item.after === "Майор"; }), "запис у звіті служби");
+    check(state.changes.some(function (item) { return item.who === "Звіт" && item.before === "Капітан" && item.after === "Майор"; }), "запис у звіті lead без артефакту Служба");
     check(!localStorage.getItem("zvitnist.lead.v1"), "журнал не в пам’яті браузера");
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     var dutyPick = document.getElementById("duty-p4");
@@ -13618,7 +13683,7 @@ button.count-toggle {
     check(document.getElementById("people") && document.getElementById("equipment") && document.getElementById("tasks") && document.querySelector("#people .frac").getAttribute("data-total") === "18", "вищий код як і раніше бачить розділ");
     applyCode(state.units[0].code);
     applyCode("lead");
-    check(state.openCode === "lead" && state.holder === "Служба" && !document.getElementById("main").textContent.includes("Новий підрозділ") && !!document.getElementById("report-switch") && !document.getElementById("subordinates"), "служба знову відкрита без форми на звіті");
+    check(state.openCode === "lead" && state.holder === "" && !document.getElementById("main").textContent.includes("Новий підрозділ") && !!document.getElementById("report-switch") && !document.getElementById("subordinates"), "lead знову відкритий без форми на звіті");
     document.querySelector("[data-open-profile]").click();
     document.getElementById("unit-name").value = "Друга";
     document.getElementById("unit-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -13682,12 +13747,12 @@ button.count-toggle {
     document.querySelector("#panel-person-p4 [data-edit-card='person:p4']").click();
     chooseRank("rank-p4", "Генерал");
     document.querySelector("#panel-person-p4 [data-save-card='person:p4']").click();
-    var serviceWho = "Служба. Звання. Було: Майор. Стало: Генерал.";
+    var serviceWho = "Звіт. Звання. Було: Майор. Стало: Генерал.";
     document.querySelector("[data-open-changes]").click();
-    check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceWho) !== -1, "запис служби називає службу");
+    check(document.getElementById("changes-overlay") && document.getElementById("changes-overlay").textContent.indexOf(serviceWho) !== -1, "запис lead у журналі без Служба");
     check(document.getElementById("changes-overlay").textContent.indexOf("Служба. Звання. Було: Підполковник.") === -1, "цей запис не від служби в оверлеї чужого");
     document.querySelector("[data-close-changes]").click();
-    check(state.changes.some(function (item) { return item.who === "Служба" && item.after === "Генерал"; }), "запис служби у звіті");
+    check(state.changes.some(function (item) { return item.who === "Звіт" && item.after === "Генерал"; }), "запис lead у звіті без артефакту Служба");
     check(!localStorage.getItem("zvitnist.lead.v1") || localStorage.getItem("zvitnist.lead.v1").indexOf("Бондар") === -1, "люди звіту не в пам’яті браузера");
     var peoplePlus = document.querySelector("#people [data-add='person']");
     var peopleGear = document.querySelector("#people [data-toggle='gear:people']");
@@ -14113,7 +14178,7 @@ button.count-toggle {
     state.settingsFolderAdminHash = keyFingerprint("інший-адмін");
     check(!!isLead() && !canWriteDriveSettings() && !canEditCatalogs(), "openCode lead сам по собі не дає прав довідників");
     applyCode("sluzhba");
-    check(state.openCode === "lead" && state.holder === "Служба", "старий код sluzhba відкриває lead");
+    check(state.openCode === "lead" && state.holder === "", "старий код sluzhba відкриває lead без дефолтного holder");
     try {
       assertSeed();
     } catch (err) {
